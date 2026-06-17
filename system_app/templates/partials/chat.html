@@ -1,0 +1,36 @@
+<section id="chat-panel" class="panel chat-panel">
+  <div class="panel-header">
+    <h2>에이전트와의 대화</h2>
+    <span class="badge neutral">채팅</span>
+  </div>
+
+  <div class="chat-panel-stack">
+    <div class="agent-chat-shell">
+      {% include "partials/chat_log.html" %}
+      <form
+        class="stack-form agent-chat-form chat-composer"
+        action="{% if active_chat_prompt %}/chat/policy-confirmation{% elif active_ae_prompt %}/chat/ae-response{% else %}/chat/system{% endif %}"
+        method="post"
+        hx-post="{% if active_chat_prompt %}/chat/policy-confirmation{% elif active_ae_prompt %}/chat/ae-response{% else %}/chat/system{% endif %}"
+        hx-target="#chat-panel"
+        hx-swap="outerHTML">
+        {% if active_chat_prompt %}
+          <input type="hidden" name="notification_id" value="{{ active_chat_prompt.notification_id }}">
+        {% elif active_ae_prompt %}
+          <input type="hidden" name="chat_message_id" value="{{ active_ae_prompt.chat_message_id }}">
+        {% else %}
+          <input type="hidden" name="event_type" value="multiturn_chat">
+        {% endif %}
+        <label class="visually-hidden" for="agent-chat-message">에이전트와 대화</label>
+        <textarea
+          id="agent-chat-message"
+          name="{% if active_ae_prompt and not active_chat_prompt %}response_text{% else %}message{% endif %}"
+          rows="2"
+          required
+          placeholder="{{ active_chat_prompt.placeholder if active_chat_prompt else active_ae_prompt.placeholder if active_ae_prompt else '예: 속이 메스꺼운데 약 때문일까요? / 아침 알림을 조금 더 자주 받고 싶어요' }}"></textarea>
+        <button type="submit">보내기</button>
+      </form>
+    </div>
+    {% include "partials/conversation_history.html" %}
+  </div>
+</section>

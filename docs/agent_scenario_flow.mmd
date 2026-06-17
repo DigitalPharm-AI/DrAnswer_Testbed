@@ -1,0 +1,36 @@
+%%{init: {"theme": "base", "flowchart": {"htmlLabels": true, "nodeSpacing": 100, "rankSpacing": 140, "diagramPadding": 40, "useMaxWidth": false}, "themeVariables": {"fontFamily": "Malgun Gothic, Noto Sans KR, Arial, sans-serif", "fontSize": "40px", "primaryTextColor": "#111827", "lineColor": "#64748B"}}}%%
+flowchart TD
+  S1["부작용 관련 질문"] --> A1["부작용 감지"]
+  A1 --> Q1["추가 문진"]
+  Q1 --> P1["PRO-CTCAE<br/>응답"]
+  P1 --> R1["부작용 기록"]
+  R1 --> C1["의료진 확인<br/>필요 여부 판단"]
+
+  S2["예정 복약 시간 경과<br/>복약 기록 없음"] --> A2["미복용 감지"]
+  A2 --> Q2["미복용 이유<br/>질문"]
+  Q2 --> R2{"환자 답변"}
+  R2 -->|부작용 의심| A1
+  R2 -->|나중에 복용함| D1["복약 완료 기록"]
+  R2 -->|반복 미복용| P2["일일 패턴<br/>분석"]
+
+  P2 --> L1["알림 정책<br/>변경 후보"]
+  L1 --> U1["환자 확인"]
+  L1 --> M1["의료진 Web App<br/>검토"]
+
+  S3["일반 멀티턴 대화"] --> A3["최근 대화<br/>맥락 분석"]
+  A3 --> R3["자연어 응답"]
+
+  classDef patientApp fill:#FFE4E6,stroke:#E11D48,stroke-width:2px,color:#881337,font-size:40px,font-weight:700
+  classDef collectNode fill:#E0F2FE,stroke:#0284C7,stroke-width:2px,color:#0C4A6E,font-size:40px,font-weight:700
+  classDef storeNode fill:#FEF3C7,stroke:#D97706,stroke-width:2px,color:#78350F,font-size:40px,font-weight:700
+  classDef analyzeNode fill:#DCFCE7,stroke:#16A34A,stroke-width:2px,color:#14532D,font-size:40px,font-weight:700
+  classDef mediateNode fill:#F3E8FF,stroke:#9333EA,stroke-width:2px,color:#581C87,font-size:40px,font-weight:700
+  classDef clinicianNode fill:#FFEDD5,stroke:#EA580C,stroke-width:2px,color:#7C2D12,font-size:40px,font-weight:700
+
+  class S1,S2,S3,P1 collectNode
+  class A1,A2,A3,P2,L1 analyzeNode
+  class Q1,Q2,R2,R3 patientApp
+  class R1,D1 storeNode
+  class U1 mediateNode
+  class C1,M1 clinicianNode
+  linkStyle default stroke:#64748B,stroke-width:2px

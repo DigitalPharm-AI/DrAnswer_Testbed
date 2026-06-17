@@ -1,0 +1,139 @@
+<div
+  id="chat-log-region"
+  class="live-section agent-conversation-region"
+  data-chat-message-count="{{ chat_messages | length }}"
+  data-chat-last-message-id="{{ (chat_messages | last).id if chat_messages else '' }}"
+  {% if chat_messages | selectattr("pending") | list | length > 0 %}
+  hx-get="/partials/chat-log"
+  hx-trigger="every 2s"
+  hx-swap="outerHTML"
+  {% endif %}>
+  <div class="chat-log agent-chat-window" data-chat-scroll-region>
+    {% for message in chat_messages %}
+      <article class="chat-message {{ message.classes }}">
+        <div class="chat-role">
+          <span>{{ message.role_label }}</span>
+          <span class="chat-category">{{ message.category_label }}</span>
+        </div>
+        {% if message.pending %}
+          <div class="chat-content chat-pending-content" aria-live="polite">
+            <span class="progress-round" aria-hidden="true"></span>
+            <span>{{ message.content }}</span>
+          </div>
+        {% else %}
+          <div class="chat-content">{{ message.content }}</div>
+        {% endif %}
+        {% if message.policy_confirmation %}
+          {% set policy = message.policy_confirmation %}
+          {% set policy_change = policy.policy_change %}
+          {% set policy_candidates = policy_change.get('candidates') or [] %}
+          <div class="chat-action-card policy-confirmation-card">
+            {% if policy_candidates %}
+              <div class="policy-change-table-wrap">
+                <table class="policy-change-table">
+                  <thead>
+                    <tr>
+                      <th>시간대</th>
+                      <th>현재</th>
+                      <th>변경 후</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for candidate in policy_candidates %}
+                      <tr>
+                        <td>{{ candidate.get('slot_label') }}</td>
+                        <td>{{ candidate.get('current', {}).get('summary') }}</td>
+                        <td>{{ candidate.get('proposed', {}).get('summary') }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            {% endif %}
+            <div class="chat-action-row policy-choice-actions">
+              {% for option in policy.options %}
+                <form action="/chat/policy-confirmation" method="post" hx-post="/chat/policy-confirmation" hx-target="#chat-panel" hx-swap="outerHTML">
+                  <input type="hidden" name="notification_id" value="{{ policy.notification_id }}">
+                  <input
+                    type="hidden"
+                    name="message"
+                    value='{{ {"prompt_type": "policy_confirmation", "action": option.get("value"), "number": option.get("number"), "label": option.get("label")} | tojson }}'>
+                  <button class="policy-choice-button" type="submit">
+                    <span class="policy-option-number">{{ option.get('number') }}</span>
+                    <span class="policy-option-label">{{ option.get('label') }}</span>
+                  </button>
+                </form>
+              {% endfor %}
+            </div>
+          </div>
+        {% endif %}
+        {% if message.side_effect_reminder_safety %}
+          {% set safety = message.side_effect_reminder_safety %}
+          <div class="chat-action-card side-effect-reminder-safety-card">
+            <div class="chat-action-row policy-choice-actions">
+              {% for option in safety.options %}
+                <form action="/chat/side-effect-reminder-safety" method="post" hx-post="/chat/side-effect-reminder-safety" hx-target="#chat-panel" hx-swap="outerHTML">
+                  <input type="hidden" name="notification_id" value="{{ safety.notification_id }}">
+                  <input type="hidden" name="action" value="{{ option.get('action') }}">
+                  <button class="policy-choice-button" type="submit">
+                    <span class="policy-option-label">{{ option.get('label') }}</span>
+                  </button>
+                </form>
+              {% endfor %}
+            </div>
+          </div>
+        {% endif %}
+        {% if message.ae_pro_ctcae %}
+          {% set ae = message.ae_pro_ctcae %}
+          <div class="chat-action-card ae-question-card">
+            <div class="ae-match-summary">
+              <strong>{{ ae.matched_korean_symptom_name or '그 외 증상' }}</strong>
+              <span class="tiny-badge">{{ ae.match_type }}</span>
+            </div>
+            <div class="ae-question-list">
+              {% for question in ae.questions %}
+                {% set question_index = loop.index0 %}
+                <div class="ae-question-item">
+                  <div class="ae-question-title">{{ loop.index }}. {{ question.get('question') }}</div>
+                  <div class="muted">{{ question.get('response_type') }}</div>
+                  {% if question_index in ae.answered_indexes %}
+                    <div class="prompt-preview">
+                      <strong>응답 기록됨</strong>
+                      {% for response in ae.responses %}
+                        {% if response.get('question_index') == question_index %}
+                          <p>{{ response.get('response_text') }}</p>
+                        {% endif %}
+                      {% endfor %}
+                    </div>
+                  {% elif question.get('response_options') %}
+                    <div class="chat-action-row ae-option-actions">
+                      {% for option in question.get('response_options') %}
+                        <form action="/chat/ae-response" method="post" hx-post="/chat/ae-response" hx-target="#chat-panel" hx-swap="outerHTML">
+                          <input type="hidden" name="chat_message_id" value="{{ ae.chat_message_id }}">
+                          <input type="hidden" name="question_index" value="{{ question_index }}">
+                          <input type="hidden" name="response_text" value="{{ option }}">
+                          <button class="ghost compact-button" type="submit">{{ option }}</button>
+                        </form>
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    <form class="stack-form inline-chat-reply-form" action="/chat/ae-response" method="post" hx-post="/chat/ae-response" hx-target="#chat-panel" hx-swap="outerHTML">
+                      <input type="hidden" name="chat_message_id" value="{{ ae.chat_message_id }}">
+                      <input type="hidden" name="question_index" value="{{ question_index }}">
+                      <label>직접 입력</label>
+                      <textarea name="response_text" rows="2" required></textarea>
+                      <button type="submit">응답 기록</button>
+                    </form>
+                  {% endif %}
+                </div>
+              {% endfor %}
+            </div>
+          </div>
+        {% endif %}
+        <div class="chat-time">{{ message.time_label }}</div>
+      </article>
+    {% else %}
+      <div class="chat-empty-state">에이전트에게 메시지를 보내면 이곳에 대화가 이어집니다.</div>
+    {% endfor %}
+  </div>
+</div>

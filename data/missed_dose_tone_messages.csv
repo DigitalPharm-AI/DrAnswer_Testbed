@@ -1,0 +1,61 @@
+pattern_code,tone_key,variant_key,priority,active,message,notes
+A,empathy,v1,10,true,잠시 놓치신 것 같아요. 지금 상태를 알려주세요.,기존 기본 문구
+A,empathy,v2,20,true,괜찮아요. 오늘 상태를 편하게 알려주세요.,
+A,empathy,v3,30,true,흐름이 잠시 끊겼어요. 지금 상태를 알려주세요.,
+A,empathy,v4,40,true,무리하지 말고 지금 상황을 알려주세요.,
+A,practical,v1,10,true,지금 1분만 기록해볼까요? 상태를 알려주세요.,기존 기본 문구
+A,practical,v2,20,true,짧게 확인해볼게요. 지금 상태를 알려주세요.,
+A,practical,v3,30,true,지금 기록만 먼저 해볼까요? 상태를 알려주세요.,
+A,warning_soft,v1,10,true,기록 확인이 필요해요. 지금 상태를 알려주세요.,기존 기본 문구
+A,warning_soft,v2,20,true,기록이 비어 있어요. 지금 상태를 알려주세요.,
+A,warning_soft,v3,30,true,오늘 기록을 확인해요. 지금 상태를 알려주세요.,
+A,side_effect_check,v1,10,true,불편한 증상이 있나요? 상태를 먼저 알려주세요.,기존 기본 문구
+A,side_effect_check,v2,20,true,몸이 불편하셨나요? 상태를 먼저 알려주세요.,
+A,side_effect_check,v3,30,true,증상이 있었는지 먼저 같이 확인해볼게요.,
+B,persuasion,v1,10,true,복약 루틴을 함께 맞춰봐요. 지금 확인해보세요.,기존 기본 문구
+B,persuasion,v2,20,true,오늘 루틴을 다시 이어가볼까요? 지금 확인해요.,
+B,persuasion,v3,30,true,놓친 흐름을 같이 정리해볼게요. 지금 확인해요.,
+B,persuasion,v4,40,true,다시 챙기기 쉽게 맞춰볼게요. 상태를 알려주세요.,
+B,practical,v1,10,true,지금 바로 기록해볼까요? 짧게 확인할게요.,기존 기본 문구
+B,practical,v2,20,true,지금 상태만 짧게 확인해볼게요.,
+B,practical,v3,30,true,바로 확인할 수 있게 짧게 도와드릴게요.,
+B,practical,v4,40,true,현재 상태를 먼저 기록해볼까요?,
+B,warning_soft,v1,10,true,기록이 이어서 비어 있어요. 함께 확인할게요.,기존 기본 문구
+B,warning_soft,v2,20,true,최근 기록에 빈칸이 있어요. 같이 확인할게요.,
+B,warning_soft,v3,30,true,기록 흐름을 확인해요. 지금 상태를 알려주세요.,
+B,empathy,v1,10,true,괜찮아요. 지금 상황을 함께 확인해볼게요.,기존 기본 문구
+B,empathy,v2,20,true,부담 없이 지금 상황만 알려주세요.,
+B,empathy,v3,30,true,오늘은 어떤 상황이었는지 같이 볼게요.,
+B,side_effect_check,v1,10,true,불편한 증상이 있나요? 상태를 먼저 알려주세요.,기존 기본 문구
+B,side_effect_check,v2,20,true,몸 상태 때문에 어려웠나요? 먼저 확인할게요.,
+B,side_effect_check,v3,30,true,불편감이 있었는지 먼저 알려주세요.,
+C,side_effect_check,v1,10,true,불편한 증상이 있나요? 상태를 먼저 알려주세요.,기존 기본 문구
+C,side_effect_check,v2,20,true,몸이 불편하셨나요? 복용 전 상태를 알려주세요.,
+C,side_effect_check,v3,30,true,증상이 있었다면 먼저 편하게 알려주세요.,
+C,side_effect_check,v4,40,true,불편감이 있는지 먼저 같이 확인해볼게요.,
+D,warning_soft,v1,10,true,며칠째 기록이 비어 있어요. 의료진과 함께 확인할게요.,기존 기본 문구
+D,warning_soft,v2,20,true,기록이 며칠 비어 있어요. 함께 확인해둘게요.,
+D,warning_soft,v3,30,true,이어진 빈 기록을 확인해요. 상태를 알려주세요.,
+D,warning_soft,v4,40,true,지속된 미기록을 확인해요. 지금 상태를 알려주세요.,
+D,practical,v1,10,true,오늘 기록을 먼저 확인해요. 상태를 알려주세요.,기존 기본 문구
+D,practical,v2,20,true,지금 상태부터 짧게 정리해볼게요.,
+D,practical,v3,30,true,오늘 상황을 먼저 기록해볼까요?,
+D,empathy,v1,10,true,부담을 줄여 확인해볼게요. 지금 상태를 알려주세요.,기존 기본 문구
+D,empathy,v2,20,true,부담 없이 오늘 상황만 알려주세요.,
+D,empathy,v3,30,true,힘든 부분이 있었는지 같이 확인해볼게요.,
+D,side_effect_check,v1,10,true,불편한 증상이 있나요? 상태를 먼저 알려주세요.,기존 기본 문구
+D,side_effect_check,v2,20,true,몸 상태가 어려웠나요? 먼저 확인할게요.,
+D,side_effect_check,v3,30,true,불편감이 있다면 먼저 알려주세요.,
+E,warning_soft,v1,10,true,최근 기록이 많이 비어 있어요. 의료진과 함께 확인할게요.,기존 기본 문구
+E,warning_soft,v2,20,true,최근 기록 흐름을 확인해요. 함께 정리할게요.,
+E,warning_soft,v3,30,true,기록 빈칸이 많아졌어요. 지금 상태를 알려주세요.,
+E,warning_soft,v4,40,true,최근 기록을 다시 살펴볼게요. 상태를 알려주세요.,
+E,practical,v1,10,true,최근 기록을 같이 정리해요. 지금 상태를 알려주세요.,기존 기본 문구
+E,practical,v2,20,true,지금 상태부터 차분히 정리해볼게요.,
+E,practical,v3,30,true,최근 흐름을 짧게 확인해볼까요?,
+E,empathy,v1,10,true,부담을 줄여 확인해볼게요. 지금 상태를 알려주세요.,기존 기본 문구
+E,empathy,v2,20,true,괜찮아요. 최근 상황을 함께 정리해볼게요.,
+E,empathy,v3,30,true,어려웠던 부분을 편하게 알려주세요.,
+E,side_effect_check,v1,10,true,불편한 증상이 있나요? 상태를 먼저 알려주세요.,기존 기본 문구
+E,side_effect_check,v2,20,true,몸 상태 때문에 어려웠나요? 먼저 확인할게요.,
+E,side_effect_check,v3,30,true,불편감이 있었다면 먼저 알려주세요.,

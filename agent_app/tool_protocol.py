@@ -1,0 +1,135 @@
+from __future__ import annotations
+
+import json
+from typing import Any, Protocol
+
+from shared.schemas import ToolCallResult
+
+ALLOWED_TOOL_NAMES = {
+    "AE_pro_ctcae",
+    "lookup_side_effect_info",
+    "mark_dose_taken",
+    "apply_notification_policy",
+    "apply_system_policy",
+}
+
+MCP_JSONRPC_VERSION = "2.0"
+MCP_METHOD_TOOLS_LIST = "tools/list"
+MCP_METHOD_TOOLS_CALL = "tools/call"
+
+
+class AgentToolExecutorProtocol(Protocol):
+    async def execute_tool_call(self, tool_call: dict[str, Any], *, trace_id: str, source_event_type: str, payload: dict[str, Any]) -> ToolCallResult:
+        ...
+
+
+def mcp_call_params(tool_call: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": str(tool_call.get("name") or ""),
+        "arguments": tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {},
+    }
+
+
+def mcp_json_rpc_request(method: str, params: dict[str, Any] | None = None, *, request_id: str | int | None = None) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "jsonrpc": MCP_JSONRPC_VERSION,
+        "method": method,
+    }
+    if request_id is not None:
+        request["id"] = request_id
+    if params is not None:
+        request["params"] = params
+    return request
+
+
+def mcp_success_response(request_id: str | int | None, result: dict[str, Any]) -> dict[str, Any]:
+    response: dict[str, Any] = {
+        "jsonrpc": MCP_JSONRPC_VERSION,
+        "result": result,
+    }
+    if request_id is not None:
+        response["id"] = request_id
+    return response
+
+
+def mcp_error_response(request_id: str | int | None, code: int, message: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    response: dict[str, Any] = {
+        "jsonrpc": MCP_JSONRPC_VERSION,
+        "error": {
+            "code": code,
+            "message": message,
+        },
+    }
+    if request_id is not None:
+        response["id"] = request_id
+    if data:
+        response["error"]["data"] = data
+    return response
+
+
+def mcp_result_from_json_rpc_response(response: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(response.get("error"), dict):
+        error = response["error"]
+        return {
+            "content": [{"type": "text", "text": str(error.get("message") or "mcp_error")}],
+            "structuredContent": {
+                "tool_name": "unknown",
+                "status": "error",
+                "response": {},
+                "error": str(error.get("message") or "mcp_error"),
+                "idempotency_key": None,
+            },
+            "isError": True,
+        }
+    result = response.get("result")
+    return result if isinstance(result, dict) else {}
+
+
+def mcp_result_from_tool_result(result: ToolCallResult) -> dict[str, Any]:
+    structured_content = {
+        "tool_name": result.tool_name,
+        "status": result.status,
+        "response": result.response,
+        "error": result.error,
+        "idempotency_key": result.idempotency_key,
+    }
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": json.dumps(structured_content, ensure_ascii=False),
+            }
+        ],
+        "structuredContent": structured_content,
+        "isError": result.status == "error",
+    }
+
+
+def tool_result_from_mcp_result(tool_name: str, mcp_result: dict[str, Any], *, idempotency_key: str | None = None) -> ToolCallResult:
+    structured = mcp_result.get("structuredContent") if isinstance(mcp_result.get("structuredContent"), dict) else {}
+    status = "error" if mcp_result.get("isError") is True else str(structured.get("status") or "success")
+    response = structured.get("response") if isinstance(structured.get("response"), dict) else structured
+    error = str(structured.get("error") or "")
+    if not error and status == "error":
+        error = _first_text_content(mcp_result)
+    return ToolCallResult(
+        tool_name=str(structured.get("tool_name") or tool_name),
+        status="error" if status == "error" else "skipped" if status == "skipped" else "success",
+        response=response,
+        error=error,
+        idempotency_key=idempotency_key or structured.get("idempotency_key"),
+    )
+
+
+def mcp_tools_list(tools: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"tools": tools}
+
+
+def _first_text_content(mcp_result: dict[str, Any]) -> str:
+    content = mcp_result.get("content")
+    if not isinstance(content, list):
+        return ""
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "text":
+            return str(item.get("text") or "")
+    return ""

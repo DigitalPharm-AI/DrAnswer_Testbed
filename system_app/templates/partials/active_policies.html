@@ -1,0 +1,63 @@
+<section
+  id="active-policies-panel"
+  class="panel policy-panel"
+  hx-get="/partials/active-policies"
+  hx-trigger="load, every 3s"
+  hx-swap="outerHTML">
+  <div class="panel-header">
+    <h2>활성 알림 정책</h2>
+    <span class="badge neutral">{{ active_policies|length }}개 정책</span>
+  </div>
+
+  <div class="policy-list reminder-suppression-list">
+    <article class="policy-item system-policy-item">
+      <div class="policy-slot">
+        복약/AI 알림 전체 상태
+        <span class="tiny-badge">{{ "꺼짐" if reminder_suppressed_after_side_effect else "켜짐" }}</span>
+      </div>
+      <div>
+        {% if reminder_suppressed_after_side_effect %}
+          복약 시간 알림, 미복용 AI 대화, 일일 패턴 정책 제안, 수동 패턴 분석이 중지되어 있습니다.
+        {% else %}
+          복약 시간 알림, 미복용 AI 대화, 일일 패턴 정책 제안, 수동 패턴 분석이 활성화되어 있습니다.
+        {% endif %}
+      </div>
+      <form action="/reminders/suppression" method="post" hx-post="/reminders/suppression">
+        <input type="hidden" name="suppressed" value="{{ 'false' if reminder_suppressed_after_side_effect else 'true' }}">
+        <button type="submit" class="{{ 'ghost' if reminder_suppressed_after_side_effect else 'ghost danger-button' }}">
+          {{ "알림 전체 켜기" if reminder_suppressed_after_side_effect else "알림 전체 끄기" }}
+        </button>
+      </form>
+    </article>
+  </div>
+
+  <div class="policy-list">
+    {% if active_policies %}
+      {% for policy in active_policies %}
+        <article class="policy-item">
+          <div class="policy-slot">{{ policy.slot_label }} <span class="tiny-badge">{{ policy.source_label }}</span></div>
+          <div>기본 알림: {{ policy.primary_reminder_label }}</div>
+          <div>{{ policy.extra_reminders }}회 추가 / {{ policy.interval_minutes }}분 간격</div>
+          <div>미복용 AI 알림: 예정 후 {{ policy.missed_dose_after_minutes }}분</div>
+          <div>적용 기간: {{ policy.period_label }}</div>
+          <div class="muted">{{ policy.reason }}</div>
+        </article>
+      {% endfor %}
+    {% else %}
+      <p class="muted">아직 AI가 최적화한 알림 정책이 없습니다.</p>
+    {% endif %}
+  </div>
+
+  <div class="policy-list system-policy-list">
+    {% for policy in system_policies %}
+      <article class="policy-item system-policy-item">
+        <div class="policy-slot">{{ policy.policy_key }} <span class="tiny-badge">{{ policy.source_label }}</span></div>
+        <div>{{ policy.label }}: {{ policy.value }}</div>
+        {% if policy.updated_at_label %}
+          <div>변경 시각: {{ policy.updated_at_label }}</div>
+        {% endif %}
+        <div class="muted">{{ policy.reason }}</div>
+      </article>
+    {% endfor %}
+  </div>
+</section>

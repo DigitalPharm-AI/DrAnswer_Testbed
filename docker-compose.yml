@@ -1,0 +1,121 @@
+services:
+  phr-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: da-drug:latest
+    command: uvicorn phr_app.main:app --host 0.0.0.0 --port 8002
+    env_file:
+      - .env
+      - .env.phr_app
+    environment:
+      DA_DRUG_SERVICE: phr_app
+      PHR_DATABASE_URL: sqlite:////app/data/phr.db
+    volumes:
+      - ./data:/app/data
+    expose:
+      - "8002"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  agent-app:
+    image: da-drug:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn agent_app.main:app --host 0.0.0.0 --port 8001
+    env_file:
+      - .env
+      - .env.agent_app
+    environment:
+      DA_DRUG_SERVICE: agent_app
+      AGENT_DATABASE_URL: sqlite:////app/data/agent.db
+      AGENT_EMBEDDED_WORKER_ENABLED: "false"
+      SYSTEM_BASE_URL: http://system-app:8000
+      PHR_BASE_URL: http://phr-app:8002
+      PROMPT_WORKBOOK_PATH: /app/data/prompt_registry.xlsx
+      POLICY_WORKBOOK_PATH: /app/data/default_notification_policies.xlsx
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+    expose:
+      - "8001"
+    depends_on:
+      phr-app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  agent-worker:
+    image: da-drug:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m agent_app.worker_main
+    env_file:
+      - .env
+      - .env.agent_app
+    environment:
+      DA_DRUG_SERVICE: agent_app
+      AGENT_DATABASE_URL: sqlite:////app/data/agent.db
+      SYSTEM_BASE_URL: http://system-app:8000
+      PHR_BASE_URL: http://phr-app:8002
+      PROMPT_WORKBOOK_PATH: /app/data/prompt_registry.xlsx
+      POLICY_WORKBOOK_PATH: /app/data/default_notification_policies.xlsx
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      phr-app:
+        condition: service_healthy
+      agent-app:
+        condition: service_healthy
+      system-app:
+        condition: service_healthy
+    restart: unless-stopped
+
+  system-app:
+    image: da-drug:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn system_app.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - .env
+      - .env.system_app
+    environment:
+      DA_DRUG_SERVICE: system_app
+      SYSTEM_DATABASE_URL: sqlite:////app/data/system.db
+      AGENT_BASE_URL: http://agent-app:8001
+      SYSTEM_BASE_URL: http://system-app:8000
+      PHR_BASE_URL: http://phr-app:8002
+      PROMPT_WORKBOOK_PATH: /app/data/prompt_registry.xlsx
+      POLICY_WORKBOOK_PATH: /app/data/default_notification_policies.xlsx
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "${SYSTEM_PORT:-8000}:8000"
+    depends_on:
+      phr-app:
+        condition: service_healthy
+      agent-app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped

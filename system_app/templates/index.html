@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>복약 알림 POC</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='/agent_interactions.css') }}">
+  <script src="{{ url_for('static', path='/htmx-lite.js') }}"></script>
+  <script type="module" src="{{ url_for('static', path='/notifications.js') }}"></script>
+</head>
+<body>
+  {% include "partials/time_bar.html" %}
+  <div id="popup-stack" class="popup-stack" aria-live="polite" aria-atomic="false"></div>
+
+  <div class="page-shell">
+    <header class="hero">
+      <div class="hero-grid">
+        <div class="hero-main">
+          <p class="eyebrow">Medication Reminder POC</p>
+          <h1>복약 알림 + AI 에이전트 시뮬레이터</h1>
+        </div>
+        <div class="hero-summary">
+          <p class="hero-summary-label">현재 에이전트 시스템 역할</p>
+          <ul class="hero-role-list">
+            <li>복약 패턴을 분석합니다.</li>
+            <li>시간대별 알림 정책을 제안합니다.</li>
+            <li>미복용 원인을 묻는 대화를 생성합니다.</li>
+            <li>환자와 자유롭게 대화하며 필요한 도구를 사용합니다.</li>
+          </ul>
+        </div>
+      </div>
+    </header>
+
+    <nav class="app-tabs" aria-label="주요 화면">
+      <button class="app-tab is-active" type="button" data-tab-target="home-page">HOME</button>
+      <button class="app-tab" type="button" data-tab-target="chat-page">Chat</button>
+    </nav>
+
+    <main>
+      <section id="home-page" class="page-tab-panel is-active">
+        <div class="app-layout">
+          <aside class="sidebar-stack">
+            {% include "partials/medications.html" %}
+            {% include "partials/agent_model.html" %}
+            {% include "partials/clock.html" %}
+          </aside>
+
+          <section class="content-shell">
+            <div class="main-column">
+              {% include "partials/timeline.html" %}
+            </div>
+            <aside class="monitor-column">
+              {% include "partials/active_policies.html" %}
+            </aside>
+          </section>
+        </div>
+      </section>
+
+      <section id="chat-page" class="page-tab-panel">
+        <aside class="chat-page-shell">
+          {% include "partials/chat.html" %}
+        </aside>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

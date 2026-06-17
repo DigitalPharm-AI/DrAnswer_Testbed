@@ -1,0 +1,115 @@
+---
+id: ce581e9f-1a79-4af7-80b3-0f1652002696
+---
+%%{init: {"theme": "base", "flowchart": {"htmlLabels": true, "nodeSpacing": 120, "rankSpacing": 160, "diagramPadding": 40, "useMaxWidth": false}, "themeVariables": {"fontFamily": "Malgun Gothic, Noto Sans KR, Arial, sans-serif", "fontSize": "40px", "primaryTextColor": "#111827", "lineColor": "#64748B"}}}%%
+flowchart LR
+  Patient["환자"] --> PWA["환자 Web App<br/>채팅<br/>복약 알림<br/>복약 기록"]
+
+  subgraph Collect["수집"]
+    Chat["채팅 입력<br/>부작용 질문<br/>미복용 사유<br/>멀티턴 대화"]
+    MedEvent["복약 이벤트<br/>예정 시간<br/>알림<br/>복약 여부"]
+    PRO["PRO-CTCAE<br/>문항 응답"]
+    Reminder["알림 로그<br/>발송<br/>제한<br/>반응"]
+  end
+
+  subgraph Store["데이터 저장"]
+    ChatDB["채팅 기록"]
+    AE_DB["부작용 기록"]
+    DoseDB["복약 기록"]
+    PolicyDB["알림 정책"]
+    AuditDB["이벤트 / 감사<br/>로그"]
+  end
+
+  subgraph Analyze["분석"]
+    AE["부작용 감지<br/>위험도 분류"]
+    PROScore["PRO-CTCAE<br/>분석"]
+    NonDose["미복용 감지<br/>사유 분류"]
+    Pattern["일일 패턴<br/>분석"]
+    PolicyEngine["알림 정책<br/>후보 생성"]
+    Context["멀티턴 맥락<br/>분석"]
+  end
+
+  subgraph Mediate["중재"]
+    AskAE["부작용 추가 질문"]
+    Safety["안전 확인<br/>의료진 연결"]
+    AskReason["미복용 이유<br/>확인"]
+    MarkDose["복약 완료 기록"]
+    LimitReminder["복약 알림 제한"]
+    SuggestPolicy["알림 정책<br/>변경 제안"]
+    NaturalReply["맥락 기반<br/>자연어 응답"]
+  end
+
+  subgraph Clinician["의료진 Web App"]
+    Dashboard["환자 상태<br/>대시보드"]
+    AEReview["부작용 리뷰"]
+    Adherence["복약 순응도<br/>미복용 패턴"]
+    PolicyReview["알림 정책<br/>승인 / 수정"]
+    Report["리포트"]
+  end
+
+  PWA --> Chat
+  PWA --> MedEvent
+  PWA --> PRO
+  PWA --> Reminder
+
+  Chat --> ChatDB
+  PRO --> AE_DB
+  MedEvent --> DoseDB
+  Reminder --> AuditDB
+
+  ChatDB --> AE
+  ChatDB --> NonDose
+  ChatDB --> Context
+  AE_DB --> PROScore
+  DoseDB --> NonDose
+  DoseDB --> Pattern
+  AuditDB --> Pattern
+  PolicyDB --> PolicyEngine
+
+  AE --> AskAE
+  AE --> Safety
+  PROScore --> Safety
+  NonDose --> AskReason
+  NonDose --> MarkDose
+  Pattern --> SuggestPolicy
+  PolicyEngine --> LimitReminder
+  Context --> NaturalReply
+
+  AskAE --> PWA
+  AskReason --> PWA
+  MarkDose --> DoseDB
+  LimitReminder --> PWA
+  SuggestPolicy --> PWA
+  NaturalReply --> PWA
+
+  Safety --> Dashboard
+  Safety --> AEReview
+  SuggestPolicy --> PolicyReview
+  AE_DB --> AEReview
+  DoseDB --> Adherence
+  Pattern --> Dashboard
+  AuditDB --> Report
+
+  classDef patientApp fill:#FFE4E6,stroke:#E11D48,stroke-width:2px,color:#881337,font-size:40px,font-weight:700
+  classDef collectNode fill:#E0F2FE,stroke:#0284C7,stroke-width:2px,color:#0C4A6E,font-size:40px,font-weight:700
+  classDef storeNode fill:#FEF3C7,stroke:#D97706,stroke-width:2px,color:#78350F,font-size:40px,font-weight:700
+  classDef analyzeNode fill:#DCFCE7,stroke:#16A34A,stroke-width:2px,color:#14532D,font-size:40px,font-weight:700
+  classDef mediateNode fill:#F3E8FF,stroke:#9333EA,stroke-width:2px,color:#581C87,font-size:40px,font-weight:700
+  classDef clinicianNode fill:#FFEDD5,stroke:#EA580C,stroke-width:2px,color:#7C2D12,font-size:40px,font-weight:700
+  classDef actorNode fill:#F8FAFC,stroke:#64748B,stroke-width:2px,color:#0F172A,font-size:40px,font-weight:700
+
+  class Patient actorNode
+  class PWA patientApp
+  class Chat,MedEvent,PRO,Reminder collectNode
+  class ChatDB,AE_DB,DoseDB,PolicyDB,AuditDB storeNode
+  class AE,PROScore,NonDose,Pattern,PolicyEngine,Context analyzeNode
+  class AskAE,Safety,AskReason,MarkDose,LimitReminder,SuggestPolicy,NaturalReply mediateNode
+  class Dashboard,AEReview,Adherence,PolicyReview,Report clinicianNode
+
+  style PWA fill:#FFE4E6,stroke:#E11D48,stroke-width:3px,color:#881337
+  style Collect fill:#F0F9FF,stroke:#0284C7,stroke-width:3px,color:#0C4A6E,font-size:40px,font-weight:bold
+  style Store fill:#FFFBEB,stroke:#D97706,stroke-width:3px,color:#78350F,font-size:40px,font-weight:bold
+  style Analyze fill:#F0FDF4,stroke:#16A34A,stroke-width:3px,color:#14532D,font-size:40px,font-weight:bold
+  style Mediate fill:#FAF5FF,stroke:#9333EA,stroke-width:3px,color:#581C87,font-size:40px,font-weight:bold
+  style Clinician fill:#FFF7ED,stroke:#EA580C,stroke-width:3px,color:#7C2D12,font-size:40px,font-weight:bold
+  linkStyle default stroke:#64748B,stroke-width:2px

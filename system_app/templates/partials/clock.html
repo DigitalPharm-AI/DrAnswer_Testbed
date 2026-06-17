@@ -1,0 +1,61 @@
+<section id="clock-panel" class="panel panel-form">
+  <div class="panel-header">
+    <h2>시뮬레이션 시간</h2>
+    <span class="badge neutral">제어 패널</span>
+  </div>
+
+  <div class="section-split">
+    <div class="stack-group">
+      {% if not simulation_readiness.ready %}
+        <div class="prompt-preview">
+          <strong>실행 대기</strong>
+          <p>{{ simulation_readiness.message }}</p>
+        </div>
+      {% endif %}
+      {% if daily_pattern_job_status %}
+        <div class="prompt-preview alert-agent-progress" aria-live="polite">
+          <div class="alert-progress-line">
+            <span class="progress-round" aria-hidden="true"></span>
+            <strong>{{ daily_pattern_job_status.status_label }}</strong>
+          </div>
+          <p>{{ daily_pattern_job_status.message }}</p>
+        </div>
+      {% endif %}
+      <div class="button-row">
+        <form action="/clock/advance" method="post" hx-post="/clock/advance">
+          <input type="hidden" name="minutes" value="30">
+          <button type="submit" {% if not simulation_readiness.ready %}disabled{% endif %}>30분 진행</button>
+        </form>
+        <form action="/clock/advance" method="post" hx-post="/clock/advance">
+          <input type="hidden" name="minutes" value="180">
+          <button type="submit" {% if not simulation_readiness.ready %}disabled{% endif %}>3시간 진행</button>
+        </form>
+        <form action="/analysis/run-today" method="post" hx-post="/analysis/run-today">
+          <button type="submit" {% if not simulation_readiness.ready or reminder_suppressed_after_side_effect %}disabled{% endif %}>오늘 패턴 분석</button>
+        </form>
+      </div>
+
+      <form class="stack-form" action="/clock/play" method="post" hx-post="/clock/play">
+        <label>배속 재생</label>
+        <select name="speed_multiplier">
+          <option value="60">60분/초</option>
+          <option value="30">30분/초</option>
+          <option value="15">15분/초</option>
+          <option value="5">5분/초</option>
+          <option value="1">1분/초</option>
+        </select>
+        <div class="button-row">
+          <button type="submit" {% if not simulation_readiness.ready %}disabled{% endif %}>재생</button>
+          <button type="submit" formaction="/clock/pause" hx-post="/clock/pause" class="ghost">정지</button>
+        </div>
+      </form>
+
+      <form class="stack-form reset-form" action="/simulation/reset" method="post" hx-post="/simulation/reset" hx-confirm="현재 시뮬레이션 데이터를 모두 초기화할까요?">
+        <label>시뮬레이션 리셋</label>
+        <p class="muted">복약 계획, 타임라인, 알림, 대화, 정책, 감사 로그를 초기 상태로 되돌립니다.</p>
+        <button type="submit" class="ghost danger-button">전체 리셋</button>
+      </form>
+    </div>
+
+  </div>
+</section>

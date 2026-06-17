@@ -1,0 +1,167 @@
+%%{init: {"theme": "base", "flowchart": {"htmlLabels": true, "nodeSpacing": 120, "rankSpacing": 160, "diagramPadding": 40, "useMaxWidth": false}, "themeVariables": {"fontFamily": "Malgun Gothic, Noto Sans KR, Arial, sans-serif", "fontSize": "40px", "primaryTextColor": "#111827", "lineColor": "#64748B"}}}%%
+flowchart LR
+  Patient["환자"]
+
+  subgraph PatientApp["환자 Web App"]
+    direction TB
+    AppChat["채팅<br/>부작용/약 질문<br/>미복용 답변"]
+    AppDose["복약 알림<br/>복약 완료 보고"]
+    AppInBody["인바디 입력<br/>측정/재측정"]
+    AppDiet["식이 입력<br/>섭취량 기록"]
+  end
+
+  subgraph Collect["수집"]
+    direction TB
+    ChatInput["채팅 입력<br/>부작용 질문<br/>미복용 사유<br/>멀티턴 대화"]
+    PROInput["PRO-CTCAE<br/>문항 응답"]
+    DoseEvent["복약 이벤트<br/>예정 시간 경과<br/>복약 완료 보고"]
+    InBodyInput["인바디 측정<br/>환자 cut off"]
+    InBodyRetest["인바디 재측정<br/>부종 추적"]
+    DietInput["식이 입력<br/>영양 성분"]
+    SystemEvent["시스템 이벤트<br/>미복용<br/>미측정<br/>미입력"]
+  end
+
+  subgraph Store["데이터 저장"]
+    direction TB
+    ChatDB["채팅 기록"]
+    AEDB["부작용 기록"]
+    DoseDB["복약 기록"]
+    InBodyDB["인바디 기록"]
+    DietDB["식이 기록"]
+    PolicyDB["알림 정책"]
+    AuditDB["이벤트 / 감사<br/>로그"]
+  end
+
+  subgraph Analyze["분석"]
+    direction TB
+    AEDetect["부작용 감지<br/>위험도 분류"]
+    PROScore["PRO-CTCAE<br/>응답 분석"]
+    NonDose["미복용 감지<br/>사유 분류"]
+    DoseComplete["복약 완료<br/>보고 감지"]
+    MedPattern["일일 복약<br/>패턴 분석"]
+    EdemaDetect["부종 감지<br/>cut off 초과<br/>증상 3일 미만"]
+    EdemaFollow["부종 추적<br/>재측정 후<br/>증상 3일 이상"]
+    InBodyMissing["인바디 미측정<br/>최근 1주 없음"]
+    NutritionOver["영양 성분 초과<br/>환자 cut off 초과"]
+    DietMissing["식이 미입력<br/>취침 전 누락"]
+    PolicyCandidate["알림 정책<br/>후보 생성"]
+    Context["멀티턴 맥락<br/>분석"]
+  end
+
+  subgraph Mediate["중재"]
+    direction TB
+    AskAE["부작용 추가 질문<br/>PRO-CTCAE 유도"]
+    Safety["안전 확인<br/>알림 유지/끄기 선택"]
+    AskReason["현재 상태<br/>미복용 이유 확인"]
+    MarkDose["복약 완료 기록<br/>mark_dose_taken"]
+    SuggestPolicy["알림 정책<br/>변경 제안"]
+    NextDayRetest["알림 정책 변경<br/>다음날 재측정"]
+    ClinicianAlert["의료진 알림<br/>내원 판단 요청"]
+    MeasurePrompt["인바디 측정 유도"]
+    DietFeedback["피드백 텍스트<br/>식이 조절 제안"]
+    DietPrompt["식이 입력 유도"]
+    NaturalReply["최근 맥락 기반<br/>자연어 응답"]
+  end
+
+  subgraph Clinician["의료진 Web App"]
+    direction TB
+    Dashboard["환자 상태<br/>대시보드"]
+    AEReview["부작용 리뷰"]
+    Adherence["복약 순응도<br/>미복용 패턴"]
+    EdemaReview["부종 추적 리뷰<br/>내원 판단"]
+    NutritionReview["식이/영양 리뷰"]
+    PolicyReview["알림 정책<br/>승인 / 수정"]
+    Report["리포트"]
+  end
+
+  Patient --> AppChat
+  Patient --> AppDose
+  Patient --> AppInBody
+  Patient --> AppDiet
+
+  AppChat --> ChatInput
+  AppDose --> DoseEvent
+  AppInBody --> InBodyInput
+  AppInBody --> InBodyRetest
+  AppDiet --> DietInput
+  ChatInput --> ChatDB
+  PROInput --> AEDB
+  DoseEvent --> DoseDB
+  InBodyInput --> InBodyDB
+  InBodyRetest --> InBodyDB
+  DietInput --> DietDB
+  SystemEvent --> AuditDB
+
+  ChatDB --> AEDetect
+  ChatDB --> NonDose
+  ChatDB --> DoseComplete
+  ChatDB --> Context
+  AEDB --> PROScore
+  DoseDB --> NonDose
+  DoseDB --> MedPattern
+  InBodyDB --> EdemaDetect
+  InBodyDB --> EdemaFollow
+  InBodyDB --> InBodyMissing
+  DietDB --> NutritionOver
+  DietDB --> DietMissing
+  AuditDB --> NonDose
+  AuditDB --> InBodyMissing
+  AuditDB --> DietMissing
+  AuditDB --> MedPattern
+  PolicyDB --> PolicyCandidate
+
+  AEDetect --> AskAE
+  AskAE --> PROInput
+  PROScore --> Safety
+  NonDose --> AskReason
+  DoseComplete --> MarkDose
+  MedPattern --> PolicyCandidate
+  PolicyCandidate --> SuggestPolicy
+  EdemaDetect --> NextDayRetest
+  EdemaFollow --> ClinicianAlert
+  InBodyMissing --> MeasurePrompt
+  NutritionOver --> DietFeedback
+  DietMissing --> DietPrompt
+  Context --> NaturalReply
+
+  AskReason --> AppChat
+  MarkDose --> DoseDB
+  Safety --> AppDose
+  SuggestPolicy --> AppDose
+  NextDayRetest --> AppInBody
+  MeasurePrompt --> AppInBody
+  DietFeedback --> AppDiet
+  DietPrompt --> AppDiet
+  NaturalReply --> AppChat
+
+  ClinicianAlert --> Dashboard
+  ClinicianAlert --> EdemaReview
+  AEDB --> AEReview
+  DoseDB --> Adherence
+  NutritionOver --> NutritionReview
+  SuggestPolicy --> PolicyReview
+  AuditDB --> Report
+
+  classDef actorNode fill:#F8FAFC,stroke:#64748B,stroke-width:2px,color:#0F172A,font-size:40px,font-weight:700
+  classDef patientApp fill:#FFE4E6,stroke:#E11D48,stroke-width:2px,color:#881337,font-size:40px,font-weight:700
+  classDef collectNode fill:#E0F2FE,stroke:#0284C7,stroke-width:2px,color:#0C4A6E,font-size:40px,font-weight:700
+  classDef storeNode fill:#FEF3C7,stroke:#D97706,stroke-width:2px,color:#78350F,font-size:40px,font-weight:700
+  classDef analyzeNode fill:#DCFCE7,stroke:#16A34A,stroke-width:2px,color:#14532D,font-size:40px,font-weight:700
+  classDef mediateNode fill:#F3E8FF,stroke:#9333EA,stroke-width:2px,color:#581C87,font-size:40px,font-weight:700
+  classDef clinicianNode fill:#FFEDD5,stroke:#EA580C,stroke-width:2px,color:#7C2D12,font-size:40px,font-weight:700
+
+  class Patient actorNode
+  class AppChat,AppDose,AppInBody,AppDiet patientApp
+  class ChatInput,PROInput,DoseEvent,InBodyInput,InBodyRetest,DietInput,SystemEvent collectNode
+  class ChatDB,AEDB,DoseDB,InBodyDB,DietDB,PolicyDB,AuditDB storeNode
+  class AEDetect,PROScore,NonDose,DoseComplete,MedPattern,EdemaDetect,EdemaFollow,InBodyMissing,NutritionOver,DietMissing,PolicyCandidate,Context analyzeNode
+  class AskAE,Safety,AskReason,MarkDose,SuggestPolicy,NextDayRetest,ClinicianAlert,MeasurePrompt,DietFeedback,DietPrompt,NaturalReply mediateNode
+  class Dashboard,AEReview,Adherence,EdemaReview,NutritionReview,PolicyReview,Report clinicianNode
+
+  style PatientApp fill:#FFF1F2,stroke:#E11D48,stroke-width:3px,color:#881337,font-size:40px,font-weight:bold
+  style Collect fill:#F0F9FF,stroke:#0284C7,stroke-width:3px,color:#0C4A6E,font-size:40px,font-weight:bold
+  style Store fill:#FFFBEB,stroke:#D97706,stroke-width:3px,color:#78350F,font-size:40px,font-weight:bold
+  style Analyze fill:#F0FDF4,stroke:#16A34A,stroke-width:3px,color:#14532D,font-size:40px,font-weight:bold
+  style Mediate fill:#FAF5FF,stroke:#9333EA,stroke-width:3px,color:#581C87,font-size:40px,font-weight:bold
+  style Clinician fill:#FFF7ED,stroke:#EA580C,stroke-width:3px,color:#7C2D12,font-size:40px,font-weight:bold
+  linkStyle default stroke:#64748B,stroke-width:2px

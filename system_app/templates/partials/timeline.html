@@ -1,0 +1,80 @@
+<section id="timeline-panel" class="panel timeline-panel" hx-get="/partials/timeline{% if timeline_date_param %}?timeline_date={{ selected_timeline_date.isoformat() }}{% endif %}" hx-trigger="every 1s" hx-swap="outerHTML">
+  <div class="panel-header">
+    <div>
+      <h2>복약 타임라인</h2>
+      <p class="panel-subtitle">오늘 {{ clock.current_time.strftime("%Y-%m-%d") }}</p>
+    </div>
+    <span class="badge neutral">선택 {{ selected_timeline_date.strftime("%Y-%m-%d") }}</span>
+  </div>
+
+  {% if dose_events %}
+    <div class="timeline">
+      {% for event in dose_events %}
+        <article class="timeline-item status-{{ event.status }}">
+          <div class="timeline-time">
+            <div class="timeline-time-value">{{ event.scheduled_for.strftime("%H:%M") }}</div>
+            <div class="timeline-date">{{ event.scheduled_for.strftime("%Y-%m-%d") }}</div>
+          </div>
+          <div class="timeline-body">
+            <div class="timeline-title">{{ event.medication_name }} / {{ event.slot_label }}</div>
+            {% set display_status = 'taken after' if event.note == 'late_taken_after_miss' else event.status %}
+            {% set status_class = 'taken-after' if event.note == 'late_taken_after_miss' else event.status %}
+            <div class="muted">
+              상태:
+              <span class="dose-status dose-status-{{ status_class }}">{{ display_status }}</span>
+              {% if event.taken_at %} / 기록 시각 {{ event.taken_at.strftime("%H:%M") }}{% endif %}
+            </div>
+            {% if event.note and event.note != 'late_taken_after_miss' %}
+              <div class="muted">{{ event.note }}</div>
+            {% endif %}
+          </div>
+          <form action="/doses/{{ event.id }}/take" method="post" hx-post="/doses/{{ event.id }}/take">
+            <button type="submit" {% if event.status == 'taken' %}disabled{% endif %}>
+              {{ '기록 완료' if event.status == 'taken' else '복용 기록' }}
+            </button>
+          </form>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted">{{ selected_timeline_date.strftime("%Y-%m-%d") }}에 생성된 복약 이벤트가 없습니다. 복약 정보를 등록하거나 시간을 앞으로 진행해보세요.</p>
+  {% endif %}
+
+  <div class="dose-calendar" aria-label="복약 기록 달력">
+    <div class="dose-calendar-header">
+      <strong>{{ timeline_calendar.month_label }}</strong>
+      <span class="muted">날짜를 선택하면 해당 일자의 타임라인을 봅니다.</span>
+    </div>
+    <div class="dose-calendar-grid">
+      {% for label in timeline_calendar.weekday_labels %}
+        <div class="dose-calendar-weekday">{{ label }}</div>
+      {% endfor %}
+      {% for week in timeline_calendar.weeks %}
+        {% for day in week %}
+          <a
+            class="dose-calendar-day {{ day.status_class }}{% if not day.in_month %} outside-month{% endif %}{% if day.is_today %} is-today{% endif %}{% if day.is_selected %} is-selected{% endif %}"
+            href="/?timeline_date={{ day.iso_date }}"
+            hx-get="/partials/timeline?timeline_date={{ day.iso_date }}"
+            hx-target="#timeline-panel"
+            hx-swap="outerHTML"
+            aria-label="{{ day.iso_date }} 복약 기록 보기"
+          >
+            <span class="dose-calendar-number">{{ day.day }}</span>
+            {% if day.counts.total %}
+              <span class="dose-calendar-counts">
+                {% if day.counts.taken %}<span class="calendar-count taken">{{ day.counts.taken }}</span>{% endif %}
+                {% if day.counts.missed %}<span class="calendar-count missed">{{ day.counts.missed }}</span>{% endif %}
+                {% if day.counts.scheduled %}<span class="calendar-count scheduled">{{ day.counts.scheduled }}</span>{% endif %}
+              </span>
+            {% endif %}
+          </a>
+        {% endfor %}
+      {% endfor %}
+    </div>
+    <div class="dose-calendar-legend">
+      <span><i class="calendar-count taken"></i>복용</span>
+      <span><i class="calendar-count missed"></i>미복용</span>
+      <span><i class="calendar-count scheduled"></i>예정</span>
+    </div>
+  </div>
+</section>

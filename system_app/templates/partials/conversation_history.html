@@ -1,0 +1,23 @@
+<div
+  id="conversation-history-region"
+  class="live-section conversation-history-section">
+  <div class="live-header">
+    <h3>대화 이력</h3>
+    <span class="muted">{{ conversation_history_messages|length }}개 기록</span>
+  </div>
+
+  <div class="chat-log conversation-history-log" data-chat-history-scroll-region>
+    {% for message in conversation_history_messages %}
+      <article class="chat-message {{ message.classes }}">
+        <div class="chat-role">
+          <span>{{ message.role_label }}</span>
+          <span class="chat-category">{{ message.category_label }}</span>
+        </div>
+        <div class="chat-content">{{ message.content }}</div>
+        <div class="chat-time">{{ message.time_label }}</div>
+      </article>
+    {% else %}
+      <div class="chat-empty-state">미복용 알림, 정책 확인, 단답 응답 이력이 이곳에 쌓입니다.</div>
+    {% endfor %}
+  </div>
+</div>

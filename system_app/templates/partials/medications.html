@@ -1,0 +1,119 @@
+<section id="medications-panel" class="panel panel-form">
+  <div class="panel-header">
+    <h2>복약 정보 입력</h2>
+    <span class="badge neutral">1인 환자 시뮬레이터</span>
+  </div>
+  <div class="phr-sync-status">
+    <div>
+      <strong>{{ phr_profile.status_label }}</strong>
+      <p class="muted">{{ phr_profile.detail }}</p>
+    </div>
+    <form action="/phr/register" method="post" hx-post="/phr/register">
+      <button type="submit" class="secondary-button">
+        {% if phr_profile.sync_status == 'synced' %}
+          PHR 재동기화
+        {% else %}
+          설정 완료 및 PHR 등록
+        {% endif %}
+      </button>
+    </form>
+  </div>
+
+  {% if phr_profile.sync_status == 'synced' %}
+  <details class="medication-config-detail">
+  {% else %}
+  <details class="medication-config-detail" open>
+  {% endif %}
+    <summary>복약 정보 입력 및 수정</summary>
+    <div class="section-split medication-split">
+    <form class="stack-form" action="/medications" method="post" hx-post="/medications">
+      <label>복약 조합</label>
+      <div class="choice-grid choice-grid-2">
+        {% for option in schedule_preset_options %}
+          <label class="choice-card">
+            <input
+              class="choice-input"
+              type="radio"
+              name="schedule_template"
+              value="{{ option.value }}"
+              {% if loop.first %}checked{% endif %}>
+            <span class="choice-pill">{{ option.label }}</span>
+            <span class="choice-note">{{ option.times_label }}</span>
+          </label>
+        {% endfor %}
+      </div>
+
+      <label>약물명</label>
+      <div class="choice-grid">
+        {% for option in medication_form_options %}
+          <label class="choice-card">
+            <input
+              class="choice-input"
+              type="radio"
+              name="medication_choice"
+              value="{{ option.value }}"
+              {% if option.value == '혈압약' %}checked{% endif %}>
+            <span class="choice-pill">{{ option.label }}</span>
+          </label>
+        {% endfor %}
+      </div>
+      <input name="medication_name_custom" placeholder="직접 입력 선택 시 사용">
+
+      <label>용량</label>
+      <div class="choice-grid">
+        {% for option in dosage_form_options %}
+          <label class="choice-card">
+            <input
+              class="choice-input"
+              type="radio"
+              name="dosage_choice"
+              value="{{ option.value }}"
+              {% if option.value == '1정' %}checked{% endif %}>
+            <span class="choice-pill">{{ option.label }}</span>
+          </label>
+        {% endfor %}
+      </div>
+      <input name="dosage_custom" placeholder="직접 입력 선택 시 사용">
+
+      <label>복약 기간</label>
+      <div class="grid-2">
+        <input type="date" name="start_date" required value="{{ default_medication_start_date.isoformat() }}">
+        <input type="date" name="end_date" required value="{{ default_medication_end_date.isoformat() }}">
+      </div>
+
+      <label>추가 지시</label>
+      <textarea name="instructions" rows="3" placeholder="식후 복용 등"></textarea>
+
+      <button type="submit">복약 일정 추가</button>
+    </form>
+
+    <div class="med-list">
+      <h3>등록된 복약 계획</h3>
+      {% if plans %}
+        {% for plan in plans %}
+          <article class="med-card">
+            <div class="med-card-head">
+              <div class="med-title">{{ plan.medication_name }}</div>
+              <form action="/medications/{{ plan.id }}/delete" method="post" hx-post="/medications/{{ plan.id }}/delete" hx-confirm="'{{ plan.medication_name }}' 복약 계획과 연결된 일정/알림을 삭제할까요?">
+                <button type="submit" class="ghost danger-button compact-button">삭제</button>
+              </form>
+            </div>
+            <div>{{ plan.dosage or '용량 미입력' }}</div>
+            <div class="muted">{{ plan.start_date }} ~ {{ plan.end_date }}</div>
+            <div class="chips">
+              {% for schedule in schedule_map.get(plan.id, []) %}
+                <span class="chip">{{ schedule.slot_label }}</span>
+              {% endfor %}
+            </div>
+            {% if plan.instructions %}
+              <p class="muted">{{ plan.instructions }}</p>
+            {% endif %}
+          </article>
+        {% endfor %}
+      {% else %}
+        <p class="muted">아직 등록된 복약 계획이 없습니다.</p>
+      {% endif %}
+    </div>
+    </div>
+  </details>
+</section>

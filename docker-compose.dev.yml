@@ -1,0 +1,20 @@
+services:
+  phr-app:
+    command: uvicorn phr_app.main:app --host 0.0.0.0 --port 8002 --reload
+    volumes:
+      - .:/app
+
+  agent-app:
+    command: uvicorn agent_app.main:app --host 0.0.0.0 --port 8001 --reload
+    volumes:
+      - .:/app
+
+  agent-worker:
+    command: python -m agent_app.worker_main
+    volumes:
+      - .:/app
+
+  system-app:
+    command: uvicorn system_app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - .:/app

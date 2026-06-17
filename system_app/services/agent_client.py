@@ -1,0 +1,151 @@
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+from pydantic import BaseModel, ValidationError
+
+from shared.schemas import (
+    AgentAsyncAccepted,
+    AgentAsyncClinicianAlertRequest,
+    AgentModelConfig,
+    AgentModelTierRequest,
+    AgentResponse,
+    DailyMedicationPattern,
+    MissedDoseEventPayload,
+    MultiturnChatRequest,
+)
+from shared.settings import get_settings
+
+
+class AgentServiceError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        error_type: str = "agent_service_error",
+        trace_id: str | None = None,
+        agent_name: str | None = None,
+        decision_type: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+        self.error_type = error_type
+        self.trace_id = trace_id
+        self.agent_name = agent_name
+        self.decision_type = decision_type
+
+
+class AgentClient:
+    def __init__(self, base_url: str | None = None) -> None:
+        settings = get_settings()
+        self.base_url = (base_url or settings.agent_base_url).rstrip("/")
+        self.internal_api_token = settings.internal_api_token
+
+    def _headers(self) -> dict[str, str]:
+        if not self.internal_api_token:
+            return {}
+        return {"X-Internal-Api-Token": self.internal_api_token}
+
+    async def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        timeout: float = 60.0,
+    ) -> dict[str, Any]:
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.request(method, f"{self.base_url}{path}", json=payload, headers=self._headers())
+                response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise self._build_service_error(exc.response) from exc
+        except httpx.HTTPError as exc:
+            raise AgentServiceError(
+                "에이전트 서버와 통신하지 못했습니다.",
+                error_type="agent_network_error",
+            ) from exc
+        try:
+            result = response.json()
+        except ValueError as exc:
+            raise AgentServiceError(
+                "에이전트 응답을 JSON으로 해석하지 못했습니다.",
+                status_code=response.status_code,
+                error_type="agent_response_invalid",
+            ) from exc
+        if not isinstance(result, dict):
+            raise AgentServiceError(
+                "에이전트 응답이 JSON 객체가 아닙니다.",
+                status_code=response.status_code,
+                error_type="agent_response_invalid",
+            )
+        return result
+
+    async def _post(self, path: str, payload: dict[str, Any]) -> AgentResponse:
+        data = await self._request_json("POST", path, payload=payload, timeout=60.0)
+        return self._validate_response_model(data, AgentResponse, "에이전트 성공 응답을 해석하지 못했습니다.")
+
+    @staticmethod
+    def _validate_response_model(data: dict[str, Any], model_type: type[BaseModel], error_message: str):
+        try:
+            return model_type.model_validate(data)
+        except ValidationError as exc:
+            raise AgentServiceError(
+                error_message,
+                error_type="agent_response_invalid",
+            ) from exc
+
+    async def get_model_config(self) -> AgentModelConfig:
+        data = await self._request_json("GET", "/agent/model-config", timeout=10.0)
+        return self._validate_response_model(data, AgentModelConfig, "에이전트 모델 설정 응답을 해석하지 못했습니다.")
+
+    async def set_model_tier(self, model_tier: str) -> AgentModelConfig:
+        data = await self._request_json(
+            "POST",
+            "/agent/model-config",
+            payload=AgentModelTierRequest(model_tier=model_tier).model_dump(mode="json"),
+            timeout=10.0,
+        )
+        return self._validate_response_model(data, AgentModelConfig, "에이전트 모델 설정 응답을 해석하지 못했습니다.")
+
+    @staticmethod
+    def _build_service_error(response: httpx.Response) -> AgentServiceError:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+
+        message = payload.get("message") if isinstance(payload, dict) else None
+        if not message:
+            message = f"에이전트 서버가 {response.status_code} 오류를 반환했습니다."
+
+        return AgentServiceError(
+            message,
+            status_code=response.status_code,
+            error_type=payload.get("error_type", "agent_service_error") if isinstance(payload, dict) else "agent_service_error",
+            trace_id=payload.get("trace_id") if isinstance(payload, dict) else None,
+            agent_name=payload.get("agent_name") if isinstance(payload, dict) else None,
+            decision_type=payload.get("decision_type") if isinstance(payload, dict) else None,
+        )
+
+    async def send_multiturn_chat(self, payload: MultiturnChatRequest) -> AgentResponse:
+        return await self._post("/agent/multiturn-chat", payload.model_dump(mode="json"))
+
+    async def send_daily_pattern_async(self, payload: DailyMedicationPattern) -> AgentAsyncAccepted:
+        data = await self._request_json("POST", "/agent/async/daily-patterns", payload=payload.model_dump(mode="json"), timeout=10.0)
+        return self._validate_response_model(data, AgentAsyncAccepted, "에이전트 비동기 접수 응답을 해석하지 못했습니다.")
+
+    async def send_missed_dose_async(self, payload: MissedDoseEventPayload) -> AgentAsyncAccepted:
+        data = await self._request_json("POST", "/agent/async/missed-dose-events", payload=payload.model_dump(mode="json"), timeout=10.0)
+        return self._validate_response_model(data, AgentAsyncAccepted, "에이전트 비동기 접수 응답을 해석하지 못했습니다.")
+
+    async def send_chat_continuation_async(self, payload: MultiturnChatRequest) -> AgentAsyncAccepted:
+        data = await self._request_json("POST", "/agent/async/chat-continuations", payload=payload.model_dump(mode="json"), timeout=10.0)
+        return self._validate_response_model(data, AgentAsyncAccepted, "에이전트 비동기 접수 응답을 해석하지 못했습니다.")
+
+    async def send_clinician_alert_async(self, payload: AgentAsyncClinicianAlertRequest) -> AgentAsyncAccepted:
+        data = await self._request_json("POST", "/agent/async/clinician-alerts", payload=payload.model_dump(mode="json"), timeout=10.0)
+        return self._validate_response_model(data, AgentAsyncAccepted, "에이전트 비동기 접수 응답을 해석하지 못했습니다.")
