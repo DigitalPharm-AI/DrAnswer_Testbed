@@ -9,7 +9,7 @@ from agent_app import trace_logging
 from agent_app.ae_pro_ctcae import match_pro_ctcae_symptom
 from agent_app.payload_context import context_value
 from agent_app.tool_catalog import ToolCatalog
-from agent_app.tool_permissions import permission_denied_result, validate_tool_permission
+from agent_app.tool_permissions import allowed_tool_names_for_source, permission_denied_result, validate_tool_permission
 from agent_app.tool_policy import DEFERRED_POLICY_TOOL_NAMES, deferred_policy_tool_result
 from agent_app.tool_protocol import (
     ALLOWED_TOOL_NAMES,
@@ -20,10 +20,12 @@ from agent_app.tool_protocol import (
     mcp_success_response,
     mcp_tools_list,
 )
+from shared.redaction import redacted_clinical_text_label, safe_exception_summary
 from shared.schemas import (
     AEProCtcaeAssessmentRequest,
     DoseTakenToolRequest,
     DoseTakenToolResult,
+    NutritionPreferenceFactRequest,
     SideEffectAssessmentRequest,
     SideEffectAssessmentResult,
     ToolCallResult,
@@ -51,7 +53,7 @@ class AgentMcpToolServer:
         method = str(request["method"])
         params = request.get("params") if isinstance(request.get("params"), dict) else {}
         if method == MCP_METHOD_TOOLS_LIST:
-            return mcp_success_response(request_id, self.tools_list())
+            return mcp_success_response(request_id, self.tools_list(source_event_type=source_event_type))
         if method == MCP_METHOD_TOOLS_CALL:
             return mcp_success_response(
                 request_id,
@@ -59,8 +61,10 @@ class AgentMcpToolServer:
             )
         return mcp_error_response(request_id, JSON_RPC_METHOD_NOT_FOUND, f"method_not_found:{method}")
 
-    def tools_list(self) -> dict[str, Any]:
-        return mcp_tools_list(ToolCatalog.available_tools_payload())
+    def tools_list(self, *, source_event_type: str = "mcp") -> dict[str, Any]:
+        allowed = allowed_tool_names_for_source(source_event_type)
+        tools = ToolCatalog.tools_for(*sorted(allowed))
+        return mcp_tools_list(tools, source_event_type=source_event_type, allowed_tool_names=sorted(allowed))
 
     async def tools_call(self, params: dict[str, Any], *, trace_id: str, source_event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         tool_name = str(params.get("name") or "")
@@ -75,11 +79,18 @@ class AgentMcpToolServer:
         )
         try:
             result = await self._execute_tool_result(tool_name, arguments, trace_id=trace_id, source_event_type=source_event_type, payload=payload)
+        except httpx.HTTPStatusError as exc:
+            result = http_status_tool_error_result(
+                exc,
+                tool_name=tool_name or "unknown",
+                trace_id=trace_id,
+                elapsed_ms=round((perf_counter() - started) * 1000),
+            )
         except Exception as exc:
             result = ToolCallResult(
                 tool_name=tool_name or "unknown",
                 status="error",
-                error=f"{type(exc).__name__}: {exc}",
+                error=safe_exception_summary(exc),
                 idempotency_key=f"{trace_id}:{tool_name}",
                 response={"elapsed_ms": round((perf_counter() - started) * 1000)},
             )
@@ -124,6 +135,18 @@ class AgentMcpToolServer:
             return deferred_policy_tool_result({"name": tool_name, "arguments": arguments}, trace_id=trace_id, source_event_type=source_event_type)
         if tool_name == "mark_dose_taken":
             return await self._mark_dose_taken(arguments, trace_id=trace_id, source_event_type=source_event_type)
+        if tool_name == "search_food_nutrition":
+            return await self._search_food_nutrition(arguments, trace_id=trace_id, payload=payload)
+        if tool_name == "record_meal":
+            return await self._record_meal(arguments, trace_id=trace_id, payload=payload)
+        if tool_name == "list_meals":
+            return await self._list_meals(arguments, trace_id=trace_id, payload=payload)
+        if tool_name == "get_daily_nutrition_summary":
+            return await self._get_daily_nutrition_summary(arguments, trace_id=trace_id, payload=payload)
+        if tool_name == "record_nutrition_preference":
+            return await self._record_nutrition_preference(arguments, trace_id=trace_id, payload=payload)
+        if tool_name == "get_nutrition_preferences":
+            return await self._get_nutrition_preferences(arguments, trace_id=trace_id, payload=payload)
         if tool_name == "lookup_side_effect_info":
             return await self._lookup_side_effect_info(arguments, trace_id=trace_id, payload=payload)
         if tool_name == "AE_pro_ctcae":
@@ -140,7 +163,7 @@ class AgentMcpToolServer:
         payload["source_trace_id"] = trace_id
         payload["source_event_type"] = source_event_type
         request = DoseTakenToolRequest.model_validate(payload)
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
             response = await client.post(
                 f"{self.system_base_url}/api/agent/dose-events/mark-taken",
                 json=request.model_dump(mode="json"),
@@ -153,6 +176,140 @@ class AgentMcpToolServer:
             status="success" if result.status == "taken" else "error",
             response=result.model_dump(mode="json"),
             idempotency_key=f"{trace_id}:mark_dose_taken:{source_event_type}:{request.dose_event_id}",
+        )
+
+    async def _search_food_nutrition(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
+        request_payload = {
+            "query": arguments.get("query", ""),
+            "limit": arguments.get("limit", 10),
+            "patient_id": arguments.get("patient_id") or payload.get("patient_id"),
+        }
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
+            response = await client.post(
+                f"{self.system_base_url}/api/agent/nutrition/food/search",
+                json=request_payload,
+                headers=self._internal_headers(),
+            )
+            response.raise_for_status()
+        payload = response.json()
+        return ToolCallResult(
+            tool_name="search_food_nutrition",
+            status="success" if payload.get("success") else "error",
+            response=payload,
+            error=safe_tool_error(payload.get("error")),
+            idempotency_key=f"{trace_id}:search_food_nutrition",
+        )
+
+    async def _record_meal(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
+        request_payload = {
+            **arguments,
+            "patient_id": arguments.get("patient_id") or payload.get("patient_id"),
+        }
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
+            response = await client.post(
+                f"{self.system_base_url}/api/agent/nutrition/meals",
+                json=request_payload,
+                headers=self._internal_headers(),
+            )
+            response.raise_for_status()
+        result = response.json()
+        return ToolCallResult(
+            tool_name="record_meal",
+            status="success" if result.get("success") else "error",
+            response=result,
+            error=safe_tool_error(result.get("error")),
+            idempotency_key=f"{trace_id}:record_meal:{result.get('meal', {}).get('id', 'unknown')}",
+        )
+
+    async def _list_meals(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
+        params = {}
+        patient_id = arguments.get("patient_id") or payload.get("patient_id")
+        if patient_id:
+            params["patient_id"] = patient_id
+        if arguments.get("meal_date"):
+            params["meal_date"] = arguments["meal_date"]
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
+            response = await client.get(
+                f"{self.system_base_url}/api/agent/nutrition/meals",
+                params=params,
+                headers=self._internal_headers(),
+            )
+            response.raise_for_status()
+        result = response.json()
+        return ToolCallResult(
+            tool_name="list_meals",
+            status="success" if result.get("success") else "error",
+            response=result,
+            error=safe_tool_error(result.get("error")),
+            idempotency_key=f"{trace_id}:list_meals",
+        )
+
+    async def _get_daily_nutrition_summary(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
+        params = {}
+        patient_id = arguments.get("patient_id") or payload.get("patient_id")
+        if patient_id:
+            params["patient_id"] = patient_id
+        if arguments.get("meal_date"):
+            params["meal_date"] = arguments["meal_date"]
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
+            response = await client.get(
+                f"{self.system_base_url}/api/agent/nutrition/daily-summary",
+                params=params,
+                headers=self._internal_headers(),
+            )
+            response.raise_for_status()
+        result = response.json()
+        return ToolCallResult(
+            tool_name="get_daily_nutrition_summary",
+            status="success" if result.get("success") else "error",
+            response=result,
+            error=safe_tool_error(result.get("error")),
+            idempotency_key=f"{trace_id}:get_daily_nutrition_summary",
+        )
+
+    async def _record_nutrition_preference(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
+        request_payload = {
+            **arguments,
+            "patient_id": arguments.get("patient_id") or payload.get("patient_id"),
+            "source_trace_id": arguments.get("source_trace_id") or trace_id,
+        }
+        request = NutritionPreferenceFactRequest.model_validate(request_payload)
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
+            response = await client.post(
+                f"{self.system_base_url}/api/agent/nutrition/preferences/facts",
+                json=request.model_dump(mode="json"),
+                headers=self._internal_headers(),
+            )
+            response.raise_for_status()
+        result = response.json()
+        fact = result.get("fact") if isinstance(result.get("fact"), dict) else {}
+        return ToolCallResult(
+            tool_name="record_nutrition_preference",
+            status="success" if result.get("success") else "error",
+            response=result,
+            error=safe_tool_error(result.get("error")),
+            idempotency_key=f"{trace_id}:record_nutrition_preference:{fact.get('predicate', 'unknown')}:{fact.get('object_key', 'unknown')}",
+        )
+
+    async def _get_nutrition_preferences(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
+        params = {}
+        patient_id = arguments.get("patient_id") or payload.get("patient_id")
+        if patient_id:
+            params["patient_id"] = patient_id
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
+            response = await client.get(
+                f"{self.system_base_url}/api/agent/nutrition/preferences",
+                params=params,
+                headers=self._internal_headers(),
+            )
+            response.raise_for_status()
+        result = response.json()
+        return ToolCallResult(
+            tool_name="get_nutrition_preferences",
+            status="success" if result.get("success") else "error",
+            response=result,
+            error=safe_tool_error(result.get("error")),
+            idempotency_key=f"{trace_id}:get_nutrition_preferences",
         )
 
     async def _lookup_side_effect_info(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
@@ -171,7 +328,7 @@ class AgentMcpToolServer:
                 idempotency_key=f"{trace_id}:lookup_side_effect_info",
             )
         request = SideEffectAssessmentRequest.model_validate(request_payload)
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
             response = await client.post(f"{self.phr_base_url}/phr/side-effects/assess", json=request.model_dump(mode="json"))
             response.raise_for_status()
         result = SideEffectAssessmentResult.model_validate(response.json())
@@ -192,3 +349,44 @@ class AgentMcpToolServer:
             response=result.model_dump(mode="json"),
             idempotency_key=f"{trace_id}:AE_pro_ctcae",
         )
+
+
+def safe_tool_error(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= 80 and all(char.isascii() and (char.isalnum() or char in "_:-.") for char in text):
+        return text
+    return redacted_clinical_text_label(text, key="error")
+
+
+def http_status_tool_error_result(
+    exc: httpx.HTTPStatusError,
+    *,
+    tool_name: str,
+    trace_id: str,
+    elapsed_ms: int,
+) -> ToolCallResult:
+    detail = _http_error_detail(exc.response)
+    error_code = safe_tool_error(detail or f"http_status_{exc.response.status_code}")
+    return ToolCallResult(
+        tool_name=tool_name or "unknown",
+        status="error",
+        error=error_code,
+        response={
+            "status_code": exc.response.status_code,
+            "detail": error_code,
+            "elapsed_ms": elapsed_ms,
+        },
+        idempotency_key=f"{trace_id}:{tool_name or 'unknown'}",
+    )
+
+
+def _http_error_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return ""
+    if isinstance(payload, dict) and isinstance(payload.get("detail"), str):
+        return payload["detail"]
+    return ""

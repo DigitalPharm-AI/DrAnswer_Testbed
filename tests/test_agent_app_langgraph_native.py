@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import httpx
 from fastapi.testclient import TestClient
 
 import agent_app.main as native_agent_main
@@ -17,7 +18,9 @@ from agent_app.providers import BaseLLMProvider, RuleBasedProvider
 from agent_app.response_builders import missed_dose_hybrid_payload
 from agent_app.tool_catalog import ToolCatalog
 from agent_app.tool_executor import McpAgentToolExecutor
-from agent_app.tool_policy import _notification_policy_deltas
+from agent_app.tool_policy import _notification_policy_deltas, deferred_policy_tool_result, is_deferred_policy_tool_call
+from agent_app.tool_permissions import permission_denied_result, validate_tool_permission
+from agent_app.tool_mcp_server import http_status_tool_error_result
 from agent_app.tool_protocol import (
     MCP_METHOD_TOOLS_CALL,
     MCP_METHOD_TOOLS_LIST,
@@ -27,7 +30,7 @@ from agent_app.tool_protocol import (
     tool_result_from_mcp_result,
 )
 from agent_app.tool_side_effects import ae_tool_call_from_lookup
-from shared.schemas import DailyMedicationPattern, DosePatternEvent, MissedDoseEventPayload, MultiturnChatRequest, SlotAdherenceSummary, ToolCallResult
+from shared.schemas import AgentCallbackContext, DailyMedicationPattern, DosePatternEvent, MissedDoseEventPayload, MultiturnChatRequest, SlotAdherenceSummary, ToolCallResult
 from shared.settings import get_settings
 
 
@@ -135,8 +138,13 @@ class NativeFakeToolExecutor:
         self.calls: list[dict[str, Any]] = []
 
     async def execute_tool_call(self, tool_call: dict[str, Any], *, trace_id: str, source_event_type: str, payload: dict[str, Any]) -> ToolCallResult:
-        self.calls.append(tool_call)
         name = str(tool_call.get("name"))
+        denial_reason = validate_tool_permission(tool_call, source_event_type=source_event_type, payload=payload)
+        if denial_reason:
+            return permission_denied_result(tool_call, trace_id=trace_id, source_event_type=source_event_type, reason=denial_reason)
+        if is_deferred_policy_tool_call(tool_call):
+            return deferred_policy_tool_result(tool_call, trace_id=trace_id, source_event_type=source_event_type)
+        self.calls.append(tool_call)
         if name == "mark_dose_taken":
             return ToolCallResult(
                 tool_name=name,
@@ -442,6 +450,44 @@ def test_tool_result_round_trips_through_mcp_shape():
     assert restored == result
 
 
+def test_http_status_tool_error_preserves_public_detail_code_and_redacts_private_detail():
+    public_response = httpx.Response(
+        422,
+        json={"detail": "invalid_date_format"},
+        request=httpx.Request("POST", "http://system.test/api/agent/nutrition/meals"),
+    )
+    private_response = httpx.Response(
+        422,
+        json={"detail": "pytest private detail peanut allergy token=secret-value"},
+        request=httpx.Request("POST", "http://system.test/api/agent/nutrition/meals"),
+    )
+
+    public_result = http_status_tool_error_result(
+        httpx.HTTPStatusError("unprocessable", request=public_response.request, response=public_response),
+        tool_name="record_meal",
+        trace_id="trace-http-public",
+        elapsed_ms=7,
+    )
+    private_result = http_status_tool_error_result(
+        httpx.HTTPStatusError("unprocessable", request=private_response.request, response=private_response),
+        tool_name="record_meal",
+        trace_id="trace-http-private",
+        elapsed_ms=9,
+    )
+    public_mcp = mcp_result_from_tool_result(public_result)
+    private_mcp = mcp_result_from_tool_result(private_result)
+    rendered_private = json.dumps(private_mcp, ensure_ascii=False)
+
+    assert public_result.status == "error"
+    assert public_result.error == "invalid_date_format"
+    assert public_result.response["status_code"] == 422
+    assert public_mcp["structuredContent"]["error"] == "invalid_date_format"
+    assert public_mcp["structuredContent"]["response"]["detail"]["type"] == "clinical_text"
+    assert private_result.error.startswith("clinical text redacted")
+    assert "pytest private detail" not in rendered_private
+    assert "secret-value" not in rendered_private
+
+
 def test_mcp_agent_tool_executor_calls_tools_call_json_rpc():
     server = RecordingMcpServer()
     executor = McpAgentToolExecutor(server=server)
@@ -463,7 +509,7 @@ def test_mcp_agent_tool_executor_calls_tools_call_json_rpc():
     assert server.requests[0]["source_event_type"] == "multiturn_chat"
 
 
-def test_agent_app_mcp_tools_list_endpoint_reports_catalog():
+def test_agent_app_mcp_tools_list_endpoint_reports_context_allowed_catalog():
     request = mcp_json_rpc_request(MCP_METHOD_TOOLS_LIST, request_id="tools-list")
 
     response = TestClient(native_agent_main.app).post("/agent/mcp", json=request, headers=internal_auth_headers())
@@ -473,7 +519,36 @@ def test_agent_app_mcp_tools_list_endpoint_reports_catalog():
     assert payload["jsonrpc"] == "2.0"
     assert payload["id"] == "tools-list"
     tool_names = {tool["name"] for tool in payload["result"]["tools"]}
-    assert {"mark_dose_taken", "lookup_side_effect_info", "AE_pro_ctcae"}.issubset(tool_names)
+    assert payload["result"]["source_event_type"] == "mcp"
+    assert {
+        "AE_pro_ctcae",
+        "search_food_nutrition",
+        "record_meal",
+        "list_meals",
+        "get_daily_nutrition_summary",
+        "record_nutrition_preference",
+        "get_nutrition_preferences",
+    } <= tool_names
+    assert "mark_dose_taken" not in tool_names
+    assert "lookup_side_effect_info" not in tool_names
+    assert "apply_notification_policy" not in tool_names
+
+    context_request = mcp_json_rpc_request(
+        MCP_METHOD_TOOLS_LIST,
+        {"_meta": {"source_event_type": "multiturn_chat"}},
+        request_id="tools-list-multiturn",
+    )
+    context_response = TestClient(native_agent_main.app).post("/agent/mcp", json=context_request, headers=internal_auth_headers())
+
+    assert context_response.status_code == 200
+    context_payload = context_response.json()
+    assert context_payload["result"]["source_event_type"] == "multiturn_chat"
+    context_tools = {tool["name"]: tool for tool in context_payload["result"]["tools"]}
+    assert {"mark_dose_taken", "lookup_side_effect_info", "apply_notification_policy", "apply_system_policy"} <= set(context_tools)
+    policy_meta = context_tools["apply_notification_policy"]["_meta"]
+    assert policy_meta["execution_mode"] == "deferred_confirmation"
+    assert policy_meta["requires_human_handoff"] is True
+    assert policy_meta["handoff_gate"] == "high_risk_policy_change"
 
 
 def test_agent_app_mcp_direct_call_enforces_default_tool_allowlist():
@@ -495,6 +570,62 @@ def test_agent_app_mcp_direct_call_enforces_default_tool_allowlist():
     assert result["structuredContent"]["response"]["source_event_type"] == "mcp"
 
 
+def test_agent_app_mcp_allows_nutrition_tools():
+    denial = validate_tool_permission(
+        {
+            "name": "record_meal",
+            "arguments": {
+                "meal_type": "lunch",
+                "foods": [{"food_name": "짜장면", "nutrients": {"sodium": 1200}}],
+            },
+        },
+        source_event_type="mcp",
+        payload={},
+    )
+
+    assert denial is None
+
+    preference_denial = validate_tool_permission(
+        {
+            "name": "record_nutrition_preference",
+            "arguments": {"predicate": "dislikes", "object_label": "짜장면"},
+        },
+        source_event_type="mcp",
+        payload={},
+    )
+
+    assert preference_denial is None
+
+
+def test_rule_based_provider_splits_explicit_nutrition_preferences_by_entity():
+    result = asyncio.run(
+        RuleBasedProvider().generate_json(
+            "",
+            {
+                "response_mode": "multiturn_chat",
+                "message": "나는 짜장면 싫어하고 땅콩 알레르기가 있어",
+            },
+        )
+    )
+
+    calls = result["tool_calls"]
+    by_label = {call["arguments"]["object_label"]: call["arguments"]["predicate"] for call in calls}
+
+    assert by_label["짜장면"] == "dislikes"
+    assert by_label["땅콩"] == "allergic_to"
+
+
+def test_async_request_id_prefers_conversation_id_over_reset_prone_job_id():
+    context = AgentCallbackContext(
+        app_base_url="http://system",
+        notification_id=3,
+        job_id=1,
+        conversation_id="missed-dose-1-abc123",
+    )
+
+    assert native_agent_main._request_id("missed_dose", context) == "missed_dose:conversation:missed-dose-1-abc123"
+
+
 def test_agent_app_daily_pattern_endpoint_is_system_compatible(monkeypatch):
     provider = NativeFakeProvider()
     tool_executor = NativeFakeToolExecutor()
@@ -509,6 +640,8 @@ def test_agent_app_daily_pattern_endpoint_is_system_compatible(monkeypatch):
     assert payload["structured_payload"]["policy_confirmation_required"] is True
     assert payload["structured_payload"]["tool_results"][0]["tool_name"] == "apply_notification_policy"
     assert payload["structured_payload"]["tool_results"][0]["status"] == "skipped"
+    assert payload["structured_payload"]["tool_results"][0]["response"]["human_handoff_required"] is True
+    assert payload["structured_payload"]["tool_results"][0]["response"]["handoff_gate"] == "high_risk_policy_change"
     assert tool_executor.calls == []
 
 
@@ -739,6 +872,25 @@ def test_rule_based_provider_returns_general_chat_when_no_tool_needed():
     assert "tool_call" not in chat_output
     assert "속이 메스꺼운데 약때문일까?" in chat_output["advice"]
     assert "1번 문항: 자주 있다" in chat_output["advice"]
+
+
+def test_rule_based_provider_answers_nutrition_and_medication_chat_together():
+    provider = RuleBasedProvider()
+    request = MultiturnChatRequest(
+        patient_id="demo-patient",
+        event_type="multiturn_chat",
+        message="오늘 점심이 짰고 당 수치가 걱정돼요. 복약과 저녁 식사를 같이 조정해줘.",
+        current_time=datetime(2026, 4, 20, 9, 35),
+        context={"nutrition": {"today_summary": {"status": "exceeded"}}},
+    )
+
+    chat_output = asyncio.run(provider.generate_json("", request.model_dump(mode="json") | {"response_mode": "multiturn_chat"}))
+
+    assert "tool_call" not in chat_output
+    assert "tool_calls" not in chat_output
+    assert "영양과 복약" in chat_output["advice"]
+    assert "저녁" in chat_output["advice"]
+    assert "처방된 복약 시간" in chat_output["advice"]
 
 
 def test_notification_policy_deltas_fill_daily_pattern_source():

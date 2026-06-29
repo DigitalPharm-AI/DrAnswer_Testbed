@@ -58,7 +58,7 @@ class AgentClient:
         timeout: float = 60.0,
     ) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
                 response = await client.request(method, f"{self.base_url}{path}", json=payload, headers=self._headers())
                 response.raise_for_status()
         except httpx.HTTPStatusError as exc:

@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session
 
 from agent_app.models import AgentAsyncTask
 from shared.json_utils import dump_json, parse_json_object
+from shared.redaction import redact_for_logging, redact_inline_secrets
 from shared.settings import get_settings
+from shared.time_utils import utc_now
 
 PENDING = "pending"
 RUNNING = "running"
@@ -33,7 +35,7 @@ def enqueue_async_task(
     existing = session.scalar(select(AgentAsyncTask).where(AgentAsyncTask.request_id == request_id))
     if existing is not None:
         return existing, False
-    accepted_at = datetime.utcnow()
+    accepted_at = utc_now()
     task = AgentAsyncTask(
         request_id=request_id,
         task_type=task_type,
@@ -55,7 +57,7 @@ def claim_next_async_task(
     worker_id: str = "",
     visibility_timeout_seconds: int | None = None,
 ) -> AgentAsyncTask | None:
-    now = datetime.utcnow()
+    now = utc_now()
     _mark_exhausted_stale_running_tasks(session, now)
     query = (
         select(AgentAsyncTask)
@@ -102,7 +104,7 @@ def mark_callback_sent(session: Session, task_id: int) -> None:
     if task is None:
         return
     task.status = CALLBACK_SENT
-    task.locked_until = datetime.utcnow() + timedelta(seconds=60)
+    task.locked_until = utc_now() + timedelta(seconds=60)
     session.flush()
 
 
@@ -111,7 +113,7 @@ def mark_async_task_done(session: Session, task_id: int) -> None:
     if task is None:
         return
     task.status = DONE
-    task.completed_at = datetime.utcnow()
+    task.completed_at = utc_now()
     task.last_error = ""
     task.locked_by = ""
     task.locked_until = None
@@ -123,7 +125,7 @@ def mark_async_task_failed(session: Session, task_id: int, message: str) -> tupl
     task = session.get(AgentAsyncTask, task_id)
     if task is None:
         return None, False
-    now = datetime.utcnow()
+    now = utc_now()
     task.last_error = message
     task.locked_by = ""
     task.locked_until = None
@@ -142,7 +144,7 @@ def mark_async_task_failed(session: Session, task_id: int, message: str) -> tupl
 
 def reset_running_async_tasks(session: Session) -> int:
     tasks = session.scalars(select(AgentAsyncTask).where(AgentAsyncTask.status.in_([RUNNING, CALLBACK_SENT]))).all()
-    now = datetime.utcnow()
+    now = utc_now()
     for task in tasks:
         task.status = PENDING
         task.last_error = "서버 재시작 후 대기 상태로 복구되었습니다."
@@ -152,6 +154,31 @@ def reset_running_async_tasks(session: Session) -> int:
         task.run_after = now
     session.flush()
     return len(tasks)
+
+
+def retry_dead_async_task(session: Session, task: AgentAsyncTask, *, reason: str = "") -> AgentAsyncTask:
+    now = utc_now()
+    task.status = PENDING
+    task.attempts = 0
+    task.started_at = None
+    task.completed_at = None
+    task.locked_by = ""
+    task.locked_until = None
+    task.run_after = now
+    task.last_error = _operator_action_message("operator_retry_requested", reason)
+    session.flush()
+    return task
+
+
+def dismiss_dead_async_task(session: Session, task: AgentAsyncTask, *, reason: str = "") -> AgentAsyncTask:
+    task.status = FAILED
+    task.completed_at = utc_now()
+    task.locked_by = ""
+    task.locked_until = None
+    task.run_after = None
+    task.last_error = _operator_action_message("operator_dismissed", reason)
+    session.flush()
+    return task
 
 
 def task_payload(task: AgentAsyncTask) -> dict[str, Any]:
@@ -177,8 +204,9 @@ def async_task_by_request_id(session: Session, request_id: str) -> AgentAsyncTas
 
 
 def async_task_observability_payload(task: AgentAsyncTask) -> dict[str, Any]:
-    now = datetime.utcnow()
+    now = utc_now()
     payload_keys, payload_parse_error = _safe_payload_keys(task)
+    runtime_reference = task.completed_at if task.completed_at is not None else now
     return {
         "id": task.id,
         "request_id": task.request_id,
@@ -186,9 +214,9 @@ def async_task_observability_payload(task: AgentAsyncTask) -> dict[str, Any]:
         "status": task.status,
         "attempts": task.attempts,
         "max_attempts": task.max_attempts,
-        "last_error": task.last_error,
+        "last_error": redact_inline_secrets(task.last_error or ""),
         "age_seconds": _seconds_since(task.accepted_at, now),
-        "runtime_seconds": _seconds_since(task.started_at, now),
+        "runtime_seconds": _seconds_elapsed(task.started_at, runtime_reference),
         "next_retry_in_seconds": _seconds_until(task.run_after, now),
         "is_locked": task.locked_until is not None and task.locked_until > now,
         "is_retry_due": task.run_after is None or task.run_after <= now,
@@ -200,7 +228,7 @@ def async_task_observability_payload(task: AgentAsyncTask) -> dict[str, Any]:
         "locked_until": _isoformat(task.locked_until),
         "payload_keys": payload_keys,
         "payload_parse_error": payload_parse_error,
-        "callback_context": task_callback_context(task),
+        "callback_context": redact_for_logging(task_callback_context(task)),
     }
 
 
@@ -230,6 +258,12 @@ def _seconds_since(value: datetime | None, now: datetime) -> int | None:
     return max(0, int((now - value).total_seconds()))
 
 
+def _seconds_elapsed(start: datetime | None, end: datetime | None) -> int | None:
+    if start is None or end is None:
+        return None
+    return max(0, int((end - start).total_seconds()))
+
+
 def _seconds_until(value: datetime | None, now: datetime) -> int | None:
     if value is None:
         return None
@@ -242,6 +276,13 @@ def _safe_payload_keys(task: AgentAsyncTask) -> tuple[list[str], bool]:
     except Exception:
         return [], True
     return sorted(str(key) for key in payload.keys()), False
+
+
+def _operator_action_message(action: str, reason: str) -> str:
+    safe_reason = redact_inline_secrets(reason.strip())
+    if not safe_reason:
+        return action
+    return f"{action}: {safe_reason}"
 
 
 def _mark_exhausted_stale_running_tasks(session: Session, now: datetime) -> None:

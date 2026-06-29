@@ -19,8 +19,10 @@ from system_app.services.agent_client import AgentServiceError
 from system_app.services.agent_error_service import present_agent_error
 from system_app.services.agent_jobs import PENDING, RUNNING, deserialize_agent_job_payload, mark_agent_job_done, mark_agent_job_failed
 from system_app.services.agent_response_service import maybe_apply_policy_response, persist_agent_summary, tool_results_have_error
-from system_app.services.audit_service import record_agent_audit
+from system_app.services.agent_trace_store import record_agent_run_failure, upsert_agent_run_trace
+from system_app.services.audit_service import create_agent_decision_audit, record_agent_audit
 from system_app.services.clock_service import ensure_clock
+from system_app.services.failure_copy import copy_for_async_task
 from system_app.services.notification_service import create_notification
 from system_app.services.system_request_service import apply_system_event_response, mark_system_event_request_failed
 from system_app.services.workers import mark_awaiting_conversation_alert_failed
@@ -55,16 +57,27 @@ def process_async_job_result_callback(session: Session, payload: AgentAsyncJobRe
         persist_agent_summary(session, payload.response, category="pattern_analysis")
         _applied, result_message = maybe_apply_policy_response(session, payload.response, "daily_pattern")
         if tool_results_have_error(payload.response):
+            failure_copy = copy_for_async_task("daily_pattern")
             mark_agent_job_failed(session, job.id, result_message or payload.response.human_summary or "일일 패턴 분석 결과를 적용하지 못했습니다.")
             present_agent_error(
                 session,
                 "daily_pattern",
                 RuntimeError(result_message or payload.response.human_summary or "agent tool failed"),
-                user_message="AI 일일 패턴 분석 결과를 적용하지 못했습니다. 오류 알림에서 다시 시도할 수 있습니다.",
+                user_message=failure_copy.body,
                 metadata={"agent_job_id": job.id, "trace_id": payload.response.trace_id},
             )
         else:
             mark_agent_job_done(session, job.id)
+    upsert_agent_run_trace(
+        session,
+        payload.response,
+        workflow_name=payload.task_type,
+        source_event_type="agent_async_job_result",
+        status="completed",
+        request_id=payload.request_id,
+        job_id=job.id,
+        related_dose_event_id=payload.related_dose_event_id,
+    )
     _record_idempotency(session, payload.idempotency_key, "agent_async_job_result", {"job_id": job.id}, payload.response.human_summary)
     session.commit()
     return {"status": "ok", "request_id": payload.request_id, "job_id": job.id}
@@ -78,6 +91,15 @@ def process_async_chat_result_callback(session: Session, payload: AgentAsyncChat
         _mark_async_continuation_status(session, payload.notification_id, "done")
     else:
         persist_agent_summary(session, payload.response, category="multiturn_chat")
+        upsert_agent_run_trace(
+            session,
+            payload.response,
+            workflow_name=payload.event_type,
+            source_event_type="agent_async_chat_result",
+            status="completed",
+            request_id=payload.request_id,
+            request_message=payload.message,
+        )
     _record_idempotency(session, payload.idempotency_key, "agent_async_chat_result", {"notification_id": payload.notification_id}, payload.response.human_summary)
     session.commit()
     return {"status": "ok", "request_id": payload.request_id, "notification_id": payload.notification_id}
@@ -94,6 +116,14 @@ def process_async_policy_change_callback(session: Session, payload: AgentAsyncPo
         _mark_async_continuation_status(session, payload.notification_id, "done")
     else:
         maybe_apply_policy_response(session, payload.response, payload.source_event_type)
+        upsert_agent_run_trace(
+            session,
+            payload.response,
+            workflow_name=payload.source_event_type,
+            source_event_type="agent_async_policy_change",
+            status="completed",
+            request_id=payload.request_id,
+        )
     _record_idempotency(session, payload.idempotency_key, "agent_async_policy_change", {"notification_id": payload.notification_id}, payload.response.human_summary)
     session.commit()
     return {"status": "ok", "request_id": payload.request_id, "notification_id": payload.notification_id}
@@ -179,6 +209,7 @@ def process_async_failure_callback(session: Session, payload: AgentAsyncFailureR
         return {"status": "duplicate", "request_id": payload.request_id}
     job = _resolve_job(session, payload.job_id, payload.request_id)
     error = AgentAsyncCallbackError(payload)
+    failure_copy = copy_for_async_task(payload.task_type, error_type=payload.error_type)
     if job is not None:
         mark_agent_job_failed(session, job.id, payload.message)
         mark_awaiting_conversation_alert_failed(session, payload.task_type, payload.related_dose_event_id or job.related_dose_event_id, job.id, error)
@@ -186,7 +217,7 @@ def process_async_failure_callback(session: Session, payload: AgentAsyncFailureR
             session,
             payload.task_type,
             error,
-            user_message="백그라운드 AI 작업을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.",
+            user_message=failure_copy.body,
             related_dose_event_id=payload.related_dose_event_id or job.related_dose_event_id,
             metadata={"agent_job_id": job.id, "request_id": payload.request_id},
         )
@@ -198,10 +229,23 @@ def process_async_failure_callback(session: Session, payload: AgentAsyncFailureR
             session,
             payload.task_type,
             error,
-            user_message="비동기 AI 작업을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.",
+            user_message=failure_copy.body,
             related_dose_event_id=payload.related_dose_event_id,
             metadata={"request_id": payload.request_id},
         )
+    record_agent_run_failure(
+        session,
+        trace_id=payload.trace_id,
+        workflow_name=payload.task_type,
+        source_event_type="agent_async_failure",
+        request_id=payload.request_id,
+        agent_name=payload.agent_name,
+        decision_type=payload.decision_type,
+        error_message=payload.message,
+        job_id=job.id if job is not None else payload.job_id,
+        notification_id=payload.notification_id,
+        related_dose_event_id=payload.related_dose_event_id,
+    )
     _record_idempotency(session, payload.idempotency_key, "agent_async_failure", {"job_id": job.id if job is not None else None}, payload.message)
     session.commit()
     return {"status": "ok", "request_id": payload.request_id, "job_id": job.id if job is not None else None}
@@ -239,18 +283,17 @@ def _record_idempotency(
 ) -> None:
     if not idempotency_key:
         return
-    session.add(
-        AgentDecisionAudit(
-            trace_id=idempotency_key,
-            agent_name="agent_async_callback",
-            prompt_version_id="n/a",
-            decision_type=source_event_type,
-            structured_payload=dump_json(payload),
-            human_summary=summary,
-            applied=True,
-            error_message="",
-            source_event_type=source_event_type,
-        )
+    create_agent_decision_audit(
+        session,
+        trace_id=idempotency_key,
+        agent_name="agent_async_callback",
+        prompt_version_id="n/a",
+        decision_type=source_event_type,
+        structured_payload=payload,
+        human_summary=summary,
+        applied=True,
+        error_message="",
+        source_event_type=source_event_type,
     )
 
 

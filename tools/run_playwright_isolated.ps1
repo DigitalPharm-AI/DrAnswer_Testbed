@@ -13,7 +13,9 @@ param(
   [switch]$SkipWeeklyMatrix,
   [switch]$SkipMcpToolContract,
   [switch]$SkipAgentAsyncLogContract,
-  [switch]$RunPersonaChallengeLab
+  [switch]$RunPersonaChallengeLab,
+  [switch]$RunP1ProductionScenario,
+  [switch]$RunRealisticStressScenario
 )
 
 $ErrorActionPreference = "Stop"
@@ -270,6 +272,12 @@ try {
   }
   if ($RunPersonaChallengeLab) {
     $exitCodes += Invoke-NodeScenario "persona policy challenge lab" "tools/playwright_persona_policy_challenge_lab.js"
+  }
+  if ($RunP1ProductionScenario) {
+    $exitCodes += Invoke-NodeScenario "p1 production readiness scenario" "tools/playwright_p1_production_readiness_scenario.js"
+  }
+  if ($RunRealisticStressScenario) {
+    $exitCodes += Invoke-NodeScenario "realistic stress scenario" "tools/playwright_realistic_stress_scenario.js"
   }
   if (-not $SkipMcpToolContract) {
     $exitCodes += Invoke-NodeScenario "mcp tool contract" "tools/playwright_mcp_tool_contract.js"

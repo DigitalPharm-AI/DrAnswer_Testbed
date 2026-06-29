@@ -154,10 +154,11 @@ def add_chat_message(
     category: str = "chat",
     related_dose_event_id: int | None = None,
     metadata: dict | None = None,
+    patient_id: str | None = None,
 ) -> ChatMessage:
     current_time = ensure_clock(session).current_time
     message = ChatMessage(
-        patient_id=settings.patient_id,
+        patient_id=patient_id or settings.patient_id,
         role=role,
         sender_type=sender_type,
         category=category,

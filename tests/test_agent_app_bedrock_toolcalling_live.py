@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-os.environ.setdefault("DA_DRUG_ENV_FILE", ".env,.env.agent_app")
+_shared_env = Path(".env") if Path(".env").exists() else Path("..") / ".env"
+os.environ.setdefault("DA_DRUG_ENV_FILE", f"{_shared_env},.env.agent_app")
 
 from agent_app.graph import AgentLangGraphNativeOrchestrator  # noqa: E402
 from agent_app.providers import BedrockAnthropicProvider  # noqa: E402
@@ -133,6 +135,20 @@ async def test_bedrock_multiturn_side_effect_lookup_forces_ae_pro_ctcae() -> Non
     )
 
     response = await orchestrator.invoke("multiturn_chat", request.model_dump(mode="json"))
+
+    assert response.decision_type == "async_continuation_requested"
+    assert response.structured_payload["async_continuation_required"] is True
+    assert response.structured_payload["async_continuation_type"] == "side_effect_assessment"
+    assert [call["name"] for call in response.structured_payload["tool_calls"]] == ["lookup_side_effect_info"]
+    assert executor.calls == []
+
+    continuation = request.model_copy(deep=True)
+    continuation.context = {
+        **request.context,
+        "execute_async_continuation": True,
+        "async_tool_calls": response.structured_payload["tool_calls"],
+    }
+    response = await orchestrator.invoke("multiturn_chat", continuation.model_dump(mode="json"))
 
     assert response.decision_type == "side_effect_assessment"
     assert response.structured_payload["tools_executed"] is True

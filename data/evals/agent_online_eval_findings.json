@@ -1,0 +1,43 @@
+[
+  {
+    "scan_id": "online-eval-9d3f58e2e4cc",
+    "created_at": "2026-06-20T06:38:43.365762+00:00",
+    "summary": {
+      "status": "watch",
+      "trace_count": 2,
+      "evaluated_count": 2,
+      "status_counts": [
+        {
+          "label": "pass",
+          "value": 1
+        },
+        {
+          "label": "watch",
+          "value": 1
+        }
+      ]
+    },
+    "findings": [
+      {
+        "trace_id": "daee80c6-d1b0-4588-809b-681623431b52",
+        "short_trace_id": "daee80c6...431b52",
+        "workflow_name": "multiturn_chat",
+        "agent_name": "system_event_agent",
+        "status": "watch",
+        "reason": "trace latency over 5000ms",
+        "owner": "ai-system-owner",
+        "updated_at": "2026-06-19T08:22:11.193018"
+      },
+      {
+        "trace_id": "33adffd9-fef8-47c9-ac6c-03a0d72d9180",
+        "short_trace_id": "33adffd9...2d9180",
+        "workflow_name": "multiturn_chat",
+        "agent_name": "system_event_agent",
+        "status": "pass",
+        "reason": "deterministic online checks passed",
+        "owner": "ai-system-owner",
+        "updated_at": "2026-06-19T08:21:53.942472"
+      }
+    ]
+  }
+]

@@ -26,11 +26,22 @@ def settings_env_files() -> tuple[str, ...]:
     if explicit:
         return tuple(part.strip() for part in explicit.replace(";", ",").split(",") if part.strip())
 
+    shared_env_file = _shared_env_file()
     service_name = (os.getenv("DA_DRUG_SERVICE") or os.getenv("APP_SERVICE") or "").strip().lower().replace("-", "_")
     service_env_file = SERVICE_ENV_FILES.get(service_name)
     if service_env_file:
-        return (".env", service_env_file)
-    return (".env",)
+        return (shared_env_file, service_env_file)
+    return (shared_env_file,)
+
+
+def _shared_env_file() -> str:
+    local_env = Path(".env")
+    if local_env.exists():
+        return ".env"
+    parent_env = Path("..") / ".env"
+    if parent_env.exists():
+        return str(parent_env)
+    return ".env"
 
 
 class Settings(BaseSettings):
@@ -42,6 +53,7 @@ class Settings(BaseSettings):
     system_database_url: str = "sqlite:///./data/system.db"
     agent_database_url: str = "sqlite:///./data/agent.db"
     phr_database_url: str = "sqlite:///./data/phr.db"
+    phr_read_only: bool = False
     system_base_url: str = "http://127.0.0.1:8000"
     agent_base_url: str = "http://127.0.0.1:8001"
     phr_base_url: str = "http://127.0.0.1:8002"
@@ -73,6 +85,15 @@ class Settings(BaseSettings):
     agent_embedded_worker_enabled: bool = False
     agent_worker_heartbeat_interval_seconds: int = 10
     agent_worker_stale_after_seconds: int = 60
+    pilot_load_concurrency_target: int = 50
+    pilot_max_error_rate: float = 0.01
+    pilot_health_p95_ms: int = 1000
+    pilot_async_accept_p95_ms: int = 2000
+    pilot_phr_register_p95_ms: int = 3000
+    agent_daily_cost_budget_usd: float = 50.0
+    agent_eval_cost_budget_usd: float = 10.0
+    agent_cost_input_usd_per_1m_tokens: float = 0.0
+    agent_cost_output_usd_per_1m_tokens: float = 0.0
 
     aws_region: str = "ap-northeast-2"
     aws_profile: str | None = None

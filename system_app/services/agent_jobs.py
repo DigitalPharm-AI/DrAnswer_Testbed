@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from shared.schemas import DailyMedicationPattern, MissedDoseEventPayload
+from shared.time_utils import utc_now
 from system_app.models import AgentJob
 
 AgentJobType = Literal["missed_dose", "daily_pattern"]
@@ -54,8 +54,9 @@ def claim_next_agent_job(session: Session) -> AgentJob | None:
         return None
     job.status = RUNNING
     job.attempts += 1
-    job.started_at = datetime.utcnow()
-    job.updated_at = datetime.utcnow()
+    now = utc_now()
+    job.started_at = now
+    job.updated_at = now
     job.error_message = ""
     session.flush()
     return job
@@ -63,9 +64,10 @@ def claim_next_agent_job(session: Session) -> AgentJob | None:
 
 def reset_running_agent_jobs(session: Session) -> int:
     jobs = session.scalars(select(AgentJob).where(AgentJob.status == RUNNING)).all()
+    now = utc_now()
     for job in jobs:
         job.status = PENDING
-        job.updated_at = datetime.utcnow()
+        job.updated_at = now
         job.error_message = "서버 재시작 후 대기 상태로 복구되었습니다."
     session.flush()
     return len(jobs)
@@ -76,8 +78,9 @@ def mark_agent_job_done(session: Session, job_id: int) -> None:
     if job is None:
         return
     job.status = DONE
-    job.updated_at = datetime.utcnow()
-    job.completed_at = datetime.utcnow()
+    now = utc_now()
+    job.updated_at = now
+    job.completed_at = now
     job.error_message = ""
     session.flush()
 
@@ -87,7 +90,7 @@ def mark_agent_job_failed(session: Session, job_id: int, error_message: str) -> 
     if job is None:
         return
     job.status = FAILED
-    job.updated_at = datetime.utcnow()
+    job.updated_at = utc_now()
     job.completed_at = None
     job.error_message = error_message
     session.flush()
@@ -111,7 +114,7 @@ def retry_agent_job(session: Session, job_id: int) -> AgentJob | None:
     if job is None or job.status != FAILED:
         return job
     job.status = PENDING
-    job.updated_at = datetime.utcnow()
+    job.updated_at = utc_now()
     job.started_at = None
     job.completed_at = None
     job.error_message = ""

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from shared.json_utils import parse_json_object
 from shared.settings import get_settings
+from shared.time_utils import utc_now
 from system_app.models import Notification, SimulationClock
 
 settings = get_settings()
@@ -38,7 +39,7 @@ def pause_simulation_clock(session: Session) -> SimulationClock:
     clock = ensure_clock(session)
     clock.is_running = False
     clock.speed_multiplier = 0
-    clock.last_tick_real_at = datetime.utcnow()
+    clock.last_tick_real_at = utc_now()
     return clock
 
 
@@ -55,7 +56,7 @@ def pause_simulation_clock_for_conversation(session: Session) -> tuple[Simulatio
 def pause_simulation_clock_at_conversation(session: Session, conversation_time: datetime) -> tuple[SimulationClock, dict]:
     clock, resume_state = pause_simulation_clock_for_conversation(session)
     clock.current_time = conversation_time
-    clock.last_tick_real_at = datetime.utcnow()
+    clock.last_tick_real_at = utc_now()
     session.flush()
     return clock, resume_state
 
@@ -73,4 +74,4 @@ def resume_simulation_clock_from_notification(session: Session, notification: No
     clock = ensure_clock(session)
     clock.is_running = True
     clock.speed_multiplier = speed_multiplier
-    clock.last_tick_real_at = datetime.utcnow()
+    clock.last_tick_real_at = utc_now()

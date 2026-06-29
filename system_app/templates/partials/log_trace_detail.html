@@ -1,0 +1,57 @@
+<div id="trace-replay-panel" class="trace-replay-panel">
+  <article class="logs-row trace-replay-card">
+    <div class="logs-row-main">
+      <strong>{{ trace_detail.workflow_name }}</strong>
+      <span class="logs-code">{{ trace_detail.short_trace_id }}</span>
+    </div>
+    <p>{{ trace_detail.agent_name }} · {{ trace_detail.decision_type }} · {{ trace_detail.status }} · {{ trace_detail.updated_at }}</p>
+    <p class="muted">{{ trace_detail.provider }} · {{ trace_detail.model_tier }} · {{ trace_detail.model_id }} · {{ trace_detail.latency_ms }} ms · {{ trace_detail.cost_label }}</p>
+    {% if trace_detail.error_message %}
+      <p class="logs-error">{{ trace_detail.error_message }}</p>
+    {% endif %}
+
+    <div class="ops-chip-row">
+      <span class="ops-chip">prompt {{ trace_detail.prompt_version_id }}</span>
+      <span class="ops-chip">request {{ trace_detail.replay_inputs.request_id or '-' }}</span>
+      <span class="ops-chip">input hash {{ trace_detail.replay_inputs.input_hash or '-' }}</span>
+      <span class="ops-chip">output hash {{ trace_detail.replay_inputs.output_hash or '-' }}</span>
+      <span class="ops-chip">patient hash {{ 'present' if trace_detail.replay_inputs.patient_id_hash_present else 'none' }}</span>
+    </div>
+
+    <details class="logs-details" open>
+      <summary>Replay plan</summary>
+      <div class="tool-log-row">
+        {% for item in trace_detail.replay_plan %}
+          <span>{{ item }}</span>
+        {% endfor %}
+      </div>
+      <p class="muted">eval seed {{ trace_detail.eval_seed.suggested_case_id }} · source {{ trace_detail.eval_seed.source_type }}</p>
+    </details>
+
+    <details class="logs-details" open>
+      <summary>Step detail</summary>
+      {% if trace_detail.steps %}
+        <div class="logs-list">
+          {% for step in trace_detail.steps %}
+            <article class="logs-row">
+              <div class="logs-row-main">
+                <strong>{{ step.step_type }} · {{ step.step_name }}</strong>
+                <span class="tiny-badge">{{ step.status }}</span>
+              </div>
+              <p>{{ step.tool_name or '-' }} · {{ step.side_effect_level or '-' }}{% if step.latency_ms %} · {{ step.latency_ms }} ms{% endif %}</p>
+              <p class="muted">metadata {{ step.metadata_keys|join(', ') if step.metadata_keys else '-' }}</p>
+              <p class="muted">{{ step.metadata_preview }}</p>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="muted">step detail 없음</p>
+      {% endif %}
+    </details>
+
+    <form class="logs-promote-form" hx-post="/logs/traces/replay-to-eval" hx-target="#logs-panel" hx-swap="outerHTML">
+      <input type="hidden" name="trace_id" value="{{ trace_detail.trace_id }}">
+      <button class="compact-button" type="submit">Replay artifact + eval backlog 등록</button>
+    </form>
+  </article>
+</div>

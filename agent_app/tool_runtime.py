@@ -3,36 +3,17 @@ from __future__ import annotations
 from typing import Any
 
 from agent_app import trace_logging
-from agent_app.tool_permissions import permission_denied_result, validate_tool_permission
-from agent_app.tool_policy import deferred_policy_tool_result, is_deferred_policy_tool_call
 from agent_app.tool_protocol import AgentToolExecutorProtocol
 from agent_app.tool_side_effects import ae_tool_call_from_lookup, positive_side_effect_lookup
+from shared.redaction import safe_log_arguments
 
 
 def _tool_call_log_payload(tool_call: dict[str, Any]) -> dict[str, Any]:
     arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
     return {
         "tool": str(tool_call.get("name") or ""),
-        "arguments": _safe_log_arguments(arguments),
+        "arguments": safe_log_arguments(arguments),
     }
-
-
-def _safe_log_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
-    safe: dict[str, Any] = {}
-    for key, value in arguments.items():
-        key_text = str(key)
-        key_lower = key_text.lower()
-        if "token" in key_lower or key_lower.endswith("_key") or key_lower in {"phr_patient_key"}:
-            safe[f"{key_text}_present"] = bool(value)
-        elif isinstance(value, str):
-            safe[key_text] = trace_logging.snippet(value)
-        elif isinstance(value, list):
-            safe[key_text] = {"count": len(value)}
-        elif isinstance(value, dict):
-            safe[key_text] = {"keys": sorted(str(item) for item in value.keys())}
-        else:
-            safe[key_text] = value
-    return safe
 
 
 def _tool_result_log_payload(result: Any) -> dict[str, Any]:
@@ -108,21 +89,7 @@ class ToolRuntime:
                 tool_index=index,
                 **_tool_call_log_payload(tool_call),
             )
-            denial_reason = validate_tool_permission(tool_call, source_event_type=source_event_type, payload=payload)
-            if denial_reason:
-                trace_logging.log_info(
-                    "agent_tool_call_blocked",
-                    trace_id=trace_id,
-                    source_event_type=source_event_type,
-                    tool_index=index,
-                    reason=denial_reason,
-                    **_tool_call_log_payload(tool_call),
-                )
-                result = permission_denied_result(tool_call, trace_id=trace_id, source_event_type=source_event_type, reason=denial_reason)
-            elif is_deferred_policy_tool_call(tool_call):
-                result = deferred_policy_tool_result(tool_call, trace_id=trace_id, source_event_type=source_event_type)
-            else:
-                result = await self.executor.execute_tool_call(tool_call, trace_id=trace_id, source_event_type=source_event_type, payload=payload)
+            result = await self.executor.execute_tool_call(tool_call, trace_id=trace_id, source_event_type=source_event_type, payload=payload)
             results.append(result)
             trace_logging.log_info(
                 "agent_tool_call_completed",

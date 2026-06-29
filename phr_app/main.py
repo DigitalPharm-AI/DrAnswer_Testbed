@@ -11,6 +11,7 @@ from phr_app.migrations import run_migrations
 from phr_app.models import Base
 from phr_app.services import assess_side_effect, list_patient_medications, register_patient_medications, seed_phr_data, update_patient_medications
 from shared.schemas import PhrPatientRegistrationRequest, PhrPatientRegistrationResult, SideEffectAssessmentRequest, SideEffectAssessmentResult
+from shared.settings import get_settings
 
 
 @asynccontextmanager
@@ -32,6 +33,7 @@ async def healthcheck() -> dict[str, str]:
 
 @app.post("/phr/patients/register", response_model=PhrPatientRegistrationResult)
 async def register_patient(payload: PhrPatientRegistrationRequest, session: Session = Depends(get_session)) -> PhrPatientRegistrationResult:
+    _reject_write_when_read_only()
     result = register_patient_medications(session, payload)
     trace_logging.log_info(
         "phr_patient_registered",
@@ -43,6 +45,7 @@ async def register_patient(payload: PhrPatientRegistrationRequest, session: Sess
 
 @app.put("/phr/patients/{phr_patient_key}/medications", response_model=PhrPatientRegistrationResult)
 async def update_patient(phr_patient_key: str, payload: PhrPatientRegistrationRequest, session: Session = Depends(get_session)) -> PhrPatientRegistrationResult:
+    _reject_write_when_read_only()
     try:
         result = update_patient_medications(session, phr_patient_key, payload)
     except ValueError as exc:
@@ -56,6 +59,12 @@ async def update_patient(phr_patient_key: str, payload: PhrPatientRegistrationRe
         phr_patient_key_present=bool(phr_patient_key),
     )
     return result
+
+
+def _reject_write_when_read_only() -> None:
+    if get_settings().phr_read_only:
+        trace_logging.log_warning("phr_write_rejected", reason="phr_read_only_mode")
+        raise HTTPException(status_code=503, detail="phr_read_only_mode")
 
 
 @app.get("/phr/patients/{phr_patient_key}/medications")

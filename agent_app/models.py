@@ -5,9 +5,11 @@ from datetime import datetime
 from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from shared.time_utils import utc_now
+
 
 def utcnow() -> datetime:
-    return datetime.utcnow()
+    return utc_now()
 
 
 class Base(DeclarativeBase):

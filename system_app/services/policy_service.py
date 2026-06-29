@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from shared.schemas import NotificationPolicyDelta, PolicyWorkbookLoadResult, ResolvedNotificationPolicy, ResolvedPolicyBoundary, SystemPolicyDelta
 from shared.settings import get_settings
+from shared.time_utils import utc_now
 from system_app.models import DoseEvent, ReminderPolicy, SystemPolicyOverride
 from system_app.services.policy_workbook import (
     ALLOWED_TEMPLATE_PLACEHOLDERS,
@@ -177,7 +178,7 @@ def apply_system_policy_delta(session: Session, delta: SystemPolicyDelta) -> tup
         ).all()
         for row in active_rows:
             row.active = False
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utc_now()
 
         session.add(
             SystemPolicyOverride(
@@ -338,7 +339,7 @@ def apply_policy_delta(session: Session, delta: NotificationPolicyDelta) -> tupl
         ).all()
         for row in overlapping:
             row.active = False
-            row.updated_at = datetime.utcnow()
+            row.updated_at = utc_now()
 
         policy = ReminderPolicy(
             patient_id=settings.patient_id,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable
 from datetime import date, datetime, time, timedelta
+from uuid import uuid4
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 from shared.json_utils import parse_json_object as parse_metadata_json
 from shared.schemas import AgentCallbackContext, ChatTurn, DailyMedicationPattern, DosePatternEvent, MissedDoseEventPayload, MissedDoseReplyContext, SlotAdherenceSummary
 from shared.settings import get_settings
+from shared.time_utils import utc_now
 from system_app.models import ChatMessage, DoseEvent, MedicationPlan, Notification, SimulationClock
 from system_app.services.clock_service import ensure_clock, parse_clock_value, pause_simulation_clock_at_conversation
 from system_app.services.medication_plan_service import get_schedule_map
@@ -430,7 +432,7 @@ def collect_missed_dose_payloads(session: Session, up_to_time: datetime) -> list
                 callback_context=AgentCallbackContext(
                     app_base_url=settings.system_base_url,
                     notification_id=notification.id,
-                    conversation_id=f"missed-dose-{event.id}",
+                    conversation_id=f"missed-dose-{event.id}-{uuid4().hex[:12]}",
                 ),
             )
         )
@@ -477,7 +479,7 @@ def prepare_notification_window(
         clock.current_time = pattern_due_at
         clock.is_running = False
         clock.speed_multiplier = 0
-        clock.last_tick_real_at = datetime.utcnow()
+        clock.last_tick_real_at = utc_now()
     elif missed_payloads and first_missed_due_at is not None:
         clock.current_time = first_missed_due_at
     clock.last_processed_sim_time = processing_end_dt
@@ -501,7 +503,7 @@ async def set_clock_state(
         clock.is_running = is_running
     if speed_multiplier is not None:
         clock.speed_multiplier = speed_multiplier
-    clock.last_tick_real_at = datetime.utcnow()
+    clock.last_tick_real_at = utc_now()
 
     session.commit()
     session.refresh(clock)

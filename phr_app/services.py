@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from phr_app.models import PhrItemPrecaution, PhrPatient, PhrPatientMedication, PhrSideEffectAssessment
@@ -28,6 +28,12 @@ SEED_ITEM_PRECAUTIONS = [
         "저혈당 의심 증상으로 식은땀, 떨림, 심한 허기, 어지러움, 두근거림이 나타날 수 있습니다. 메스꺼움, 속 불편, 구역, 복통 같은 위장 증상도 확인이 필요합니다.",
         "high",
         ["식은땀", "떨림", "심한 허기", "허기", "어지럽", "두근", "메스꺼", "속이", "속 불편", "구역", "복통"],
+    ),
+    (
+        "항암제",
+        "복용 후 메스꺼움, 구역, 구토, 식욕 저하, 식사량 감소가 나타날 수 있습니다. 증상이 지속되거나 식사를 거의 못 하면 의료진에게 알려야 합니다.",
+        "high",
+        ["메스꺼", "구역", "구토", "식욕", "식사량", "식사를 거의"],
     ),
     (
         "고지혈증약",
@@ -72,8 +78,9 @@ SIDE_EFFECT_NORMALIZATION_HINTS = (
 
 
 def seed_phr_data(session: Session) -> None:
-    if session.scalar(select(func.count(PhrItemPrecaution.id))) == 0:
-        for item_name, precautions_text, severity_hint, keywords in SEED_ITEM_PRECAUTIONS:
+    existing_items = set(session.scalars(select(PhrItemPrecaution.item_name)).all())
+    for item_name, precautions_text, severity_hint, keywords in SEED_ITEM_PRECAUTIONS:
+        if item_name not in existing_items:
             session.add(
                 PhrItemPrecaution(
                     item_name=item_name,

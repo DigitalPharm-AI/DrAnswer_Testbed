@@ -6,14 +6,49 @@ function cacheBustedUrl(path) {
 }
 
 export function createPanelRefresher({ stack, updatePopup }) {
+  function chatComposerSnapshot(targetSelector) {
+    if (targetSelector !== "#chat-panel") {
+      return null;
+    }
+    const input = document.getElementById("agent-chat-message");
+    if (!(input instanceof HTMLTextAreaElement) || !input.value) {
+      return null;
+    }
+    return {
+      value: input.value,
+      name: input.name,
+      active: document.activeElement === input,
+      selectionStart: input.selectionStart,
+      selectionEnd: input.selectionEnd,
+    };
+  }
+
+  function restoreChatComposer(snapshot) {
+    if (!snapshot) {
+      return;
+    }
+    const input = document.getElementById("agent-chat-message");
+    if (!(input instanceof HTMLTextAreaElement) || input.name !== snapshot.name) {
+      return;
+    }
+    input.value = snapshot.value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    if (snapshot.active) {
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+    }
+  }
+
   async function replacePanel(path, targetSelector) {
     const target = document.querySelector(targetSelector);
     if (!target) {
       return false;
     }
     const url = cacheBustedUrl(path);
-    if (window.htmx) {
+    if (window.htmx && targetSelector !== "#chat-panel") {
+      const composerSnapshot = chatComposerSnapshot(targetSelector);
       await window.htmx.ajax("GET", url, { target: targetSelector, swap: "outerHTML" });
+      restoreChatComposer(composerSnapshot);
       return true;
     }
     const response = await fetch(url, { headers: { "HX-Request": "true" } });
@@ -21,7 +56,9 @@ export function createPanelRefresher({ stack, updatePopup }) {
       return false;
     }
     const html = await response.text();
+    const composerSnapshot = chatComposerSnapshot(targetSelector);
     target.outerHTML = html;
+    restoreChatComposer(composerSnapshot);
     return true;
   }
 
@@ -29,6 +66,7 @@ export function createPanelRefresher({ stack, updatePopup }) {
     return Promise.all([
       refreshNotificationsPanel(),
       refreshTimelinePanel(),
+      refreshNutritionPanel(),
       refreshActivePoliciesPanel(),
       refreshChatLogPanel(),
       refreshChatHistoryPanel(),
@@ -45,6 +83,10 @@ export function createPanelRefresher({ stack, updatePopup }) {
 
   function refreshActivePoliciesPanel() {
     return replacePanel("/partials/active-policies", "#active-policies-panel").catch(() => false);
+  }
+
+  function refreshNutritionPanel() {
+    return replacePanel("/partials/nutrition", "#nutrition-panel").catch(() => false);
   }
 
   function refreshChatLogPanel() {
@@ -105,6 +147,7 @@ export function createPanelRefresher({ stack, updatePopup }) {
     refreshPanels,
     refreshNotificationsPanel,
     refreshTimelinePanel,
+    refreshNutritionPanel,
     refreshActivePoliciesPanel,
     refreshChatLogPanel,
     refreshChatPanel,

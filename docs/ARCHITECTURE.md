@@ -9,8 +9,8 @@
 
 - `agent_app`
   - Owns LLM orchestration, deterministic rule fallback, MCP tool execution, and the agent async task queue.
-  - Keeps normal multiturn chat synchronous.
-  - Runs daily pattern, missed dose, push message, clinician alert, and chat continuation work through DB-backed async tasks.
+  - Exposes a direct synchronous multiturn endpoint for internal API/debug use.
+  - Runs system-app chat continuations, daily pattern, missed dose, push message, and clinician alert work through DB-backed async tasks.
 
 - `phr_app`
   - Owns PHR-side medication precaution data.
@@ -23,7 +23,7 @@ flowchart LR
     system["system_app"] -->|"POST /agent/async/daily-patterns"| agentQueue["agent async queue"]
     system -->|"POST /agent/async/missed-dose-events"| agentQueue
     system -->|"POST /agent/async/chat-continuations"| agentQueue
-    system -->|"POST /agent/multiturn-chat"| chat["MultiturnChatAgent"]
+    system -.->|"POST /agent/multiturn-chat internal/debug"| chat["MultiturnChatAgent"]
     agentQueue --> worker["agent worker"]
     worker --> graph["LangGraph orchestrator"]
     graph --> daily["DailyPatternAgent"]
@@ -40,7 +40,7 @@ flowchart LR
 - Synchronous:
   - `GET /health`
   - `GET/POST /agent/model-config`
-  - `POST /agent/multiturn-chat`
+  - `POST /agent/multiturn-chat` for direct internal/debug calls
   - `POST /agent/mcp`
 
 - Asynchronous:
@@ -49,6 +49,8 @@ flowchart LR
   - `POST /agent/async/chat-continuations`
   - `POST /agent/async/push-messages`
   - `POST /agent/async/clinician-alerts`
+
+The user-facing system chat path is async-first. `system_app` records the user's message, submits `/agent/async/chat-continuations`, marks the notification as `awaiting_agent`, and completes the visible assistant response when the worker callback arrives.
 
 Legacy daily/missed sync endpoints have been removed. Any call to `/agent/daily-patterns` or `/agent/missed-dose-events` should now fail with `404`.
 
@@ -84,9 +86,12 @@ Tools are allowlisted and permission-checked before execution. Policy tools are 
 
 Async task status is visible through:
 
+- `/agent/ops/readiness`
 - `/agent/async/tasks/status`
 - `/agent/async/tasks`
 - `/agent/async/tasks/dead`
 - `/agent/async/tasks/{request_id}`
 
-These endpoints expose timing, lock, retry, and error metadata while hiding raw task payload values.
+These endpoints expose timing, lock, retry, worker heartbeat, and error metadata while hiding raw task payload values. `/agent/ops/readiness` adds alert severity for dead tasks, callback failures, provider failures, stale workers, and pending tasks without workers.
+
+Production readiness and incident response procedures live in `docs/PRODUCTION_READINESS.md`.

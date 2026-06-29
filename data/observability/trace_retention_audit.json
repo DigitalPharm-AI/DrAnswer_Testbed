@@ -1,0 +1,19 @@
+[
+  {
+    "artifact_type": "trace_retention_cleanup",
+    "policy": {
+      "policy_id": "health-agent-trace-retention-v1",
+      "normal_days": 30,
+      "problem_days": 90,
+      "mode": "summary_only"
+    },
+    "mode": "dry_run",
+    "actor": "LOGS",
+    "created_at": "2026-06-20T06:38:37.635398+00:00",
+    "expired_trace_count": 0,
+    "redacted_span_count": 0,
+    "candidate_span_count": 0,
+    "retained_summary_count": 0,
+    "expired_traces": []
+  }
+]

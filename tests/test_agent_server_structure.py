@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+import asyncio
+
+from agent_app.main import app as agent_app
+from agent_app.tool_catalog import ToolCatalog
+from agent_app.tool_permissions import requires_human_handoff
+from agent_app.tool_policy import DEFERRED_POLICY_TOOL_NAMES
+from agent_app.tool_protocol import ALLOWED_TOOL_NAMES
+from agent_app.tool_runtime import ToolRuntime
+from shared.schemas import ToolCallResult
+from system_app.services import observability_view, trace_retention
+
+
+def _routes() -> set[tuple[str, str]]:
+    rows: set[tuple[str, str]] = set()
+    for route in agent_app.routes:
+        methods = getattr(route, "methods", None) or set()
+        path = getattr(route, "path", "")
+        for method in methods:
+            if method in {"GET", "POST"}:
+                rows.add((method, path))
+    return rows
+
+
+def test_agent_server_api_contract_routes_are_present():
+    routes = _routes()
+
+    expected = {
+        ("GET", "/agent/model-config"),
+        ("POST", "/agent/model-config"),
+        ("POST", "/agent/multiturn-chat"),
+        ("POST", "/agent/async/daily-patterns"),
+        ("POST", "/agent/async/missed-dose-events"),
+        ("POST", "/agent/async/chat-continuations"),
+        ("POST", "/agent/async/push-messages"),
+        ("POST", "/agent/async/clinician-alerts"),
+        ("POST", "/agent/mcp"),
+        ("GET", "/agent/async/tasks/status"),
+        ("GET", "/agent/ops/readiness"),
+        ("GET", "/agent/async/tasks"),
+        ("GET", "/agent/async/tasks/dead"),
+        ("POST", "/agent/async/tasks/{request_id}/actions"),
+        ("GET", "/agent/async/tasks/{request_id}"),
+    }
+
+    assert expected <= routes
+
+
+def test_tool_catalog_protocol_allowlist_and_handoff_flags_are_aligned():
+    catalog = ToolCatalog.available_tools_payload()
+    names = {str(tool["name"]) for tool in catalog}
+
+    assert names == ALLOWED_TOOL_NAMES
+    assert DEFERRED_POLICY_TOOL_NAMES <= names
+    assert {name for name in names if requires_human_handoff(name)} == DEFERRED_POLICY_TOOL_NAMES
+    deferred_tools = {str(tool["name"]): tool for tool in catalog if str(tool["name"]) in DEFERRED_POLICY_TOOL_NAMES}
+    for tool in deferred_tools.values():
+        meta = tool.get("_meta")
+        assert isinstance(meta, dict)
+        assert meta["execution_mode"] == "deferred_confirmation"
+        assert meta["requires_human_handoff"] is True
+        assert meta["handoff_gate"] == "high_risk_policy_change"
+    for tool in catalog:
+        assert isinstance(tool.get("inputSchema"), dict)
+        assert isinstance(tool.get("outputSchema"), dict)
+        assert tool.get("description")
+
+
+def test_tool_runtime_delegates_permission_decisions_to_executor_boundary():
+    class CapturingExecutor:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
+            self.calls.append(
+                {
+                    "tool_call": tool_call,
+                    "trace_id": trace_id,
+                    "source_event_type": source_event_type,
+                    "payload": payload,
+                }
+            )
+            return ToolCallResult(
+                tool_name=str(tool_call.get("name") or "unknown"),
+                status="success",
+                response={"delegated": True},
+                idempotency_key=f"{trace_id}:delegated",
+            )
+
+    executor = CapturingExecutor()
+    runtime = ToolRuntime(executor)
+
+    executed_calls, results = asyncio.run(
+        runtime.execute(
+            [{"name": "record_meal", "arguments": {"meal_type": "lunch", "foods": []}}],
+            trace_id="structure-test-trace",
+            source_event_type="missed_dose",
+            payload={},
+        )
+    )
+
+    assert executed_calls[0]["name"] == "record_meal"
+    assert len(executor.calls) == 1
+    assert executor.calls[0]["source_event_type"] == "missed_dose"
+    assert results[0].status == "success"
+
+
+def test_trace_retention_policy_is_single_source_for_logs_view():
+    assert observability_view.TRACE_RETENTION_POLICY is trace_retention.TRACE_RETENTION_POLICY
+    assert observability_view._trace_retention_dry_run_count.__module__ == "system_app.services.observability_view"

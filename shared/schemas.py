@@ -224,6 +224,11 @@ class AgentAsyncAccepted(BaseModel):
     message: str = ""
 
 
+class AgentAsyncTaskActionRequest(BaseModel):
+    action: Literal["retry", "dismiss"]
+    reason: str = ""
+
+
 class AgentAsyncJobResultRequest(BaseModel):
     request_id: str
     task_type: Literal["daily_pattern", "missed_dose"]
@@ -364,6 +369,87 @@ class DoseTakenToolResult(BaseModel):
     status: Literal["taken", "not_found"]
     taken_at: datetime | None = None
     message: str
+
+
+class NutritionFoodPayload(BaseModel):
+    food_ref_id: str = ""
+    food_name: str
+    portion: str = "1인분"
+    nutrients: dict[str, Any] = Field(default_factory=dict)
+
+
+class NutritionFoodSearchRequest(BaseModel):
+    query: str
+    patient_id: str | None = None
+    limit: int = Field(default=10, ge=1, le=20)
+
+
+class NutritionMealRecordRequest(BaseModel):
+    patient_id: str | None = None
+    foods: list[NutritionFoodPayload]
+    meal_type: Literal["breakfast", "lunch", "dinner", "snack"]
+    meal_date: date | None = None
+    meal_time: str | None = None
+    scenario_key: str = ""
+    description: str = ""
+
+
+class NutritionMealListResult(BaseModel):
+    success: bool = True
+    meals: list[dict[str, Any]] = Field(default_factory=list)
+    total: int = 0
+
+
+class NutritionMealRecordResult(BaseModel):
+    success: bool = True
+    meal: dict[str, Any]
+    daily_summary: dict[str, Any]
+    alert_created: bool = False
+    alert_id: int | None = None
+
+
+class NutritionDailySummaryResult(BaseModel):
+    success: bool = True
+    daily_summary: dict[str, Any]
+
+
+class NutritionFoodSearchResult(BaseModel):
+    success: bool = True
+    candidates: list[dict[str, Any]] = Field(default_factory=list)
+    source: str = "sample"
+    error: str = ""
+
+
+class NutritionPreferenceFactRequest(BaseModel):
+    patient_id: str | None = None
+    predicate: Literal[
+        "likes",
+        "dislikes",
+        "prefers",
+        "avoids_by_preference",
+        "allergic_to",
+        "medically_avoids",
+        "religious_avoids",
+    ]
+    object_label: str
+    object_type: Literal["food", "ingredient", "food_category", "cuisine", "preparation", "nutrient", "nutrient_risk", "restriction", "diet_style"] = "food"
+    strength: float = Field(default=1.0, ge=0.0, le=1.0)
+    safety_level: Literal["hard", "soft"] | None = None
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    source: str = "agent_tool"
+    evidence_text: str = ""
+    source_trace_id: str = ""
+
+
+class NutritionPreferenceFactResult(BaseModel):
+    success: bool = True
+    fact: dict[str, Any]
+    preferences: dict[str, Any]
+
+
+class NutritionPreferenceSummaryResult(BaseModel):
+    success: bool = True
+    preferences: dict[str, Any]
 
 
 class PhrMedicationRegistrationItem(BaseModel):

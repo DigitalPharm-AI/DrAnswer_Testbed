@@ -1,0 +1,813 @@
+<section
+  id="logs-panel"
+  class="logs-shell"
+  hx-get="/partials/logs"
+  hx-trigger="every 10s"
+  hx-swap="outerHTML">
+  {% set async_status = observability.async_status %}
+  {% set workers = observability.workers %}
+  {% set local_jobs = observability.local_jobs %}
+  {% set alerts = observability.agent_alerts %}
+  {% set trace = observability.trace_dashboard %}
+  {% set quality = observability.quality_metrics %}
+  {% set controls = observability.readiness_controls %}
+  {% set release = observability.release_readiness %}
+  {% set eval_backlog = observability.eval_backlog %}
+  {% set change_log = observability.change_log %}
+  {% set catalog = observability.tool_catalog %}
+  {% set tool_logs = observability.tool_logs %}
+  {% set agent_tasks = observability.agent_tasks %}
+  {% set prompt_model_ops = observability.prompt_model_ops %}
+  {% set prompt_model_approval = observability.prompt_model_approval %}
+  {% set business_gate = observability.business_metric_gate %}
+  {% set data_drift = observability.data_quality_drift %}
+  {% set containment = observability.containment_action %}
+  {% set agent_history = observability.agent_conversation_history %}
+  {% set incident_timeline = observability.incident_timeline %}
+
+  {% if logs_action_result %}
+    <section class="panel logs-action-result {{ 'is-success' if logs_action_result.success else 'is-error' }}">
+      <div>
+        <strong>{{ logs_action_result.message }}</strong>
+        <p class="panel-subtitle">{{ logs_action_result.action or 'logs_action' }} · {{ logs_action_result.request_id or logs_action_result.case_id or logs_action_result.entry_id or logs_action_result.trace_id or logs_action_result.artifact_path or logs_action_result.markdown_path or logs_action_result.model_tier or '-' }}</p>
+      </div>
+      <span class="badge {{ 'run' if logs_action_result.success else 'alert' }}">{{ 'ok' if logs_action_result.success else 'failed' }}</span>
+    </section>
+  {% endif %}
+
+  <div class="logs-dashboard-layout">
+    <div class="logs-dashboard-main">
+      <section class="panel logs-card logs-card-async">
+        <div class="logs-card-head">
+          <div>
+            <h2>비동기 연동 상태</h2>
+            <p class="panel-subtitle">{{ async_status.flow_label }}</p>
+          </div>
+          <span class="badge {{ 'run' if async_status.remote_status == 'ok' else 'alert' }}">{{ async_status.transport }}</span>
+        </div>
+        <div class="ops-route-grid">
+          <div class="ops-route-item">
+            <span>Agent</span>
+            <strong>{{ async_status.remote_status }}</strong>
+            <code>{{ async_status.agent_base_url }}</code>
+          </div>
+          <div class="ops-route-item">
+            <span>Callback</span>
+            <strong>{{ async_status.callback_base_url }}</strong>
+            <code>{{ async_status.callback_path }}</code>
+          </div>
+        </div>
+        <div class="ops-metric-grid">
+          <div><span>Local 대기</span><strong>{{ async_status.local_pending }}</strong></div>
+          <div><span>Local 전송</span><strong>{{ async_status.local_running }}</strong></div>
+          <div><span>Local 완료</span><strong>{{ async_status.local_done }}</strong></div>
+          <div><span>Local 실패</span><strong>{{ async_status.local_failed }}</strong></div>
+          <div><span>Agent 활성</span><strong>{{ async_status.agent_active }}</strong></div>
+        </div>
+        <div class="ops-chip-row">
+          {% if async_status.agent_counts %}
+            {% for status, count in async_status.agent_counts.items() %}
+              <span class="ops-chip">agent {{ status }} {{ count }}</span>
+            {% endfor %}
+          {% else %}
+            <span class="ops-chip">agent queue unavailable</span>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="panel logs-card logs-card-containment">
+        <div class="logs-card-head">
+          <div>
+            <h2>Containment Action</h2>
+            <p class="panel-subtitle">{{ containment.rule_id }}</p>
+          </div>
+          <span class="badge {{ 'alert' if containment.status == 'needs_action' else 'run' }}">{{ containment.status }}</span>
+        </div>
+        <div class="ops-metric-grid">
+          <div><span>dead tasks</span><strong>{{ containment.dead_count }}</strong></div>
+          <div><span>failed jobs</span><strong>{{ containment.failed_job_count }}</strong></div>
+          <div><span>alerts</span><strong>{{ containment.alert_count }}</strong></div>
+          <div><span>fallback</span><strong>{{ containment.fallback_provider }}</strong></div>
+        </div>
+        <div class="logs-actions logs-primary-actions">
+          <form hx-post="/logs/containment/release" hx-target="#logs-panel" hx-swap="outerHTML">
+            <button class="compact-button" type="submit">Containment 해제</button>
+          </form>
+          <form hx-post="/logs/async-submit" hx-target="#logs-panel" hx-swap="outerHTML">
+            <input type="hidden" name="kind" value="nutrition">
+            <button class="compact-button ghost" type="submit">영양 async 제출</button>
+          </form>
+          <form hx-post="/logs/async-submit" hx-target="#logs-panel" hx-swap="outerHTML">
+            <input type="hidden" name="kind" value="medication">
+            <button class="compact-button ghost" type="submit">복약 async 제출</button>
+          </form>
+        </div>
+        <div class="logs-list">
+          {% for item in containment.recommended_actions %}
+            <article class="logs-row">
+              <div class="logs-row-main">
+                <strong>{{ item.label }}</strong>
+                <span class="tiny-badge">runbook</span>
+              </div>
+              <p>{{ item.detail }}</p>
+            </article>
+          {% endfor %}
+        </div>
+        {% if agent_tasks["dead_items"] %}
+          <div class="logs-list">
+            {% for task in agent_tasks["dead_items"][:3] %}
+              <article class="logs-row">
+                <div class="logs-row-main">
+                  <strong>{{ task.task_type }} · {{ task.short_request_id }}</strong>
+                  <span class="tiny-badge">{{ task.status_label }}</span>
+                </div>
+                <p>attempt {{ task.attempts }}/{{ task.max_attempts }} · age {{ task.age_label }} · root cause {{ task.root_cause }}</p>
+                {% if task.last_error %}
+                  <p class="logs-error">{{ task.last_error }}</p>
+                {% endif %}
+                <div class="logs-actions">
+                  <form hx-post="/logs/agent-tasks/actions" hx-target="#logs-panel" hx-swap="outerHTML">
+                    <input type="hidden" name="request_id" value="{{ task.request_id }}">
+                    <input type="hidden" name="action" value="retry">
+                    <input type="hidden" name="reason" value="retry from LOGS containment action">
+                    <button class="compact-button" type="submit">재시도</button>
+                  </form>
+                  <form hx-post="/logs/agent-tasks/actions" hx-target="#logs-panel" hx-swap="outerHTML">
+                    <input type="hidden" name="request_id" value="{{ task.request_id }}">
+                    <input type="hidden" name="action" value="dismiss">
+                    <input type="hidden" name="reason" value="dismiss from LOGS containment action">
+                    <button class="compact-button ghost" type="submit">해제</button>
+                  </form>
+                </div>
+              </article>
+            {% endfor %}
+            {% if agent_tasks["dead_items"]|length > 3 %}
+              <details class="logs-details logs-more-details">
+                <summary>나머지 dead task {{ agent_tasks["dead_items"]|length - 3 }}개 보기</summary>
+                <div class="logs-list">
+                  {% for task in agent_tasks["dead_items"][3:] %}
+                    <article class="logs-row">
+                      <div class="logs-row-main">
+                        <strong>{{ task.task_type }} · {{ task.short_request_id }}</strong>
+                        <span class="tiny-badge">{{ task.status_label }}</span>
+                      </div>
+                      <p>attempt {{ task.attempts }}/{{ task.max_attempts }} · age {{ task.age_label }} · root cause {{ task.root_cause }}</p>
+                      {% if task.last_error %}
+                        <p class="logs-error">{{ task.last_error }}</p>
+                      {% endif %}
+                      <div class="logs-actions">
+                        <form hx-post="/logs/agent-tasks/actions" hx-target="#logs-panel" hx-swap="outerHTML">
+                          <input type="hidden" name="request_id" value="{{ task.request_id }}">
+                          <input type="hidden" name="action" value="retry">
+                          <input type="hidden" name="reason" value="retry from LOGS containment action">
+                          <button class="compact-button" type="submit">재시도</button>
+                        </form>
+                        <form hx-post="/logs/agent-tasks/actions" hx-target="#logs-panel" hx-swap="outerHTML">
+                          <input type="hidden" name="request_id" value="{{ task.request_id }}">
+                          <input type="hidden" name="action" value="dismiss">
+                          <input type="hidden" name="reason" value="dismiss from LOGS containment action">
+                          <button class="compact-button ghost" type="submit">해제</button>
+                        </form>
+                      </div>
+                    </article>
+                  {% endfor %}
+                </div>
+              </details>
+            {% endif %}
+          </div>
+        {% endif %}
+      </section>
+
+      <section class="panel logs-card logs-card-workers">
+        <div class="logs-card-head">
+          <div>
+            <h2>Agent workers</h2>
+            <p class="panel-subtitle">heartbeat 기반 worker 상태</p>
+          </div>
+          <span class="badge neutral">{{ workers.count }}개</span>
+        </div>
+        {% if workers["items"] %}
+          <div class="logs-list">
+            {% for worker in workers["items"][:3] %}
+              <article class="logs-row">
+                <div class="logs-row-main">
+                  <strong class="logs-code">{{ worker.worker_id }}</strong>
+                  <span class="tiny-badge">{{ worker.status }}</span>
+                </div>
+                <p>처리 {{ worker.processed_count }}건 · heartbeat {{ worker.heartbeat_at or '-' }}</p>
+                {% if worker.current_task %}
+                  <p class="muted">current {{ worker.current_task_type }} · {{ worker.current_task }}</p>
+                {% endif %}
+                {% if worker.last_error %}
+                  <p class="logs-error">{{ worker.last_error }}</p>
+                {% endif %}
+              </article>
+            {% endfor %}
+            {% if workers["items"]|length > 3 %}
+              <details class="logs-details logs-more-details">
+                <summary>나머지 worker {{ workers["items"]|length - 3 }}개 보기</summary>
+                <div class="logs-list">
+                  {% for worker in workers["items"][3:] %}
+                    <article class="logs-row">
+                      <div class="logs-row-main">
+                        <strong class="logs-code">{{ worker.worker_id }}</strong>
+                        <span class="tiny-badge">{{ worker.status }}</span>
+                      </div>
+                      <p>처리 {{ worker.processed_count }}건 · heartbeat {{ worker.heartbeat_at or '-' }}</p>
+                      {% if worker.current_task %}
+                        <p class="muted">current {{ worker.current_task_type }} · {{ worker.current_task }}</p>
+                      {% endif %}
+                      {% if worker.last_error %}
+                        <p class="logs-error">{{ worker.last_error }}</p>
+                      {% endif %}
+                    </article>
+                  {% endfor %}
+                </div>
+              </details>
+            {% endif %}
+          </div>
+        {% else %}
+          <p class="muted">아직 worker heartbeat가 없습니다.</p>
+        {% endif %}
+      </section>
+
+      <section class="panel logs-card logs-card-local-jobs">
+        <div class="logs-card-head">
+          <div>
+            <h2>최근 local jobs</h2>
+            <p class="panel-subtitle">system_app에서 agent_server로 보낸 작업</p>
+          </div>
+          <span class="badge neutral">{{ local_jobs.count }}건</span>
+        </div>
+        {% if local_jobs["items"] %}
+          <div class="logs-list">
+            {% for job in local_jobs["items"] %}
+              <article class="logs-row">
+                <div class="logs-row-main">
+                  <strong>#{{ job.id }} {{ job.job_type }}</strong>
+                  <span class="tiny-badge">{{ job.status_label }}</span>
+                </div>
+                <p>{{ job.subject }} · 시도 {{ job.attempts }}회 · {{ job.updated_label }}</p>
+                {% if job.error_message %}
+                  <p class="logs-error">{{ job.error_message }}</p>
+                {% endif %}
+                <details class="logs-details">
+                  <summary>Root-cause detail</summary>
+                  <p><strong>cause</strong> {{ job.root_cause }}</p>
+                  <p><strong>payload</strong> {{ job.payload_keys|join(', ') if job.payload_keys else '-' }}</p>
+                </details>
+                {% if job.status == 'failed' %}
+                  <form class="logs-promote-form" hx-post="/logs/eval-backlog/promote" hx-target="#logs-panel" hx-swap="outerHTML">
+                    <input type="hidden" name="source_type" value="job">
+                    <input type="hidden" name="source_id" value="{{ job.id }}">
+                    <input type="hidden" name="reason" value="failed local job promoted from LOGS">
+                    <button class="compact-button" type="submit">Eval backlog 등록</button>
+                  </form>
+                {% endif %}
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="muted">최근 local agent job이 없습니다.</p>
+        {% endif %}
+      </section>
+
+      <section class="panel logs-card logs-card-alerts">
+        <div class="logs-card-head">
+          <div>
+            <h2>Agent Alerts</h2>
+            <p class="panel-subtitle">{{ alerts.rule_id }} · circuit {{ alerts.status }}</p>
+          </div>
+          <span class="badge {{ 'alert' if alerts.count else 'run' }}">{{ alerts.count }} alerts</span>
+        </div>
+        <div class="ops-metric-grid">
+          {% for metric in alerts.metrics %}
+            <div><span>{{ metric.label }}</span><strong>{{ metric.value }}</strong></div>
+          {% endfor %}
+        </div>
+        {% if alerts["items"] %}
+          <div class="logs-list">
+            {% for alert in alerts["items"] %}
+              <article class="logs-row">
+                <div class="logs-row-main">
+                  <strong>{{ alert.code }}</strong>
+                  <span class="tiny-badge">{{ alert.severity }}</span>
+                </div>
+                <p>{{ alert.message }}</p>
+                <p class="muted">owner {{ alert.owner }} · action {{ alert.action_status }} · runbook {{ alert.runbook }}</p>
+                {% if alert.details %}
+                  <p class="muted">{{ alert.details }}</p>
+                {% endif %}
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="muted">현재 활성 agent alert가 없습니다.</p>
+        {% endif %}
+      </section>
+
+      <section class="panel logs-card logs-card-incident-timeline">
+        <div class="logs-card-head">
+          <div>
+            <h2>Incident Timeline</h2>
+            <p class="panel-subtitle">{{ incident_timeline.rule_id }} · Detect → Diagnose → Contain → Fix</p>
+          </div>
+          <span class="badge {{ 'alert' if incident_timeline.status == 'needs_action' else 'run' }}">{{ incident_timeline.status }}</span>
+        </div>
+        <div class="ops-chip-row">
+          <span class="ops-chip">open {{ incident_timeline.open_count }}</span>
+          {% for row in incident_timeline.stage_counts %}
+            <span class="ops-chip">{{ row.label }} · {{ row.value }}</span>
+          {% endfor %}
+        </div>
+        {% if incident_timeline["items"] %}
+          <div class="logs-list logs-incident-timeline">
+            {% for item in incident_timeline["items"] %}
+              <article class="logs-row incident-row">
+                <div class="logs-row-main">
+                  <strong>{{ item.title }}</strong>
+                  <span class="tiny-badge incident-stage">{{ item.stage }}</span>
+                </div>
+                <p>{{ item.detail }}</p>
+                <p class="muted">owner {{ item.owner }} · status {{ item.status }} · severity {{ item.severity }}{% if item.time_label %} · {{ item.time_label }}{% endif %}</p>
+                {% if item.trace_id %}
+                  <p class="logs-code">{{ item.trace_id }}</p>
+                {% elif item.source_id %}
+                  <p class="logs-code">{{ item.source_type }}:{{ item.source_id }}</p>
+                {% endif %}
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="muted">현재 incident timeline에 표시할 활성 항목이 없습니다.</p>
+        {% endif %}
+      </section>
+
+      <section class="panel logs-card logs-card-trace">
+        <div class="logs-card-head">
+          <div>
+            <h2>Trace Dashboard</h2>
+            <p class="panel-subtitle">{{ trace.subtitle }}</p>
+          </div>
+          <span class="badge neutral">{{ trace.event_count }} events</span>
+        </div>
+        <div class="ops-chip-row">
+          {% for row in trace.step_counts %}
+            <span class="ops-chip">{{ row.label }} · {{ row.value }}</span>
+          {% endfor %}
+          <span class="ops-chip">avg model {{ trace.avg_model_latency_ms }} ms</span>
+          <span class="ops-chip">p95 model {{ trace.p95_model_latency_ms }} ms</span>
+          <span class="ops-chip">{{ trace.retention.policy_id }} · normal {{ trace.retention.normal_days }}d · problem {{ trace.retention.problem_days }}d · {{ trace.retention.mode }}</span>
+          <span class="ops-chip">retention dry-run: {{ trace.retention.expired_count }} expired events</span>
+        </div>
+        <div class="logs-actions">
+          <form hx-post="/logs/traces/retention-cleanup" hx-target="#logs-panel" hx-swap="outerHTML">
+            <input type="hidden" name="mode" value="dry_run">
+            <button class="compact-button ghost" type="submit">Retention dry-run 기록</button>
+          </form>
+          <form hx-post="/logs/traces/retention-cleanup" hx-target="#logs-panel" hx-swap="outerHTML">
+            <input type="hidden" name="mode" value="execute">
+            <button class="compact-button ghost" type="submit">Retention cleanup 실행</button>
+          </form>
+        </div>
+        {% if trace.traces %}
+          <div class="trace-list">
+            {% for item in trace.traces %}
+              <article class="logs-row trace-row">
+                <div class="logs-row-main">
+                  <strong>{{ item.workflow_name or item.decision_type }}</strong>
+                  <span class="logs-code">{{ item.short_trace_id }}</span>
+                </div>
+                <p>{{ item.agent_name or '-' }} · {{ item.updated_label }} · {{ item.span_count }} spans · root cause {{ item.root_cause }}</p>
+                <p class="muted">{{ item.model_id or item.provider }}{% if item.model_tier %} · {{ item.model_tier }}{% endif %}{% if item.latency_ms %} · {{ item.latency_ms }} ms{% endif %}</p>
+                {% if item.error_message %}
+                  <p class="logs-error">{{ item.error_message }}</p>
+                {% endif %}
+                <details class="logs-details">
+                  <summary>Root-cause detail</summary>
+                  {% if item.steps %}
+                    <div class="tool-log-row">
+                      {% for step in item.steps %}
+                        <span>{{ step.step_type }} · {{ step.step_name }} · {{ step.status }}{% if step.latency_ms %} · {{ step.latency_ms }} ms{% endif %}{% if step.side_effect_level %} · {{ step.side_effect_level }}{% endif %}</span>
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    <p class="muted">span detail 없음</p>
+                  {% endif %}
+                </details>
+                <div class="logs-actions">
+                  <button
+                    class="compact-button ghost"
+                    type="button"
+                    hx-get="/partials/logs/traces/{{ item.trace_id }}"
+                    hx-target="#trace-replay-panel"
+                    hx-swap="outerHTML">Replay 상세</button>
+                  <form hx-post="/logs/traces/replay-artifact" hx-target="#logs-panel" hx-swap="outerHTML">
+                    <input type="hidden" name="trace_id" value="{{ item.trace_id }}">
+                    <button class="compact-button ghost" type="submit">Replay artifact 생성</button>
+                  </form>
+                  <form hx-post="/logs/traces/replay-to-eval" hx-target="#logs-panel" hx-swap="outerHTML">
+                    <input type="hidden" name="trace_id" value="{{ item.trace_id }}">
+                    <button class="compact-button" type="submit">Eval backlog 등록</button>
+                  </form>
+                </div>
+                {% if item.status == 'failed' or item.error_message %}
+                  <form class="logs-promote-form" hx-post="/logs/eval-backlog/promote" hx-target="#logs-panel" hx-swap="outerHTML">
+                    <input type="hidden" name="source_type" value="trace">
+                    <input type="hidden" name="trace_id" value="{{ item.trace_id }}">
+                    <input type="hidden" name="reason" value="failed trace promoted from LOGS">
+                    <button class="compact-button" type="submit">Eval backlog 등록</button>
+                  </form>
+                {% endif %}
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="muted">아직 agent trace가 없습니다.</p>
+        {% endif %}
+        <div id="trace-replay-panel" class="trace-replay-panel">
+          <p class="muted">Trace를 선택하면 replay/detail payload가 여기에 표시됩니다.</p>
+        </div>
+      </section>
+
+      <section class="panel logs-card logs-card-agent-history">
+        <div class="logs-card-head">
+          <div>
+            <h2>에이전트 대화 이력</h2>
+            <p class="panel-subtitle">system policy request와 chat continuation 상태</p>
+          </div>
+          <span class="badge neutral">{{ agent_history.count }}건</span>
+        </div>
+        {% if agent_history["items"] %}
+          <div class="logs-list">
+            {% for item in agent_history["items"] %}
+              <article class="logs-row">
+                <div class="logs-row-main">
+                  <strong>{{ item.message }}</strong>
+                  <span class="tiny-badge">{{ item.status_label }}</span>
+                </div>
+                <p>{{ item.time_label }}{% if item.agent_name %} · {{ item.agent_name }}{% endif %}{% if item.decision_type %} · {{ item.decision_type }}{% endif %}</p>
+                {% if item.result_message %}
+                  <p class="muted">{{ item.result_message }}</p>
+                {% endif %}
+                {% if item.trace_id %}
+                  <p class="logs-code">{{ item.trace_id }}</p>
+                {% endif %}
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="muted">아직 에이전트와 나눈 대화가 없습니다.</p>
+        {% endif %}
+      </section>
+
+      <section class="panel logs-card logs-card-tool-logs">
+        <div class="logs-card-head">
+          <div>
+            <h2>툴 실행 로그</h2>
+            <p class="panel-subtitle">{{ tool_logs.subtitle }}</p>
+          </div>
+          <span class="badge neutral">{{ tool_logs.count }}건</span>
+        </div>
+        {% if tool_logs["items"] %}
+          <div class="logs-list">
+            {% for item in tool_logs["items"] %}
+              <article class="logs-row">
+                <div class="logs-row-main">
+                  <strong>{{ item.event_type }}</strong>
+                  <span class="tiny-badge">{{ item.decision_type }}</span>
+                </div>
+                <p>{{ item.source_event_type }} · {{ item.created_label }} · root cause {{ item.root_cause }}</p>
+                <p>{{ item.summary }}</p>
+                {% if item.tools %}
+                  <div class="tool-log-row">
+                    {% for tool in item.tools %}
+                      <span>{{ tool.name }} · {{ tool.source_label }} · {{ tool.status }} · risk {{ tool.risk }} · {{ tool.side_effect }}</span>
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <p class="muted">tool call/result 없음</p>
+                {% endif %}
+                {% if item.error_message %}
+                  <p class="logs-error">{{ item.error_message }}</p>
+                  <form class="logs-promote-form" hx-post="/logs/eval-backlog/promote" hx-target="#logs-panel" hx-swap="outerHTML">
+                    <input type="hidden" name="source_type" value="audit">
+                    <input type="hidden" name="source_id" value="{{ item.audit_id }}">
+                    <input type="hidden" name="trace_id" value="{{ item.trace_id }}">
+                    <input type="hidden" name="reason" value="failed tool audit promoted from LOGS">
+                    <button class="compact-button" type="submit">Eval backlog 등록</button>
+                  </form>
+                {% endif %}
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="muted">아직 agent audit 로그가 없습니다.</p>
+        {% endif %}
+      </section>
+    </div>
+
+    <aside class="logs-dashboard-side">
+      <section class="panel logs-card panel-form logs-card-prompt-ops">
+        <div class="logs-card-head">
+          <div>
+            <h2>Prompt/Model Operations</h2>
+            <p class="panel-subtitle">{{ prompt_model_ops.config_url }}</p>
+          </div>
+          <span class="badge {{ 'run' if prompt_model_ops.status == 'ok' else 'neutral' }}">{{ prompt_model_ops.status }}</span>
+        </div>
+        <div class="ops-route-grid">
+          <div class="ops-route-item">
+            <span>Current</span>
+            <strong>{{ prompt_model_ops.provider }} · {{ prompt_model_ops.model_tier }}</strong>
+            <code>{{ prompt_model_ops.model_id }}</code>
+          </div>
+          <div class="ops-route-item">
+            <span>Fallback</span>
+            <strong>{{ prompt_model_ops.fallback_provider }} · {{ prompt_model_ops.fallback_status }}</strong>
+            <code>drills {{ prompt_model_ops.drill_count }}</code>
+          </div>
+        </div>
+        {% if prompt_model_ops.config_error %}
+          <p class="logs-error">{{ prompt_model_ops.config_error }}</p>
+        {% endif %}
+        <form class="logs-change-form" hx-post="/logs/model-config/rollback" hx-target="#logs-panel" hx-swap="outerHTML">
+          <div class="logs-form-grid">
+            <label>
+              <span>Rollback tier</span>
+              <select name="model_tier">
+                {% for tier in prompt_model_ops.available_tiers %}
+                  <option value="{{ tier.tier }}" {{ "selected" if tier.tier == prompt_model_ops.rollback_tier else "" }}>{{ tier.tier }}{% if tier.is_current %} (current){% endif %}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              <span>Reason</span>
+              <input name="reason" value="LOGS model rollback">
+            </label>
+          </div>
+          <button class="compact-button" type="submit">모델 설정 롤백</button>
+        </form>
+        <div class="logs-actions">
+          <form hx-post="/logs/model-fallback/drill" hx-target="#logs-panel" hx-swap="outerHTML">
+            <input type="hidden" name="drill_mode" value="testbed">
+            <button class="compact-button ghost" type="submit">Testbed fallback 기록</button>
+          </form>
+          <form hx-post="/logs/model-fallback/drill" hx-target="#logs-panel" hx-swap="outerHTML">
+            <input type="hidden" name="drill_mode" value="rule_based">
+            <button class="compact-button ghost" type="submit">Rule-based fallback 기록</button>
+          </form>
+        </div>
+        <div class="ops-chip-row">
+          {% for tier in prompt_model_ops.available_tiers %}
+            <span class="ops-chip {{ 'is-current' if tier.is_current else '' }}">{{ tier.tier }} · {{ tier.model_id }}</span>
+          {% endfor %}
+          {% if prompt_model_ops.last_drill %}
+            <span class="ops-chip">last drill {{ prompt_model_ops.last_drill.id }} · {{ prompt_model_ops.last_drill.drill_mode or prompt_model_ops.last_drill.status }}</span>
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="panel logs-card panel-form logs-card-prompt-approval">
+        <div class="logs-card-head">
+          <div>
+            <h2>Prompt/Model Change Approval</h2>
+            <p class="panel-subtitle">{{ prompt_model_approval.path }}</p>
+          </div>
+          <span class="badge neutral">{{ prompt_model_approval.pending_count }} pending</span>
+        </div>
+        <div class="ops-chip-row">
+          {% for row in prompt_model_approval.approval_counts %}
+            <span class="ops-chip">{{ row.label }} · {{ row.value }}</span>
+          {% endfor %}
+          {% if not prompt_model_approval.approval_counts %}
+            <span class="ops-chip">no recorded approvals</span>
+          {% endif %}
+        </div>
+        <form class="logs-change-form" hx-post="/logs/governance/change-log" hx-target="#logs-panel" hx-swap="outerHTML">
+          <div class="logs-form-grid">
+            <label>
+              <span>Type</span>
+              <select name="change_type">
+                <option value="prompt">prompt</option>
+                <option value="model">model</option>
+                <option value="tool">tool</option>
+              </select>
+            </label>
+            <label>
+              <span>Target</span>
+              <input name="target" placeholder="prompt version, model tier, tool name" required>
+            </label>
+            <label class="logs-form-wide">
+              <span>Summary</span>
+              <input name="summary" placeholder="what changed and why" required>
+            </label>
+            <label>
+              <span>Owner</span>
+              <input name="owner" placeholder="ai-ops-owner">
+            </label>
+            <label>
+              <span>Rollback</span>
+              <input name="rollback" placeholder="last known-good config">
+            </label>
+            <label class="logs-form-wide">
+              <span>Evidence</span>
+              <input name="evidence" placeholder="eval report, trace, or reviewer note">
+            </label>
+          </div>
+          <button class="compact-button" type="submit">승인 요청 검증/기록</button>
+        </form>
+        {% if prompt_model_approval.recent %}
+          <div class="logs-list">
+            {% for entry in prompt_model_approval.recent %}
+              <article class="logs-row">
+                <div class="logs-row-main">
+                  <strong>{{ entry.target }}</strong>
+                  <span class="tiny-badge">{{ entry.change_type }}</span>
+                </div>
+                <p>{{ entry.summary }}</p>
+                <p class="muted">owner {{ entry.owner }} · {{ entry.approval_status }} · {{ entry.created_at }}</p>
+                <p class="muted">rollback {{ entry.rollback }}</p>
+                {% if entry.evidence %}
+                  <p class="muted">evidence {{ entry.evidence }}</p>
+                {% endif %}
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="muted">아직 prompt/model/tool change 기록이 없습니다.</p>
+        {% endif %}
+      </section>
+
+      <section class="panel logs-card logs-card-business">
+        <div class="logs-card-head">
+          <div>
+            <h2>Business Metric Gate</h2>
+            <p class="panel-subtitle">{{ business_gate.rule_id }} · {{ quality.rule_id }} · {{ controls.cost_budget.rule_id }}</p>
+          </div>
+          <span class="badge {{ 'alert' if business_gate.release_gate_status == 'release_blocked' else 'run' if business_gate.release_gate_status == 'release_ready' else 'neutral' }}">{{ business_gate.release_gate_status }}</span>
+        </div>
+        <div class="ops-metric-grid">
+          <div><span>score</span><strong>{{ business_gate.score }}/100</strong></div>
+          <div><span>pass</span><strong>{{ business_gate.pass_count }}</strong></div>
+          <div><span>watch</span><strong>{{ business_gate.watch_count }}</strong></div>
+          <div><span>blocking</span><strong>{{ business_gate.blocking_count }}</strong></div>
+          <div><span>hard blockers</span><strong>{{ business_gate.hard_blocker_count }}</strong></div>
+          <div><span>daily cost</span><strong>${{ business_gate.cost_budget.projected_daily_usd }}</strong></div>
+          <div><span>eval blockers</span><strong>{{ business_gate.eval_backlog.blocking_count }}</strong></div>
+        </div>
+        <div class="ops-chip-row">
+          <span class="ops-chip {{ 'is-warning' if business_gate.release_gate_status == 'release_blocked' else 'is-current' if business_gate.release_gate_status == 'release_ready' else '' }}">{{ business_gate.release_decision }}</span>
+        </div>
+        <div class="logs-gate-list">
+          {% for gate in business_gate.quality_gates %}
+            <span class="logs-gate is-{{ gate.status }}">{{ gate.label }} · {{ gate.current }} / {{ gate.target }}</span>
+          {% endfor %}
+          {% for gate in business_gate.blocking_gates %}
+            <span class="logs-gate is-blocking">{{ gate.label }} · {{ gate.evidence }}</span>
+          {% endfor %}
+          {% for blocker in business_gate.hard_blockers %}
+            <span class="logs-gate is-blocking">hard blocker · {{ blocker.label }} · {{ blocker.evidence }}</span>
+          {% endfor %}
+        </div>
+        <div class="ops-chip-row">
+          <span class="ops-chip">latest eval {{ business_gate.latest_eval.status }}{% if business_gate.latest_eval.available %} · {{ business_gate.latest_eval.path }}{% endif %}</span>
+          {% if business_gate.latest_report.available %}
+            <span class="ops-chip">latest report {{ business_gate.latest_report.status }} · {{ business_gate.latest_report.path }}</span>
+          {% else %}
+            <span class="ops-chip">latest report missing</span>
+          {% endif %}
+          <span class="ops-chip">eval backlog {{ eval_backlog.count }} cases</span>
+          <span class="ops-chip">included {{ eval_backlog.included_count }}</span>
+          <span class="ops-chip">excluded {{ eval_backlog.excluded_count }}</span>
+          <span class="ops-chip {{ 'is-warning' if eval_backlog.blocking_count else '' }}">CI blocking {{ eval_backlog.blocking_count }}</span>
+          <span class="ops-chip">open {{ eval_backlog.lifecycle_counts.open }}</span>
+          <span class="ops-chip">reviewed {{ eval_backlog.lifecycle_counts.reviewed }}</span>
+          <span class="ops-chip">cleared {{ eval_backlog.lifecycle_counts.cleared }}</span>
+        </div>
+        <div class="logs-actions">
+          <form hx-post="/logs/release-readiness/report" hx-target="#logs-panel" hx-swap="outerHTML">
+            <button class="compact-button" type="submit">릴리즈 리포트 생성</button>
+          </form>
+          <form hx-post="/logs/online-eval/scan" hx-target="#logs-panel" hx-swap="outerHTML">
+            <button class="compact-button ghost" type="submit">온라인 eval 스캔 기록</button>
+          </form>
+        </div>
+        {% if eval_backlog.recent %}
+          <div class="logs-list">
+            {% for case in eval_backlog.recent %}
+              <article class="logs-row">
+                <div class="logs-row-main">
+                  <strong>{{ case.title }}</strong>
+                  <span class="tiny-badge">{{ case.severity }}</span>
+                </div>
+                <p>{{ case.id }} · owner {{ case.owner }}</p>
+                <p>
+                  <span class="logs-suite-status is-lifecycle-{{ case.lifecycle_status }}">lifecycle {{ case.lifecycle_status }}</span>
+                  <span class="logs-suite-status is-{{ case.suite_status }}">{{ case.suite_status_label }}</span>
+                </p>
+                <div class="logs-actions">
+                  {% for next_status in ["open", "reviewed", "cleared"] %}
+                    {% if next_status != case.lifecycle_status %}
+                      <form hx-post="/logs/eval-backlog/status" hx-target="#logs-panel" hx-swap="outerHTML">
+                        <input type="hidden" name="case_id" value="{{ case.id }}">
+                        <input type="hidden" name="status" value="{{ next_status }}">
+                        <input type="hidden" name="reason" value="operator marked {{ next_status }} from LOGS">
+                        <button class="compact-button ghost" type="submit">{{ next_status }} 표시</button>
+                      </form>
+                    {% endif %}
+                  {% endfor %}
+                </div>
+              </article>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </section>
+
+      <section class="panel logs-card logs-card-data">
+        <div class="logs-card-head">
+          <div>
+            <h2>Data Quality Drift</h2>
+            <p class="panel-subtitle">{{ data_drift.rule_id }}</p>
+          </div>
+          <span class="badge {{ 'alert' if data_drift.status == 'degraded' else 'run' }}">{{ data_drift.status }}</span>
+        </div>
+        <div class="ops-metric-grid">
+          <div><span>missing</span><strong>{{ data_drift.missing_count }}</strong></div>
+          <div><span>needs review</span><strong>{{ data_drift.needs_review_count }}</strong></div>
+        </div>
+        <div class="ops-chip-row">
+          {% for row in data_drift.source_counts %}
+            <span class="ops-chip">{{ row.label }} · {{ row.value }}</span>
+          {% endfor %}
+          {% for row in data_drift.tool_freshness_counts %}
+            <span class="ops-chip">{{ row.label }} · {{ row.value }}</span>
+          {% endfor %}
+        </div>
+        <div class="tool-log-row">
+          {% for source in data_drift.data_sources %}
+            <span>{{ source.label }} · {{ source.status }} · {{ source.path }}</span>
+          {% endfor %}
+        </div>
+        <p class="muted logs-path">eval backlog {{ data_drift.eval_backlog_path }}</p>
+        <p class="muted logs-path">eval dataset {{ data_drift.eval_dataset_path }}</p>
+        <p class="muted logs-path">change log {{ data_drift.change_log_path }}</p>
+        {% if data_drift.eval_error %}
+          <p class="logs-error">{{ data_drift.eval_error }}</p>
+        {% endif %}
+      </section>
+
+      <section class="panel logs-card logs-card-catalog">
+        <div class="logs-card-head">
+          <div>
+            <h2>Tool/Data Catalog</h2>
+            <p class="panel-subtitle">{{ catalog.rule_id }} · {{ catalog.subtitle }}</p>
+          </div>
+          <span class="badge neutral">{{ catalog.count }} tools</span>
+        </div>
+        <div class="ops-chip-row">
+          {% for row in catalog.domain_counts %}
+            <span class="ops-chip">{{ row.label }} · {{ row.value }}</span>
+          {% endfor %}
+          {% for row in catalog.risk_counts %}
+            <span class="ops-chip">{{ row.label }} · {{ row.value }}</span>
+          {% endfor %}
+          {% for row in catalog.freshness_counts %}
+            <span class="ops-chip">{{ row.label }} · {{ row.value }}</span>
+          {% endfor %}
+        </div>
+        <div class="tool-catalog-grid">
+          {% for tool in catalog["items"][:6] %}
+            <article class="logs-row tool-catalog-item">
+              <div class="logs-row-main">
+                <strong>{{ tool.name }}</strong>
+                <span class="tiny-badge">{{ tool.domain }}</span>
+              </div>
+              <p>{{ tool.owner }} · {{ tool.source }}</p>
+              <p class="muted">{{ tool.freshness }} · {{ tool.access }} · {{ tool.side_effect }} · risk {{ tool.risk }} · HITL {{ tool.human_handoff_label }}</p>
+              <p>{{ tool.description }}</p>
+            </article>
+          {% endfor %}
+        </div>
+        {% if catalog["items"]|length > 6 %}
+          <details class="logs-details logs-more-details">
+            <summary>나머지 tool {{ catalog["items"]|length - 6 }}개 보기</summary>
+            <div class="tool-catalog-grid">
+              {% for tool in catalog["items"][6:] %}
+                <article class="logs-row tool-catalog-item">
+                  <div class="logs-row-main">
+                    <strong>{{ tool.name }}</strong>
+                    <span class="tiny-badge">{{ tool.domain }}</span>
+                  </div>
+                  <p>{{ tool.owner }} · {{ tool.source }}</p>
+                  <p class="muted">{{ tool.freshness }} · {{ tool.access }} · {{ tool.side_effect }} · risk {{ tool.risk }} · HITL {{ tool.human_handoff_label }}</p>
+                  <p>{{ tool.description }}</p>
+                </article>
+              {% endfor %}
+            </div>
+          </details>
+        {% endif %}
+      </section>
+    </aside>
+  </div>
+</section>

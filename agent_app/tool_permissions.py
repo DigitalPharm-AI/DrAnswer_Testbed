@@ -6,14 +6,27 @@ from shared.schemas import ToolCallResult
 
 SIDE_EFFECT_TOOLS = {"lookup_side_effect_info", "AE_pro_ctcae"}
 POLICY_TOOLS = {"apply_notification_policy", "apply_system_policy"}
+NUTRITION_TOOLS = {
+    "search_food_nutrition",
+    "record_meal",
+    "list_meals",
+    "get_daily_nutrition_summary",
+    "record_nutrition_preference",
+    "get_nutrition_preferences",
+}
+HIGH_RISK_HUMAN_HANDOFF_TOOLS = POLICY_TOOLS
 
 TOOL_ALLOWLIST: dict[str, set[str]] = {
     "daily_pattern": {"apply_notification_policy"},
     "manual_daily_pattern": {"apply_notification_policy"},
     "missed_dose": SIDE_EFFECT_TOOLS,
-    "multiturn_chat": {"mark_dose_taken", *SIDE_EFFECT_TOOLS, *POLICY_TOOLS},
-    "mcp": {"AE_pro_ctcae"},
+    "multiturn_chat": {"mark_dose_taken", *SIDE_EFFECT_TOOLS, *POLICY_TOOLS, *NUTRITION_TOOLS},
+    "mcp": {"AE_pro_ctcae", *NUTRITION_TOOLS},
 }
+
+
+def allowed_tool_names_for_source(source_event_type: str) -> set[str]:
+    return set(TOOL_ALLOWLIST.get(source_event_type, TOOL_ALLOWLIST.get("mcp", set())))
 
 
 def permission_denied_result(
@@ -38,7 +51,7 @@ def permission_denied_result(
 
 def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: str, payload: dict[str, Any]) -> str | None:
     tool_name = str(tool_call.get("name") or "")
-    allowed_tools = TOOL_ALLOWLIST.get(source_event_type, TOOL_ALLOWLIST.get("mcp", set()))
+    allowed_tools = allowed_tool_names_for_source(source_event_type)
     if tool_name not in allowed_tools:
         return f"{tool_name or 'unknown'} is not allowed for {source_event_type}"
     arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
@@ -52,7 +65,31 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
         str(arguments.get("symptom_text") or "").strip() or str(arguments.get("symptom_normalize") or "").strip()
     ):
         return "AE_pro_ctcae requires symptom_text or symptom_normalize"
+    if tool_name == "search_food_nutrition" and not str(arguments.get("query") or "").strip():
+        return "search_food_nutrition requires query"
+    if tool_name == "record_meal":
+        if arguments.get("meal_type") not in {"breakfast", "lunch", "dinner", "snack"}:
+            return "record_meal requires meal_type"
+        if not isinstance(arguments.get("foods"), list) or not arguments.get("foods"):
+            return "record_meal requires foods"
+    if tool_name == "record_nutrition_preference":
+        if arguments.get("predicate") not in {
+            "likes",
+            "dislikes",
+            "prefers",
+            "avoids_by_preference",
+            "allergic_to",
+            "medically_avoids",
+            "religious_avoids",
+        }:
+            return "record_nutrition_preference requires supported predicate"
+        if not str(arguments.get("object_label") or "").strip():
+            return "record_nutrition_preference requires object_label"
     return None
+
+
+def requires_human_handoff(tool_name: str) -> bool:
+    return str(tool_name or "") in HIGH_RISK_HUMAN_HANDOFF_TOOLS
 
 
 def _validate_mark_dose_taken(arguments: dict[str, Any], *, source_event_type: str, payload: dict[str, Any]) -> str | None:

@@ -3,15 +3,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import desc, select
 
 from shared.json_utils import dump_json as dump_metadata_json
 from shared.json_utils import parse_json_object as parse_metadata_json
+from shared.redaction import safe_exception_summary
 from shared.schemas import AgentCallbackContext
 from shared.settings import get_settings
+from shared.time_utils import utc_now
 from system_app.db import SessionLocal
 from system_app.models import AgentJob, Base, Notification
 from system_app.services import trace_logging
@@ -28,12 +30,14 @@ from system_app.services.agent_jobs import (
 )
 from system_app.services.clock_service import ensure_clock
 from system_app.services.dose_event_service import ensure_day_events, prepare_notification_window
+from system_app.services.failure_copy import copy_for_async_task
 from system_app.services.patient_profile_service import can_run_simulation, ensure_base_data
 from system_app.services.system_request_service import (
     apply_async_continuation_ack,
     apply_system_event_response,
     build_async_continuation_request,
     build_multiturn_chat_request,
+    mark_system_event_async_submitted,
     mark_system_event_request_failed,
     response_requires_async_continuation,
 )
@@ -52,15 +56,15 @@ def clock_worker(stop_event: threading.Event, write_lock: threading.RLock) -> No
                     if not can_run_simulation(session):
                         clock.is_running = False
                         clock.speed_multiplier = 0
-                        clock.last_tick_real_at = datetime.utcnow()
+                        clock.last_tick_real_at = utc_now()
                         session.commit()
                         continue
                     clock.current_time = clock.current_time + timedelta(minutes=clock.speed_multiplier)
                     ensure_day_events(session, clock.current_time.date())
-                    clock.last_tick_real_at = datetime.utcnow()
+                    clock.last_tick_real_at = utc_now()
                     session.commit()
         except Exception as exc:  # pragma: no cover - defensive path
-            logger.exception("clock_worker_loop_failed error=%s", exc)
+            logger.error("clock_worker_loop_failed error=%s", safe_exception_summary(exc))
             stop_event.wait(1)
 
 
@@ -103,7 +107,7 @@ def mark_awaiting_conversation_alert_failed(
             "trace_id": getattr(error, "trace_id", metadata.get("trace_id")),
         }
     )
-    notification.body = "AI가 미복용 상황을 처리하지 못했습니다. AI 에이전트 오류 알림에서 다시 시도할 수 있습니다."
+    notification.body = copy_for_async_task("missed_dose").body
     notification.metadata_json = dump_metadata_json(metadata)
     session.flush()
 
@@ -115,7 +119,8 @@ def persist_agent_failure(job_id: int, source_event_type: str, payload: object, 
             if job is None or job.status != RUNNING:
                 logger.debug("agent_job_failure_discarded job_id=%s job_type=%s reason=stale_or_missing", job_id, source_event_type)
                 return
-            mark_agent_job_failed(session, job_id, str(error))
+            safe_error = safe_exception_summary(error)
+            mark_agent_job_failed(session, job_id, safe_error)
             job = session.get(AgentJob, job_id)
             related_dose_event_id = getattr(payload, "dose_event_id", None)
             mark_awaiting_conversation_alert_failed(session, source_event_type, related_dose_event_id, job_id, error)
@@ -123,16 +128,16 @@ def persist_agent_failure(job_id: int, source_event_type: str, payload: object, 
                 session,
                 source_event_type,
                 error,
-                user_message="백그라운드 AI 작업을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.",
+                user_message=copy_for_async_task(source_event_type).body,
                 related_dose_event_id=related_dose_event_id,
                 metadata=agent_job_runtime_metadata(job),
             )
             session.commit()
-            logger.exception("agent_job_failed job_id=%s job_type=%s error=%s", job_id, source_event_type, error)
+            logger.error("agent_job_failed job_id=%s job_type=%s error=%s", job_id, source_event_type, safe_error)
 
 
 def fail_agent_job_before_send(session, job: AgentJob, error: Exception) -> None:
-    mark_agent_job_failed(session, job.id, str(error))
+    mark_agent_job_failed(session, job.id, safe_exception_summary(error))
     mark_awaiting_conversation_alert_failed(session, job.job_type, job.related_dose_event_id, job.id, error)
     present_agent_error(
         session,
@@ -160,14 +165,14 @@ def agent_worker(stop_event: threading.Event, write_lock: threading.RLock, agent
                         try:
                             payload = deserialize_agent_job_payload(job)
                         except Exception as exc:
-                            logger.exception("agent_job_payload_invalid job_id=%s job_type=%s", job_id, job_type)
+                            logger.error("agent_job_payload_invalid job_id=%s job_type=%s error=%s", job_id, job_type, safe_exception_summary(exc))
                             fail_agent_job_before_send(session, job, exc)
                             session.commit()
                             continue
                         job_snapshot = (job_id, job_type, payload)
                         session.commit()
         except Exception as exc:  # pragma: no cover - defensive path
-            logger.exception("agent_worker_loop_failed error=%s", exc)
+            logger.error("agent_worker_loop_failed error=%s", safe_exception_summary(exc))
             stop_event.wait(1)
             continue
 
@@ -213,6 +218,28 @@ def system_event_worker(
             phr_registered=bool(request.phr_patient_key),
             context_keys=sorted(request.context.keys()),
         )
+        if hasattr(agent_client, "send_chat_continuation_async"):
+            accepted = asyncio.run(agent_client.send_chat_continuation_async(request))
+            with write_lock:
+                with SessionLocal() as session:
+                    mark_system_event_async_submitted(
+                        session,
+                        event_type,
+                        message,
+                        notification_id,
+                        request_id=getattr(accepted, "request_id", ""),
+                        task_type=getattr(accepted, "task_type", "chat_continuation"),
+                    )
+                    session.commit()
+            trace_logging.log_info(
+                "system_event_async_chat_submitted",
+                event_type=event_type,
+                notification_id=notification_id,
+                request_id=getattr(accepted, "request_id", ""),
+                task_type=getattr(accepted, "task_type", "chat_continuation"),
+            )
+            return
+
         response = asyncio.run(agent_client.send_multiturn_chat(request))
         trace_logging.log_info(
             "system_event_agent_call_completed",
@@ -259,13 +286,14 @@ def system_event_worker(
             decision=response.decision_type,
         )
     except Exception as exc:  # pragma: no cover - defensive path
-        logger.exception("system_event_worker_failed notification_id=%s event_type=%s error=%s", notification_id, event_type, exc)
+        safe_error = safe_exception_summary(exc)
+        logger.error("system_event_worker_failed notification_id=%s event_type=%s error=%s", notification_id, event_type, safe_error)
         trace_logging.log_warning(
             "system_event_worker_failed",
             event_type=event_type,
             notification_id=notification_id,
             error_type=type(exc).__name__,
-            error=trace_logging.snippet(exc, 220),
+            error=safe_error,
         )
         with write_lock:
             with SessionLocal() as session:
@@ -298,7 +326,7 @@ def notification_worker(stop_event: threading.Event, write_lock: threading.RLock
                         create_agent_job(session, "daily_pattern", pattern)
                         session.commit()
         except Exception as exc:  # pragma: no cover - defensive path
-            logger.exception("notification_worker_loop_failed error=%s", exc)
+            logger.error("notification_worker_loop_failed error=%s", safe_exception_summary(exc))
             stop_event.wait(1)
 
 

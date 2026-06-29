@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from datetime import date, datetime
+from types import SimpleNamespace
 
 import system_app.main as system_main
 import system_app.services.workers as worker_services
@@ -67,6 +68,21 @@ class LockCheckingSystemEventAgentClient:
         )
 
 
+class LockCheckingAsyncSystemEventAgentClient:
+    def __init__(self, write_lock: threading.Lock) -> None:
+        self.write_lock = write_lock
+        self.called_without_write_lock = False
+        self.payload_message = ""
+
+    async def send_chat_continuation_async(self, payload):
+        acquired = self.write_lock.acquire(blocking=False)
+        if acquired:
+            self.called_without_write_lock = True
+            self.write_lock.release()
+        self.payload_message = payload.message
+        return SimpleNamespace(request_id="chat_continuation:conversation:system-event-test", task_type="chat_continuation")
+
+
 def test_handle_system_event_creates_agent_error_notification_and_chat():
     with build_session() as session:
         ensure_base_data(session)
@@ -112,6 +128,34 @@ def test_system_event_worker_releases_write_lock_while_calling_agent(monkeypatch
         assert metadata["status"] == "answered"
         assert assistant_message.content == "증상 질문에 답변했습니다."
         assert session.query(Notification).filter(Notification.notification_type == "agent_error").count() == 0
+
+
+def test_system_event_worker_submits_chat_to_agent_async_without_write_lock(monkeypatch):
+    session_factory = build_threadsafe_session_factory()
+    write_lock = threading.Lock()
+    client = LockCheckingAsyncSystemEventAgentClient(write_lock)
+    with session_factory() as session:
+        ensure_base_data(session)
+        clock = ensure_clock(session)
+        notification = create_system_event_request(session, "multiturn_chat", "오늘 점심과 복약을 같이 봐줘", clock.current_time)
+        notification_id = notification.id
+        session.commit()
+
+    monkeypatch.setattr(worker_services, "SessionLocal", session_factory)
+
+    worker_services.system_event_worker("multiturn_chat", "오늘 점심과 복약을 같이 봐줘", notification_id, write_lock, client)
+
+    with session_factory() as session:
+        notification = session.get(Notification, notification_id)
+        metadata = json.loads(notification.metadata_json)
+
+        assert client.called_without_write_lock is True
+        assert client.payload_message == "오늘 점심과 복약을 같이 봐줘"
+        assert notification.title == "에이전트 답변 대기"
+        assert metadata["status"] == "awaiting_agent"
+        assert metadata["async_continuation_status"] == "pending"
+        assert metadata["agent_async_request_id"] == "chat_continuation:conversation:system-event-test"
+        assert session.query(ChatMessage).filter(ChatMessage.role == "assistant", ChatMessage.category == "multiturn_chat").count() == 0
 
 
 def test_run_manual_pattern_analysis_enqueues_daily_pattern_job_without_waiting_for_agent():

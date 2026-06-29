@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from shared.schemas import PhrMedicationRegistrationItem, PhrPatientRegistrationResult
 from shared.settings import get_settings
+from shared.time_utils import utc_now
 from system_app.models import ChatMessage, MedicationPlan, SimulationPatientProfile
 from system_app.services.clock_service import ensure_clock
 from system_app.services.simulation_constants import PHR_SYNC_FAILED, PHR_SYNC_NEEDS_SYNC, PHR_SYNC_SYNCED, PHR_SYNC_UNREGISTERED
@@ -32,7 +31,7 @@ def ensure_patient_profile(session: Session) -> SimulationPatientProfile:
         phr_patient_key="",
         sync_status=PHR_SYNC_UNREGISTERED,
         error_message="",
-        updated_at=datetime.utcnow(),
+        updated_at=utc_now(),
     )
     session.add(profile)
     session.flush()
@@ -48,11 +47,11 @@ def mark_phr_sync_needed(session: Session) -> None:
     profile = ensure_patient_profile(session)
     profile.sync_status = PHR_SYNC_NEEDS_SYNC if profile.phr_patient_key else PHR_SYNC_UNREGISTERED
     profile.error_message = ""
-    profile.updated_at = datetime.utcnow()
+    profile.updated_at = utc_now()
     clock = ensure_clock(session)
     clock.is_running = False
     clock.speed_multiplier = 0
-    clock.last_tick_real_at = datetime.utcnow()
+    clock.last_tick_real_at = utc_now()
     session.flush()
 
 def build_phr_registration_items(session: Session) -> list[PhrMedicationRegistrationItem]:
@@ -61,7 +60,7 @@ def build_phr_registration_items(session: Session) -> list[PhrMedicationRegistra
 
 def apply_phr_registration_result(session: Session, result: PhrPatientRegistrationResult) -> SimulationPatientProfile:
     profile = ensure_patient_profile(session)
-    now = datetime.utcnow()
+    now = utc_now()
     profile.phr_patient_key = result.phr_patient_key
     profile.sync_status = PHR_SYNC_SYNCED
     profile.error_message = ""
@@ -75,7 +74,7 @@ def mark_phr_sync_failed(session: Session, error_message: str) -> SimulationPati
     profile = ensure_patient_profile(session)
     profile.sync_status = PHR_SYNC_FAILED
     profile.error_message = error_message[:1000]
-    profile.updated_at = datetime.utcnow()
+    profile.updated_at = utc_now()
     session.flush()
     return profile
 

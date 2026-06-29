@@ -153,6 +153,14 @@
   color: var(--error-ink);
 }
 
+.chat-message.nutrition {
+  border-color: rgba(79, 143, 99, 0.22);
+}
+
+.chat-message.nutrition .chat-role {
+  color: var(--success-ink);
+}
+
 .chat-message.pending-response {
   border-style: dashed;
   background: rgba(255, 255, 255, 0.96);

@@ -216,8 +216,11 @@ def test_missed_dose_agent_ready_chat_uses_pattern_message_and_metadata():
 
         message = session.query(ChatMessage).filter(ChatMessage.category == "missed_dose").one()
         metadata = json.loads(message.metadata_json)
+        alert = session.query(Notification).filter(Notification.notification_type == "conversation_alert").one()
+        alert_metadata = json.loads(alert.metadata_json)
         stubs = session.query(Notification).filter(Notification.notification_type == CLINICIAN_ESCALATION_TYPE).all()
         assert message.content == PATTERN_MESSAGES["D"]
+        assert alert_metadata["agent_response_preview"] == PATTERN_MESSAGES["D"]
         assert "혈압약" not in message.content
         assert metadata["adherence_pattern"]["pattern_code"] == "D"
         assert metadata["tone_policy"]["pattern_code"] == "D"

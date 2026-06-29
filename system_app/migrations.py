@@ -76,6 +76,244 @@ MIGRATIONS: list[tuple[str, str]] = [
         )
         """,
     ),
+    (
+        "20260618_0001_nutrition_profiles",
+        """
+        CREATE TABLE IF NOT EXISTS nutrition_profiles (
+            id INTEGER NOT NULL PRIMARY KEY,
+            patient_id VARCHAR(100) NOT NULL DEFAULT 'demo-patient' UNIQUE,
+            name VARCHAR(120) NOT NULL DEFAULT '데모 환자',
+            age INTEGER NOT NULL DEFAULT 55,
+            gender VARCHAR(20) NOT NULL DEFAULT 'male',
+            height FLOAT NOT NULL DEFAULT 170.0,
+            weight FLOAT NOT NULL DEFAULT 70.0,
+            disease VARCHAR(80) NOT NULL DEFAULT 'kidney_cancer',
+            activity_level VARCHAR(40) NOT NULL DEFAULT 'sedentary',
+            egfr FLOAT,
+            ckd_stage VARCHAR(20) NOT NULL DEFAULT '',
+            ckd_risk VARCHAR(20) NOT NULL DEFAULT 'high',
+            created_at DATETIME,
+            updated_at DATETIME
+        )
+        """,
+    ),
+    (
+        "20260618_0002_nutrition_meals",
+        """
+        CREATE TABLE IF NOT EXISTS nutrition_meals (
+            id INTEGER NOT NULL PRIMARY KEY,
+            patient_id VARCHAR(100) NOT NULL DEFAULT 'demo-patient',
+            meal_type VARCHAR(20) NOT NULL,
+            meal_date DATE NOT NULL,
+            meal_time VARCHAR(8) NOT NULL DEFAULT '',
+            scenario_key VARCHAR(80) NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            created_at DATETIME
+        )
+        """,
+    ),
+    (
+        "20260618_0003_nutrition_foods",
+        """
+        CREATE TABLE IF NOT EXISTS nutrition_foods (
+            id INTEGER NOT NULL PRIMARY KEY,
+            meal_id INTEGER NOT NULL,
+            food_ref_id VARCHAR(120) NOT NULL DEFAULT '',
+            food_name VARCHAR(255) NOT NULL,
+            portion VARCHAR(120) NOT NULL DEFAULT '1인분',
+            calories FLOAT NOT NULL DEFAULT 0.0,
+            protein FLOAT NOT NULL DEFAULT 0.0,
+            sodium FLOAT NOT NULL DEFAULT 0.0,
+            fat FLOAT NOT NULL DEFAULT 0.0,
+            carbohydrates FLOAT NOT NULL DEFAULT 0.0,
+            created_at DATETIME,
+            FOREIGN KEY(meal_id) REFERENCES nutrition_meals (id)
+        )
+        """,
+    ),
+    (
+        "20260618_0004_daily_nutrition_checks",
+        """
+        CREATE TABLE IF NOT EXISTS daily_nutrition_checks (
+            id INTEGER NOT NULL PRIMARY KEY,
+            patient_id VARCHAR(100) NOT NULL DEFAULT 'demo-patient',
+            check_date DATE NOT NULL,
+            total_meals INTEGER NOT NULL DEFAULT 0,
+            threshold_calories FLOAT NOT NULL DEFAULT 0.0,
+            threshold_protein FLOAT NOT NULL DEFAULT 0.0,
+            threshold_sodium FLOAT NOT NULL DEFAULT 0.0,
+            threshold_fat FLOAT NOT NULL DEFAULT 0.0,
+            threshold_carbohydrates FLOAT NOT NULL DEFAULT 0.0,
+            intake_calories FLOAT NOT NULL DEFAULT 0.0,
+            intake_protein FLOAT NOT NULL DEFAULT 0.0,
+            intake_sodium FLOAT NOT NULL DEFAULT 0.0,
+            intake_fat FLOAT NOT NULL DEFAULT 0.0,
+            intake_carbohydrates FLOAT NOT NULL DEFAULT 0.0,
+            exceeded_calories BOOLEAN NOT NULL DEFAULT 0,
+            exceeded_protein BOOLEAN NOT NULL DEFAULT 0,
+            exceeded_sodium BOOLEAN NOT NULL DEFAULT 0,
+            exceeded_fat BOOLEAN NOT NULL DEFAULT 0,
+            exceeded_carbohydrates BOOLEAN NOT NULL DEFAULT 0,
+            excess_calories FLOAT NOT NULL DEFAULT 0.0,
+            excess_protein FLOAT NOT NULL DEFAULT 0.0,
+            excess_sodium FLOAT NOT NULL DEFAULT 0.0,
+            excess_fat FLOAT NOT NULL DEFAULT 0.0,
+            excess_carbohydrates FLOAT NOT NULL DEFAULT 0.0,
+            checked_at DATETIME,
+            UNIQUE(patient_id, check_date)
+        )
+        """,
+    ),
+    (
+        "20260618_0005_nutrition_meal_index",
+        """
+        CREATE INDEX IF NOT EXISTS ix_nutrition_meals_patient_date ON nutrition_meals (patient_id, meal_date)
+        """,
+    ),
+    (
+        "20260618_0006_nutrition_food_index",
+        """
+        CREATE INDEX IF NOT EXISTS ix_nutrition_foods_meal_id ON nutrition_foods (meal_id)
+        """,
+    ),
+    (
+        "20260618_0007_daily_nutrition_index",
+        """
+        CREATE INDEX IF NOT EXISTS ix_daily_nutrition_patient_date ON daily_nutrition_checks (patient_id, check_date)
+        """,
+    ),
+    (
+        "20260619_0001_agent_run_traces",
+        """
+        CREATE TABLE IF NOT EXISTS agent_run_traces (
+            id INTEGER NOT NULL PRIMARY KEY,
+            trace_id VARCHAR(120) NOT NULL UNIQUE,
+            request_id VARCHAR(180) NOT NULL DEFAULT '',
+            patient_id_hash VARCHAR(64) NOT NULL DEFAULT '',
+            workflow_name VARCHAR(120) NOT NULL,
+            source_event_type VARCHAR(80) NOT NULL DEFAULT '',
+            status VARCHAR(40) NOT NULL DEFAULT 'completed',
+            agent_name VARCHAR(120) NOT NULL DEFAULT '',
+            decision_type VARCHAR(80) NOT NULL DEFAULT '',
+            prompt_version_id VARCHAR(120) NOT NULL DEFAULT '',
+            provider VARCHAR(80) NOT NULL DEFAULT '',
+            model_tier VARCHAR(40) NOT NULL DEFAULT '',
+            model_id VARCHAR(255) NOT NULL DEFAULT '',
+            input_hash VARCHAR(64) NOT NULL DEFAULT '',
+            output_hash VARCHAR(64) NOT NULL DEFAULT '',
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            estimated_cost_usd FLOAT NOT NULL DEFAULT 0.0,
+            latency_ms INTEGER NOT NULL DEFAULT 0,
+            tool_count INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT NOT NULL DEFAULT '',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            started_at DATETIME,
+            completed_at DATETIME,
+            created_at DATETIME,
+            updated_at DATETIME
+        )
+        """,
+    ),
+    (
+        "20260619_0002_agent_run_steps",
+        """
+        CREATE TABLE IF NOT EXISTS agent_run_steps (
+            id INTEGER NOT NULL PRIMARY KEY,
+            trace_id VARCHAR(120) NOT NULL,
+            step_type VARCHAR(60) NOT NULL,
+            step_name VARCHAR(120) NOT NULL DEFAULT '',
+            status VARCHAR(40) NOT NULL DEFAULT '',
+            latency_ms INTEGER NOT NULL DEFAULT 0,
+            tool_name VARCHAR(120) NOT NULL DEFAULT '',
+            side_effect_level VARCHAR(40) NOT NULL DEFAULT '',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at DATETIME
+        )
+        """,
+    ),
+    (
+        "20260619_0003_agent_trace_indexes",
+        """
+        CREATE INDEX IF NOT EXISTS ix_agent_run_traces_patient_workflow ON agent_run_traces (patient_id_hash, workflow_name)
+        """,
+    ),
+    (
+        "20260619_0004_agent_run_steps_trace",
+        """
+        CREATE INDEX IF NOT EXISTS ix_agent_run_steps_trace_id ON agent_run_steps (trace_id)
+        """,
+    ),
+    (
+        "20260622_0001_nutrition_ontology_nodes",
+        """
+        CREATE TABLE IF NOT EXISTS nutrition_ontology_nodes (
+            id INTEGER NOT NULL PRIMARY KEY,
+            node_key VARCHAR(180) NOT NULL UNIQUE,
+            node_type VARCHAR(40) NOT NULL,
+            label VARCHAR(255) NOT NULL,
+            normalized_label VARCHAR(255) NOT NULL,
+            source VARCHAR(80) NOT NULL DEFAULT 'seed',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at DATETIME,
+            updated_at DATETIME
+        )
+        """,
+    ),
+    (
+        "20260622_0002_nutrition_ontology_triples",
+        """
+        CREATE TABLE IF NOT EXISTS nutrition_ontology_triples (
+            id INTEGER NOT NULL PRIMARY KEY,
+            subject_node_id INTEGER NOT NULL,
+            predicate VARCHAR(80) NOT NULL,
+            object_node_id INTEGER NOT NULL,
+            confidence FLOAT NOT NULL DEFAULT 1.0,
+            source VARCHAR(80) NOT NULL DEFAULT 'seed',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at DATETIME,
+            updated_at DATETIME,
+            UNIQUE(subject_node_id, predicate, object_node_id),
+            FOREIGN KEY(subject_node_id) REFERENCES nutrition_ontology_nodes (id),
+            FOREIGN KEY(object_node_id) REFERENCES nutrition_ontology_nodes (id)
+        )
+        """,
+    ),
+    (
+        "20260622_0003_nutrition_patient_preference_triples",
+        """
+        CREATE TABLE IF NOT EXISTS nutrition_patient_preference_triples (
+            id INTEGER NOT NULL PRIMARY KEY,
+            patient_id VARCHAR(100) NOT NULL DEFAULT 'demo-patient',
+            predicate VARCHAR(80) NOT NULL,
+            object_node_id INTEGER NOT NULL,
+            strength FLOAT NOT NULL DEFAULT 1.0,
+            safety_level VARCHAR(20) NOT NULL DEFAULT 'soft',
+            confidence FLOAT NOT NULL DEFAULT 1.0,
+            source VARCHAR(80) NOT NULL DEFAULT 'agent_tool',
+            evidence_text TEXT NOT NULL DEFAULT '',
+            source_trace_id VARCHAR(120) NOT NULL DEFAULT '',
+            status VARCHAR(20) NOT NULL DEFAULT 'active',
+            created_at DATETIME,
+            updated_at DATETIME,
+            UNIQUE(patient_id, predicate, object_node_id),
+            FOREIGN KEY(object_node_id) REFERENCES nutrition_ontology_nodes (id)
+        )
+        """,
+    ),
+    (
+        "20260622_0004_nutrition_ontology_indexes",
+        """
+        CREATE INDEX IF NOT EXISTS ix_nutrition_ontology_nodes_type_label ON nutrition_ontology_nodes (node_type, normalized_label)
+        """,
+    ),
+    (
+        "20260622_0005_nutrition_patient_preference_indexes",
+        """
+        CREATE INDEX IF NOT EXISTS ix_nutrition_patient_preferences_lookup
+        ON nutrition_patient_preference_triples (patient_id, status, safety_level)
+        """,
+    ),
 ]
 
 

@@ -19,6 +19,9 @@ def deferred_policy_tool_result(tool_call: dict[str, Any], *, trace_id: str, sou
     response = {
         "tool_name": tool_name,
         "reason": "policy_confirmation_required",
+        "human_handoff_required": True,
+        "handoff_gate": "high_risk_policy_change",
+        "approval_actor": "patient_or_operator",
     }
     if slot_label:
         response["slot_label"] = slot_label

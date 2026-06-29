@@ -1,4 +1,4 @@
-<section id="notifications-panel" class="panel alert-panel" data-live-refresh="notifications">
+<section id="notifications-panel" class="panel alert-panel" data-live-refresh="notifications" tabindex="-1">
   <div class="panel-header">
     <h2>알림 센터</h2>
     <span class="badge alert">{{ notifications|length }}건</span>
@@ -93,6 +93,12 @@
                   hx-post="/agent-jobs/{{ notification_metadata.get('agent_job_id') }}/retry?notification_id={{ notification.id }}">
                   <button type="submit">다시 시도</button>
                 </form>
+              {% endif %}
+              {% if notification.notification_type == 'nutrition_alert' %}
+                <button
+                  type="button"
+                  data-open-chat
+                  data-chat-prefill="{{ notification.body }} 다음 식사는 어떻게 조정하면 좋을까요?">채팅에서 상담</button>
               {% endif %}
               {% if not notification.acknowledged and notification.notification_type != 'conversation_alert' %}
                 <form action="/notifications/{{ notification.id }}/ack" method="post" hx-post="/notifications/{{ notification.id }}/ack">

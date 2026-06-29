@@ -19,14 +19,17 @@ from agent_app.async_tasks import (
     async_task_observability_payload,
     async_task_rows,
     async_task_status_counts,
+    dismiss_dead_async_task,
     enqueue_async_task,
     reset_running_async_tasks,
+    retry_dead_async_task,
 )
 from agent_app.async_worker import async_task_worker
 from agent_app.db import engine, get_session
 from agent_app.errors import AgentExecutionError
 from agent_app.migrations import run_migrations
 from agent_app.models import Base
+from agent_app.ops_readiness import agent_ops_readiness_payload
 from agent_app.providers import describe_model_config, set_runtime_model_tier
 from agent_app.runtime import create_runtime_components
 from agent_app.security import require_internal_api_token
@@ -35,6 +38,7 @@ from shared.schemas import (
     AgentAsyncAccepted,
     AgentAsyncClinicianAlertRequest,
     AgentAsyncPushMessageRequest,
+    AgentAsyncTaskActionRequest,
     AgentModelConfig,
     AgentModelTierRequest,
     AgentResponse,
@@ -42,6 +46,7 @@ from shared.schemas import (
     MissedDoseEventPayload,
     MultiturnChatRequest,
 )
+from shared.redaction import safe_exception_summary
 from shared.settings import get_settings
 
 runtime_components = create_runtime_components()
@@ -80,13 +85,14 @@ app = FastAPI(title="Medication Reminder Agent LangGraph Native", lifespan=lifes
 
 @app.exception_handler(AgentExecutionError)
 async def agent_execution_error_handler(_: Request, exc: AgentExecutionError) -> JSONResponse:
+    safe_message = safe_exception_summary(exc)
     logger.warning(
         "agent_app_execution_failed trace_id=%s agent=%s decision=%s error_type=%s message=%s",
         exc.trace_id,
         exc.agent_name,
         exc.decision_type,
         exc.error_type,
-        exc.message,
+        safe_message,
     )
     return JSONResponse(
         status_code=500,
@@ -95,7 +101,7 @@ async def agent_execution_error_handler(_: Request, exc: AgentExecutionError) ->
             "trace_id": exc.trace_id,
             "agent_name": exc.agent_name,
             "decision_type": exc.decision_type,
-            "message": exc.message,
+            "message": safe_message,
         },
     )
 
@@ -158,10 +164,11 @@ async def agent_mcp(payload: dict[str, Any]) -> dict[str, Any]:
     params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
     meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
     context_payload = meta.get("payload") if isinstance(meta.get("payload"), dict) else {}
+    source_event_type = meta.get("source_event_type") or params.get("source_event_type") or "mcp"
     return await mcp_tool_server.handle_json_rpc(
         payload,
         trace_id=str(meta.get("trace_id") or f"mcp:{uuid.uuid4().hex}"),
-        source_event_type=str(meta.get("source_event_type") or "mcp"),
+        source_event_type=str(source_event_type),
         payload=context_payload,
     )
 
@@ -177,6 +184,11 @@ async def async_task_status(session: Session = Depends(get_session)) -> dict:
         "active_statuses": sorted(ACTIVE_STATUSES),
         "workers": worker_status_payload(session),
     }
+
+
+@app.get("/agent/ops/readiness", dependencies=[Depends(require_internal_api_token)])
+async def agent_ops_readiness(session: Session = Depends(get_session)) -> dict:
+    return agent_ops_readiness_payload(session)
 
 
 @app.get("/agent/async/tasks", dependencies=[Depends(require_internal_api_token)])
@@ -206,6 +218,29 @@ async def dead_async_tasks(
     }
 
 
+@app.post("/agent/async/tasks/{request_id}/actions", dependencies=[Depends(require_internal_api_token)])
+async def async_task_action(
+    request_id: str,
+    payload: AgentAsyncTaskActionRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    task = async_task_by_request_id(session, request_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="agent_async_task_not_found")
+    if task.status != DEAD:
+        raise HTTPException(status_code=409, detail="agent_async_task_not_dead")
+    if payload.action == "retry":
+        task = retry_dead_async_task(session, task, reason=payload.reason)
+    else:
+        task = dismiss_dead_async_task(session, task, reason=payload.reason)
+    session.commit()
+    return {
+        "status": "ok",
+        "action": payload.action,
+        "task": async_task_observability_payload(task),
+    }
+
+
 @app.get("/agent/async/tasks/{request_id}", dependencies=[Depends(require_internal_api_token)])
 async def async_task_detail(request_id: str, session: Session = Depends(get_session)) -> dict:
     task = async_task_by_request_id(session, request_id)
@@ -219,10 +254,10 @@ async def async_task_detail(request_id: str, session: Session = Depends(get_sess
 
 def _request_id(task_type: str, callback_context) -> str:
     if callback_context is not None:
-        if callback_context.job_id is not None:
-            return f"{task_type}:job:{callback_context.job_id}"
         if callback_context.conversation_id:
             return f"{task_type}:conversation:{callback_context.conversation_id}"
+        if callback_context.job_id is not None:
+            return f"{task_type}:job:{callback_context.job_id}"
         if callback_context.notification_id is not None:
             return f"{task_type}:notification:{callback_context.notification_id}"
     return f"{task_type}:{uuid.uuid4().hex}"

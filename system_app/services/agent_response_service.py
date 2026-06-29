@@ -110,6 +110,8 @@ def persist_agent_summary(
         if category == "missed_dose" and related_dose_event_id is not None:
             pattern_message = missed_dose_adherence_pattern_message(session, related_dose_event_id, message_metadata, response)
         body = pattern_message or response.human_summary or fallback_body
+        if category == "missed_dose":
+            metadata["agent_response_preview"] = body[:200]
         if existing is not None:
             existing.title = "AI가 대화를 요청합니다." if category == "missed_dose" else "AI 대화 알림"
             existing.body = body

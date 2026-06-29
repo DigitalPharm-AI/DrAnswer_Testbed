@@ -7,12 +7,21 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 from sqlalchemy.orm import Session
 
 from system_app.db import get_session
+from system_app.routes.public_errors import public_error_code, public_phr_sync_failure_message
 from system_app.routes.responses import hx_refresh
 from system_app.runtime import SystemRuntime
 from system_app.services.medication_plan_service import create_medication_plan, delete_medication_plan
 from system_app.services.patient_profile_service import apply_phr_registration_result, build_phr_registration_items, get_patient_profile, mark_phr_sync_failed
 from system_app.services.phr_client import PhrServiceError
-from system_app.services.simulation_constants import CUSTOM_CHOICE, resolve_choice_value, resolve_schedule_times
+from system_app.services.simulation_constants import CUSTOM_CHOICE, parse_times_csv, resolve_choice_value, resolve_schedule_times
+
+MEDICATION_FORM_ERROR_CODES = {
+    "invalid_date_format",
+    "invalid_date_range",
+    "invalid_schedule_time_format",
+    "required_choice_missing",
+    "required_schedule_missing",
+}
 
 
 def create_medications_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
@@ -38,16 +47,24 @@ def create_medications_router(get_runtime: Callable[[], SystemRuntime]) -> APIRo
             has_dosage_value = (dosage_choice and dosage_choice != CUSTOM_CHOICE) or (dosage_custom and dosage_custom.strip()) or (dosage and dosage.strip())
             effective_dosage = resolve_choice_value(dosage_choice, dosage_custom, dosage) if has_dosage_value else ""
             effective_times_csv = resolve_schedule_times(schedule_template, times_csv)
+            parsed_start_date = _parse_medication_date(start_date)
+            parsed_end_date = _parse_medication_date(end_date)
+            if parsed_end_date < parsed_start_date:
+                raise ValueError("invalid_date_range")
+            parse_times_csv(effective_times_csv)
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=422,
+                detail=public_error_code(exc, allowed_codes=MEDICATION_FORM_ERROR_CODES, fallback="medication_form_invalid"),
+            ) from exc
 
         with get_runtime().write_lock:
             create_medication_plan(
                 session,
                 medication_name=effective_medication_name,
                 dosage=effective_dosage,
-                start_date=date.fromisoformat(start_date),
-                end_date=date.fromisoformat(end_date),
+                start_date=parsed_start_date,
+                end_date=parsed_end_date,
                 times_csv=effective_times_csv,
                 instructions=instructions,
             )
@@ -75,7 +92,7 @@ def create_medications_router(get_runtime: Callable[[], SystemRuntime]) -> APIRo
                 result = await runtime.phr_client.register_patient(medications)
         except PhrServiceError as exc:
             with runtime.write_lock:
-                mark_phr_sync_failed(session, str(exc))
+                mark_phr_sync_failed(session, public_phr_sync_failure_message(exc))
                 session.commit()
             return hx_refresh()
 
@@ -85,3 +102,10 @@ def create_medications_router(get_runtime: Callable[[], SystemRuntime]) -> APIRo
         return hx_refresh()
 
     return router
+
+
+def _parse_medication_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("invalid_date_format") from exc

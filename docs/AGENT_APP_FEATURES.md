@@ -16,6 +16,7 @@
 | POST | `/agent/async/push-messages` | `AgentAsyncPushMessageRequest` | `AgentAsyncAccepted` | async queue |
 | POST | `/agent/async/clinician-alerts` | `AgentAsyncClinicianAlertRequest` | `AgentAsyncAccepted` | async queue |
 | POST | `/agent/mcp` | JSON-RPC | JSON-RPC | internal MCP |
+| GET | `/agent/ops/readiness` | 없음 | readiness metrics + alerts | ops |
 | GET | `/agent/async/tasks/status` | 없음 | queue counts + workers | ops |
 | GET | `/agent/async/tasks` | `status`, `limit` query | task list | ops |
 | GET | `/agent/async/tasks/dead` | `limit` query | dead task list | ops |
@@ -28,7 +29,8 @@ Legacy sync endpoints for daily pattern and missed dose were removed:
 
 ## Processing Model
 
-- General multiturn chat remains synchronous through `/agent/multiturn-chat`.
+- `/agent/multiturn-chat` remains available for direct internal/debug synchronous calls.
+- The user-facing system chat flow is async-first through `/agent/async/chat-continuations`.
 - Daily pattern analysis and missed dose coaching are submitted through async queue endpoints.
 - Chat continuations that need slow follow-up work, such as PRO-CTCAE or policy confirmation candidate generation, are submitted through `/agent/async/chat-continuations`.
 - The standalone worker process claims pending async tasks from the agent DB and sends results back to `system_app` callback APIs.
@@ -65,3 +67,14 @@ Agent trace logging writes structured `agent_api_call`, tool, worker, and valida
 - parse failure flags for malformed stored payloads
 
 This lets operators debug stuck or dead tasks without exposing sensitive request values.
+
+`/agent/ops/readiness` summarizes the same queue and worker state as alert-oriented readiness:
+
+- `agent_async_worker_unavailable`
+- `agent_async_dead_tasks_present`
+- `agent_async_callback_failures_detected`
+- `agent_provider_failures_detected`
+- `agent_async_worker_stale`
+- `agent_async_pending_age_exceeded`
+
+Incident handling, rollback, and redaction policy are maintained in `docs/PRODUCTION_READINESS.md`.

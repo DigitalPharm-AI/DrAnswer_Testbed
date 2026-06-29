@@ -20,6 +20,7 @@ from system_app.routes import (
     create_health_router,
     create_medications_router,
     create_notifications_router,
+    create_nutrition_router,
     create_pages_router,
     create_simulation_router,
 )
@@ -30,10 +31,23 @@ from system_app.services.policy_service import reload_policy_workbook
 
 agent_client = AgentClient()
 phr_client = PhrClient()
-templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+_APP_DIR = Path(__file__).parent
+_STATIC_DIR = _APP_DIR / "static"
+templates = Jinja2Templates(directory=str(_APP_DIR / "templates"))
 write_lock = threading.RLock()
 
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+
+def static_version(path: str) -> str:
+    static_path = _STATIC_DIR / path.lstrip("/\\")
+    try:
+        return str(int(static_path.stat().st_mtime))
+    except OSError:
+        return "0"
+
+
+templates.env.globals["static_version"] = static_version
 
 
 def sync_worker_dependencies() -> None:
@@ -76,6 +90,11 @@ async def lifespan(_: FastAPI):
 
     get_settings().require_internal_api_token_in_production()
     run_migrations(engine)
+    from system_app.services.nutrition_preference_service import seed_nutrition_ontology
+
+    with SessionLocal() as session:
+        seed_nutrition_ontology(session)
+        session.commit()
     reload_policy_workbook()
     sync_worker_dependencies()
     worker_services.initialize_runtime_state(write_lock)
@@ -108,11 +127,12 @@ def create_app() -> FastAPI:
         response.headers["Expires"] = "0"
         return response
 
-    fastapi_app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+    fastapi_app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
     fastapi_app.include_router(create_pages_router(get_runtime))
     fastapi_app.include_router(create_medications_router(get_runtime))
     fastapi_app.include_router(create_simulation_router(get_runtime))
     fastapi_app.include_router(create_notifications_router(get_runtime))
+    fastapi_app.include_router(create_nutrition_router(get_runtime))
     fastapi_app.include_router(create_chat_router(get_runtime))
     fastapi_app.include_router(create_agent_api_router(get_runtime))
     fastapi_app.include_router(create_agent_async_api_router(get_runtime))

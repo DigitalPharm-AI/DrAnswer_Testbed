@@ -37,6 +37,7 @@ from shared.schemas import (
     AgentCallbackContext,
     AgentResponse,
 )
+from shared.redaction import safe_exception_summary
 from shared.settings import get_settings
 
 logger = logging.getLogger("uvicorn.error")
@@ -68,8 +69,9 @@ def async_task_worker(stop_event: threading.Event, orchestrator: AgentLangGraphN
                     current_task_type=str(snapshot["task_type"]),
                 )
             except Exception as exc:  # pragma: no cover - defensive worker guard
-                logger.exception("agent_async_worker_claim_failed error=%s", exc)
-                _record_worker_event(record_worker_heartbeat, worker_id, last_error=f"{type(exc).__name__}: {exc}")
+                safe_error = safe_exception_summary(exc)
+                logger.error("agent_async_worker_claim_failed error=%s", safe_error)
+                _record_worker_event(record_worker_heartbeat, worker_id, last_error=safe_error)
                 stop_event.wait(1)
                 continue
 
@@ -84,11 +86,12 @@ def async_task_worker(stop_event: threading.Event, orchestrator: AgentLangGraphN
                     session.commit()
                 _record_worker_event(record_worker_task_completed, worker_id)
             except Exception as exc:  # pragma: no cover - network/provider dependent
-                logger.exception("agent_async_task_failed request_id=%s task_type=%s error=%s", snapshot["request_id"], snapshot["task_type"], exc)
+                safe_error = safe_exception_summary(exc)
+                logger.error("agent_async_task_failed request_id=%s task_type=%s error=%s", snapshot["request_id"], snapshot["task_type"], safe_error)
                 with SessionLocal() as session:
-                    _task, final_failure = mark_async_task_failed(session, task_id, f"{type(exc).__name__}: {exc}")
+                    _task, final_failure = mark_async_task_failed(session, task_id, safe_error)
                     session.commit()
-                _record_worker_event(record_worker_heartbeat, worker_id, last_error=f"{type(exc).__name__}: {exc}")
+                _record_worker_event(record_worker_heartbeat, worker_id, last_error=safe_error)
                 if final_failure:
                     with contextlib_suppress_callback_errors():
                         asyncio.run(_post_failure(snapshot, exc))
@@ -125,6 +128,8 @@ async def _execute_snapshot(snapshot: dict[str, Any], orchestrator: AgentLangGra
         return
     if task_type == "chat_continuation":
         response = await orchestrator.invoke("multiturn_chat", payload)
+        if _requires_async_continuation(response):
+            response = await orchestrator.invoke("multiturn_chat", _continuation_payload(payload, response))
         if _is_policy_change_response(response):
             await _post_policy_change(snapshot, response)
         else:
@@ -143,6 +148,20 @@ def _is_policy_change_response(response: AgentResponse) -> bool:
     return isinstance(tool_calls, list) and any(
         isinstance(item, dict) and item.get("name") in {"apply_notification_policy", "apply_system_policy"} for item in tool_calls
     )
+
+
+def _requires_async_continuation(response: AgentResponse) -> bool:
+    return response.structured_payload.get("async_continuation_required") is True
+
+
+def _continuation_payload(payload: dict[str, Any], response: AgentResponse) -> dict[str, Any]:
+    continuation = dict(payload)
+    context = dict(continuation.get("context") or {})
+    context["execute_async_continuation"] = True
+    context["async_continuation_type"] = response.structured_payload.get("async_continuation_type", "")
+    context["async_tool_calls"] = response.structured_payload.get("tool_calls", [])
+    continuation["context"] = context
+    return continuation
 
 
 async def _post_job_result(snapshot: dict[str, Any], response: AgentResponse) -> None:
@@ -212,7 +231,11 @@ async def _post_failure(snapshot: dict[str, Any], exc: Exception) -> None:
     payload = AgentAsyncFailureRequest(
         request_id=snapshot["request_id"],
         task_type=snapshot["task_type"],
-        message=f"{type(exc).__name__}: {exc}",
+        message=safe_exception_summary(exc),
+        error_type=str(getattr(exc, "error_type", "agent_async_task_failed") or "agent_async_task_failed"),
+        trace_id=getattr(exc, "trace_id", None),
+        agent_name=getattr(exc, "agent_name", None),
+        decision_type=getattr(exc, "decision_type", None),
         job_id=context.job_id,
         notification_id=context.notification_id,
         related_dose_event_id=_related_dose_event_id(snapshot["payload"]),
@@ -243,7 +266,7 @@ async def _post_callback(context: AgentCallbackContext, path: str, payload: dict
     settings = get_settings()
     headers = {"X-Internal-Api-Token": settings.internal_api_token} if settings.internal_api_token else {}
     base_url = context.app_base_url.rstrip("/")
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
         response = await client.post(f"{base_url}{path}", json=payload, headers=headers)
         response.raise_for_status()
 
@@ -254,7 +277,7 @@ class contextlib_suppress_callback_errors:
 
     def __exit__(self, exc_type, exc, _tb) -> bool:
         if exc is not None:
-            logger.warning("agent_async_failure_callback_failed error=%s", exc)
+            logger.warning("agent_async_failure_callback_failed error=%s", safe_exception_summary(exc))
         return True
 
 
@@ -264,4 +287,4 @@ def _record_worker_event(event_func, worker_id: str, **kwargs: Any) -> None:
             event_func(session, worker_id, **kwargs)
             session.commit()
     except Exception as exc:  # pragma: no cover - status reporting must not stop work
-        logger.warning("agent_worker_status_update_failed worker_id=%s error=%s", worker_id, exc)
+        logger.warning("agent_worker_status_update_failed worker_id=%s error=%s", worker_id, safe_exception_summary(exc))

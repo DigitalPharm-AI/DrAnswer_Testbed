@@ -8,15 +8,19 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from shared.settings import get_settings
+from shared.time_utils import utc_now
 from system_app.models import (
     AgentDecisionAudit,
     AgentJob,
     ChatMessage,
+    DailyNutritionCheck,
     DoseEvent,
     DoseSchedule,
     MedicationPlan,
     MissedDoseFlag,
     Notification,
+    NutritionFood,
+    NutritionMeal,
     ReminderPolicy,
     SimulationPatientProfile,
     SystemPolicyOverride,
@@ -77,6 +81,9 @@ def reset_simulation_state(session: Session) -> None:
     session.execute(delete(AgentDecisionAudit))
     session.execute(delete(AgentJob))
     session.execute(delete(MissedDoseFlag))
+    session.execute(delete(DailyNutritionCheck))
+    session.execute(delete(NutritionFood))
+    session.execute(delete(NutritionMeal))
     session.execute(delete(DoseEvent))
     session.execute(delete(DoseSchedule))
     session.execute(delete(ReminderPolicy))
@@ -87,7 +94,7 @@ def reset_simulation_state(session: Session) -> None:
     clock.current_time = initial_time
     clock.is_running = False
     clock.speed_multiplier = 0
-    clock.last_tick_real_at = datetime.utcnow()
+    clock.last_tick_real_at = utc_now()
     clock.last_processed_sim_time = initial_time
     clock.last_daily_pattern_sent_date = initial_time.date() - timedelta(days=1)
 
@@ -124,7 +131,7 @@ def delete_medication_plan(session: Session, plan_id: int) -> bool:
                 )
             ).all():
                 policy.active = False
-                policy.updated_at = datetime.utcnow()
+                policy.updated_at = utc_now()
 
     mark_phr_sync_needed(session)
     session.commit()

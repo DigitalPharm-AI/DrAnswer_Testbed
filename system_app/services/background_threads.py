@@ -5,6 +5,8 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from shared.redaction import safe_exception_summary
+
 logger = logging.getLogger("uvicorn.error")
 
 
@@ -13,7 +15,7 @@ def start_daemon_thread(*, name: str, target: Callable[..., Any], args: tuple[An
         try:
             target(*args)
         except Exception as exc:  # pragma: no cover - defensive boundary
-            logger.exception("background_thread_failed name=%s error=%s", name, exc)
+            logger.error("background_thread_failed name=%s error=%s", name, safe_exception_summary(exc))
 
     thread = threading.Thread(target=guarded_target, name=name, daemon=True)
     thread.start()

@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from shared.settings import get_settings
+from shared.time_utils import utc_now
 from system_app.models import DoseEvent, MissedDoseFlag
 
 settings = get_settings()
@@ -26,8 +27,8 @@ def activate_missed_dose_flag(session: Session, event: DoseEvent, *, activated_a
             cleared_at=None,
             clear_reason="",
             subsequent_taken_count=0,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=utc_now(),
+            updated_at=utc_now(),
         )
         session.add(flag)
     else:
@@ -38,7 +39,7 @@ def activate_missed_dose_flag(session: Session, event: DoseEvent, *, activated_a
         flag.cleared_at = None
         flag.clear_reason = ""
         flag.subsequent_taken_count = 0
-        flag.updated_at = datetime.utcnow()
+        flag.updated_at = utc_now()
     session.flush()
     return flag
 
@@ -47,7 +48,7 @@ def clear_missed_dose_flag_after_taken(session: Session, event: DoseEvent, *, ta
     flag = _flag_for_date(session, event.patient_id, event.scheduled_for.date())
     if flag is None or not flag.active:
         return flag
-    observed_at = taken_at or event.taken_at or datetime.utcnow()
+    observed_at = taken_at or event.taken_at or utc_now()
     if flag.related_dose_event_id == event.id:
         return _clear_flag(session, flag, observed_at, "missed_event_marked_taken")
     if observed_at < flag.activated_at and event.scheduled_for < flag.activated_at:
@@ -84,6 +85,6 @@ def _clear_flag(session: Session, flag: MissedDoseFlag, cleared_at: datetime, re
     flag.active = False
     flag.cleared_at = cleared_at
     flag.clear_reason = reason
-    flag.updated_at = datetime.utcnow()
+    flag.updated_at = utc_now()
     session.flush()
     return flag

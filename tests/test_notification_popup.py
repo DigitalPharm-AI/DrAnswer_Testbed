@@ -79,7 +79,7 @@ def test_index_includes_popup_stack_and_script():
     assert response.status_code == 200
     assert 'id="popup-stack"' in response.text
     assert "/static/notifications.js" in response.text
-    assert 'id="notifications-panel"' not in response.text
+    assert 'id="notifications-panel"' in response.text
     assert "data-chat-scroll-region" in response.text
 
 
@@ -260,6 +260,7 @@ def test_medication_change_after_phr_sync_marks_profile_needs_sync(monkeypatch):
             "end_date": "2026-04-20",
         },
     )
+    page_response = client.get("/")
 
     with SessionLocal() as session:
         profile = session.query(SimulationPatientProfile).one()
@@ -273,6 +274,8 @@ def test_medication_change_after_phr_sync_marks_profile_needs_sync(monkeypatch):
 
     assert profile_key == "phr_test_issued_key"
     assert profile_status == "needs_sync"
+    assert "PHR 재동기화 필요" in page_response.text
+    assert "PHR 재동기화" in page_response.text
 
 
 def test_notifications_feed_returns_expected_shape():

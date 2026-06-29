@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from sqlalchemy.orm import Session
 
-from system_app.models import AgentDecisionAudit
+from shared.redaction import safe_exception_summary
+from shared.time_utils import utc_now
 from system_app.services.agent_client import AgentServiceError
+from system_app.services.audit_service import create_agent_decision_audit
 from system_app.services.clock_service import ensure_clock, pause_simulation_clock
 from system_app.services.notification_service import create_notification
 from system_app.services.timeline_service import add_chat_message
@@ -26,27 +26,27 @@ def present_agent_error(
     agent_name = "system"
     decision_type = "agent_call_failed"
     error_type = "agent_runtime_error"
-    error_message = str(error)
+    error_message = safe_exception_summary(error)
 
     if isinstance(error, AgentServiceError):
         trace_id = error.trace_id
         agent_name = error.agent_name or "system"
         decision_type = error.decision_type or "agent_call_failed"
         error_type = error.error_type
-        error_message = error.message
+        error_message = safe_exception_summary(error)
 
-    audit = AgentDecisionAudit(
-        trace_id=trace_id or f"error-{datetime.utcnow().timestamp()}",
+    create_agent_decision_audit(
+        session,
+        trace_id=trace_id or f"error-{utc_now().timestamp()}",
         agent_name=agent_name,
         prompt_version_id="n/a",
         decision_type=decision_type,
-        structured_payload="{}",
+        structured_payload={},
         human_summary=user_message,
         applied=False,
         error_message=error_message,
         source_event_type=source_event_type,
     )
-    session.add(audit)
 
     clock = pause_simulation_clock(session) if pause_clock else ensure_clock(session)
 

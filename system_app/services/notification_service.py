@@ -20,9 +20,10 @@ def create_notification(
     visible_at: datetime,
     related_dose_event_id: int | None = None,
     metadata: dict | None = None,
+    patient_id: str | None = None,
 ) -> Notification:
     notification = Notification(
-        patient_id=settings.patient_id,
+        patient_id=patient_id or settings.patient_id,
         notification_type=notification_type,
         title=title,
         body=body,

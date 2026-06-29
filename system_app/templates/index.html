@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>복약 알림 POC</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', path='/agent_interactions.css') }}">
-  <script src="{{ url_for('static', path='/htmx-lite.js') }}"></script>
-  <script type="module" src="{{ url_for('static', path='/notifications.js') }}"></script>
+  <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v={{ static_version('/styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='/agent_interactions.css') }}?v={{ static_version('/agent_interactions.css') }}">
+  <script src="{{ url_for('static', path='/htmx-lite.js') }}?v={{ static_version('/htmx-lite.js') }}"></script>
+  <script type="module" src="{{ url_for('static', path='/notifications.js') }}?v={{ static_version('/notifications.js') }}"></script>
 </head>
-<body>
+<body data-active-tab="home">
   {% include "partials/time_bar.html" %}
   <div id="popup-stack" class="popup-stack" aria-live="polite" aria-atomic="false"></div>
 
@@ -27,6 +27,7 @@
             <li>복약 패턴을 분석합니다.</li>
             <li>시간대별 알림 정책을 제안합니다.</li>
             <li>미복용 원인을 묻는 대화를 생성합니다.</li>
+            <li>식사 기록과 오늘 영양 상태를 함께 관리합니다.</li>
             <li>환자와 자유롭게 대화하며 필요한 도구를 사용합니다.</li>
           </ul>
         </div>
@@ -36,6 +37,7 @@
     <nav class="app-tabs" aria-label="주요 화면">
       <button class="app-tab is-active" type="button" data-tab-target="home-page">HOME</button>
       <button class="app-tab" type="button" data-tab-target="chat-page">Chat</button>
+      <button class="app-tab" type="button" data-tab-target="logs-page">LOGS</button>
     </nav>
 
     <main>
@@ -50,9 +52,11 @@
           <section class="content-shell">
             <div class="main-column">
               {% include "partials/timeline.html" %}
+              {% include "partials/nutrition.html" %}
             </div>
             <aside class="monitor-column">
               {% include "partials/active_policies.html" %}
+              {% include "partials/notifications.html" %}
             </aside>
           </section>
         </div>
@@ -62,6 +66,23 @@
         <aside class="chat-page-shell">
           {% include "partials/chat.html" %}
         </aside>
+      </section>
+
+      <section id="logs-page" class="page-tab-panel">
+        <section
+          id="logs-panel"
+          class="panel logs-panel"
+          hx-get="/partials/logs"
+          hx-trigger="load, every 10s"
+          hx-swap="outerHTML">
+          <div class="panel-header">
+            <div>
+              <h2>Observability</h2>
+              <p class="panel-subtitle">운영 상태를 불러오는 중입니다.</p>
+            </div>
+            <span class="badge neutral">loading</span>
+          </div>
+        </section>
       </section>
     </main>
   </div>

@@ -7,7 +7,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from agent_app.models import AgentWorkerHeartbeat
+from shared.redaction import redacted_clinical_text_label
 from shared.settings import get_settings
+from shared.time_utils import utc_now
 
 WORKER_RUNNING = "running"
 WORKER_STOPPED = "stopped"
@@ -15,7 +17,7 @@ WORKER_STALE = "stale"
 
 
 def mark_worker_started(session: Session, worker_id: str) -> AgentWorkerHeartbeat:
-    now = datetime.utcnow()
+    now = utc_now()
     row = _worker_row(session, worker_id)
     if row is None:
         row = AgentWorkerHeartbeat(worker_id=worker_id)
@@ -40,7 +42,7 @@ def record_worker_heartbeat(
     current_task_type: str = "",
     last_error: str = "",
 ) -> AgentWorkerHeartbeat:
-    now = datetime.utcnow()
+    now = utc_now()
     row = _worker_row(session, worker_id)
     if row is None:
         row = AgentWorkerHeartbeat(worker_id=worker_id, started_at=now)
@@ -65,7 +67,7 @@ def record_worker_task_completed(session: Session, worker_id: str) -> AgentWorke
 
 
 def mark_worker_stopped(session: Session, worker_id: str) -> AgentWorkerHeartbeat:
-    now = datetime.utcnow()
+    now = utc_now()
     row = _worker_row(session, worker_id)
     if row is None:
         row = AgentWorkerHeartbeat(worker_id=worker_id, started_at=now)
@@ -81,7 +83,7 @@ def mark_worker_stopped(session: Session, worker_id: str) -> AgentWorkerHeartbea
 
 def worker_status_payload(session: Session) -> list[dict[str, Any]]:
     settings = get_settings()
-    stale_cutoff = datetime.utcnow() - timedelta(seconds=settings.agent_worker_stale_after_seconds)
+    stale_cutoff = utc_now() - timedelta(seconds=settings.agent_worker_stale_after_seconds)
     rows = session.scalars(select(AgentWorkerHeartbeat).order_by(AgentWorkerHeartbeat.heartbeat_at.desc())).all()
     return [_serialize_worker(row, stale_cutoff) for row in rows]
 
@@ -104,5 +106,16 @@ def _serialize_worker(row: AgentWorkerHeartbeat, stale_cutoff: datetime) -> dict
         "current_task_request_id": row.current_task_request_id,
         "current_task_type": row.current_task_type,
         "processed_count": row.processed_count,
-        "last_error": row.last_error,
+        "last_error": _safe_last_error(row.last_error),
     }
+
+
+def _safe_last_error(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "clinical text redacted" in text:
+        return text
+    if len(text) <= 80 and all(char.isascii() and (char.isalnum() or char in "_:-.") for char in text):
+        return text
+    return redacted_clinical_text_label(text, key="last_error")

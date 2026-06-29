@@ -8,6 +8,7 @@ from agent_app import trace_logging
 from agent_app.errors import AgentExecutionError
 from agent_app.output_validation import safe_fallback_output, validate_llm_output
 from agent_app.providers import BaseLLMProvider
+from shared.redaction import safe_exception_summary
 
 PROMPT_VERSION_ID = "agent_app_v2_tool_runtime"
 
@@ -54,7 +55,7 @@ async def generate_llm_output(
             trace_id=trace_id,
             agent_name=agent_name,
             decision_type=decision_type,
-            error=trace_logging.snippet(str(exc), limit=300),
+            error=safe_exception_summary(exc, limit=300),
             output_keys=sorted(str(key) for key in result.keys()),
         )
         return safe_fallback_output(decision_type, payload, exc)

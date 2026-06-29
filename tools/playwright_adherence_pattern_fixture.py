@@ -17,6 +17,7 @@ if hasattr(sys.stdout, "reconfigure"):
 from shared.json_utils import dump_json, parse_json_object
 from shared.schemas import AgentResponse
 from shared.settings import get_settings
+from shared.time_utils import utc_now
 from system_app.db import SessionLocal
 from system_app.models import AgentJob, ChatMessage, DoseEvent, DoseSchedule, MedicationPlan, MissedDoseFlag, Notification, SimulationClock, SimulationPatientProfile
 from system_app.services.agent_jobs import create_agent_job, mark_agent_job_failed
@@ -45,7 +46,7 @@ def set_clock(session, current_time: datetime) -> None:
     clock.is_running = False
     clock.speed_multiplier = 0
     clock.last_processed_sim_time = current_time
-    clock.last_tick_real_at = datetime.utcnow()
+    clock.last_tick_real_at = utc_now()
 
 
 def create_plan(session, *, start_offset_days: int = 20, with_night: bool = False):
@@ -351,8 +352,8 @@ def seed_current_ready_clock(session) -> dict:
         phr_patient_key="playwright-phr-key",
         sync_status=PHR_SYNC_SYNCED,
         error_message="",
-        registered_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        registered_at=utc_now(),
+        updated_at=utc_now(),
     )
     session.add(profile)
     session.commit()

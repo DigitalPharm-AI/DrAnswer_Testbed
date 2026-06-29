@@ -9,10 +9,12 @@ from sqlalchemy.orm import Session
 
 from shared.json_utils import parse_json_object as parse_metadata_json
 from shared.settings import get_settings
+from shared.time_utils import utc_now
 from system_app.models import AgentJob, ChatMessage, DoseEvent, Notification, ReminderPolicy
 from system_app.services.agent_client import AgentClient
 from system_app.services.clock_service import ensure_clock
 from system_app.services.medication_plan_service import get_schedule_map, list_medication_plans
+from system_app.services.nutrition_service import nutrition_dashboard_view
 from system_app.services.patient_profile_service import phr_profile_view, simulation_readiness
 from system_app.services.policy_service import daily_pattern_conversation_time_view, policy_missed_dose_delay_minutes, resolve_policy_for_slot
 from system_app.services.side_effect_reminder_safety import is_reminder_suppressed_after_side_effect
@@ -73,9 +75,10 @@ CHAT_CATEGORY_LABELS = {
     "side_effect_reminder_safety": "부작용 알림 확인",
     "ae_pro_ctcae": "부작용 문항",
     "ae_response": "문항 응답",
+    "nutrition": "영양 대화",
     "error": "오류",
 }
-PENDING_AGENT_CHAT_STATUSES = {"sent"}
+PENDING_AGENT_CHAT_STATUSES = {"sent", "awaiting_agent"}
 AGENT_CONVERSATION_CATEGORIES = {
     "system_event",
     "multiturn_chat",
@@ -85,11 +88,13 @@ AGENT_CONVERSATION_CATEGORIES = {
     "side_effect_reminder_safety",
     "ae_pro_ctcae",
     "ae_response",
+    "nutrition",
 }
 CHAT_PROMPT_CATEGORIES = {"missed_dose", "policy_confirmation", "side_effect_reminder_safety"}
 NOTIFICATION_TYPE_LABELS = {
     "medication_alert": "복약 알림",
     "conversation_alert": "대화 요청",
+    "nutrition_alert": "영양 알림",
     "agent_error": "AI 오류",
 }
 HIDDEN_DELIVERY_CHANNELS = {"chat_only", "internal_only"}
@@ -244,7 +249,7 @@ def is_agent_conversation_message(message) -> bool:
 
 def pending_agent_chat_views(session: Session, current_time: datetime) -> list[dict]:
     stale_after_seconds = settings.llm_timeout_seconds + 30
-    now = datetime.utcnow()
+    now = utc_now()
     rows = session.scalars(
         select(Notification)
         .where(
@@ -259,7 +264,8 @@ def pending_agent_chat_views(session: Session, current_time: datetime) -> list[d
         metadata = parse_metadata_json(row.metadata_json)
         if metadata.get("category") != "agent_conversation":
             continue
-        if metadata.get("status") not in PENDING_AGENT_CHAT_STATUSES:
+        async_continuation_pending = metadata.get("async_continuation_status") == "pending"
+        if metadata.get("status") not in PENDING_AGENT_CHAT_STATUSES and not async_continuation_pending:
             continue
         if row.created_at and (now - row.created_at).total_seconds() > stale_after_seconds:
             continue
@@ -680,6 +686,7 @@ def daily_pattern_job_status_view(session: Session) -> dict | None:
         "message": "일일 패턴 대화 요청 대기 중: agent 응답을 기다리고 있습니다.",
     }
 
+
 def build_dashboard_context(request: Request, session: Session, agent_model_config: dict | None = None) -> dict:
     clock = ensure_clock(session)
     timeline_date_param = request.query_params.get("timeline_date")
@@ -690,6 +697,7 @@ def build_dashboard_context(request: Request, session: Session, agent_model_conf
         timeline_date_param = None
     dose_events = get_dose_events_for_date(session, selected_timeline_date)
     notifications = get_notification_history(session, clock.current_time)
+    nutrition = nutrition_dashboard_view(session)
     dose_status_map = get_dose_status_map(session, list(notifications))
     notification_metadata_map = {notification.id: parse_metadata_json(notification.metadata_json) for notification in notifications}
     return {
@@ -717,6 +725,7 @@ def build_dashboard_context(request: Request, session: Session, agent_model_conf
         "active_chat_prompt": active_chat_prompt_view(session, clock.current_time),
         "active_ae_prompt": active_ae_prompt_view(session),
         "active_policies": get_active_policies(session, clock.current_time.date()),
+        "nutrition": nutrition,
         "system_policies": [daily_pattern_conversation_time_view(session)],
         "reminder_suppressed_after_side_effect": is_reminder_suppressed_after_side_effect(session),
         "daily_pattern_job_status": daily_pattern_job_status_view(session),

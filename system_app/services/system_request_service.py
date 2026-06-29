@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from shared.json_utils import dump_json, parse_json_object
+from shared.redaction import safe_exception_summary, safe_log_arguments
 from shared.schemas import AgentCallbackContext, AgentResponse, MultiturnChatRequest, NotificationPolicyDelta
 from shared.settings import get_settings
 from system_app.models import Notification
@@ -12,13 +14,16 @@ from system_app.services import trace_logging
 from system_app.services.agent_client import AgentClient
 from system_app.services.agent_error_service import present_agent_error
 from system_app.services.agent_response_service import maybe_apply_dose_taken_response, maybe_apply_policy_response, persist_agent_summary
+from system_app.services.agent_trace_store import upsert_agent_run_trace
 from system_app.services.clock_service import ensure_clock
+from system_app.services.failure_copy import copy_for_agent_error
 from system_app.services.medication_plan_service import get_schedule_slot_labels
 from system_app.services.missed_dose_reply_understanding import (
     MISSED_DOSE_REPLY_METADATA_KEY,
     merge_missed_dose_reply_understanding_from_agent_response,
 )
 from system_app.services.notification_service import create_notification
+from system_app.services.nutrition_service import build_nutrition_context
 from system_app.services.patient_profile_service import get_phr_patient_key
 from system_app.services.policy_confirmation import policy_deltas_from_tool_response
 from system_app.services.policy_service import daily_pattern_conversation_time_view, resolve_policy_boundary_for_slot, resolve_policy_for_slot
@@ -46,6 +51,8 @@ def create_system_event_request(
     visible_at = current_time or clock.current_time
     request_metadata = dict(metadata or {})
     chat_message = add_chat_message(session, role="user", content=message, sender_type="patient", category=event_type, metadata=request_metadata)
+    conversation_id = str(request_metadata.get("agent_conversation_id") or f"system-event-{chat_message.id}-{uuid4().hex[:12]}")
+    request_metadata["agent_conversation_id"] = conversation_id
     notification = create_notification(
         session,
         notification_type="system_policy_request",
@@ -58,6 +65,7 @@ def create_system_event_request(
             "event_type": event_type,
             "request_message": message,
             "chat_message_id": chat_message.id,
+            "agent_conversation_id": conversation_id,
             **request_metadata,
         },
     )
@@ -154,6 +162,7 @@ def build_multiturn_chat_request(
     schedule_slots = get_schedule_slot_labels(session)
     request_notification = session.get(Notification, request_notification_id)
     request_metadata = parse_json_object(request_notification.metadata_json) if request_notification is not None else {}
+    conversation_id = str(request_metadata.get("agent_conversation_id") or f"system-event-{request_notification_id}")
     request = MultiturnChatRequest(
         patient_id=settings.patient_id,
         phr_patient_key=get_phr_patient_key(session),
@@ -172,6 +181,12 @@ def build_multiturn_chat_request(
             ],
             "system_policies": [daily_pattern_conversation_time_view(session)],
             "recent_notifications": [row.body for row in get_notifications(session, clock.current_time)[:5]],
+            "nutrition": build_nutrition_context(session, patient_id=settings.patient_id),
+            "recent_nutrition_alerts": [
+                row.body
+                for row in get_notifications(session, clock.current_time)
+                if row.notification_type == "nutrition_alert" and row.patient_id == settings.patient_id
+            ][:5],
             "request_metadata": request_metadata,
             MISSED_DOSE_REPLY_METADATA_KEY: request_metadata.get(MISSED_DOSE_REPLY_METADATA_KEY, {}),
             "today_dose_events": [
@@ -189,7 +204,7 @@ def build_multiturn_chat_request(
         callback_context=AgentCallbackContext(
             app_base_url=settings.system_base_url,
             notification_id=request_notification_id,
-            conversation_id=f"system-event-{request_notification_id}",
+            conversation_id=conversation_id,
         ),
     )
     trace_logging.log_info(
@@ -219,6 +234,17 @@ def apply_system_event_response(
         agent=response.agent_name,
         decision=response.decision_type,
         summary=trace_logging.snippet(response.human_summary),
+    )
+    upsert_agent_run_trace(
+        session,
+        response,
+        workflow_name=event_type,
+        source_event_type="system_event_response",
+        status="completed",
+        request_id=str(request_notification_id),
+        patient_id=settings.patient_id,
+        request_message=message,
+        notification_id=request_notification_id,
     )
     log_agent_tool_trace(request_notification_id, response)
     merge_missed_dose_reply_understanding_from_agent_response(session, request_notification_id, response)
@@ -292,6 +318,17 @@ def apply_async_continuation_ack(
         trace_id=response.trace_id,
         continuation_type=response.structured_payload.get("async_continuation_type"),
     )
+    upsert_agent_run_trace(
+        session,
+        response,
+        workflow_name=event_type,
+        source_event_type="system_event_async_ack",
+        status="awaiting_agent",
+        request_id=str(request_notification_id),
+        patient_id=settings.patient_id,
+        request_message=message,
+        notification_id=request_notification_id,
+    )
     persist_agent_summary(session, response, category="multiturn_chat")
     update_system_event_request_notification(
         session,
@@ -315,6 +352,35 @@ def apply_async_continuation_ack(
         )
         notification.metadata_json = dump_json(metadata)
         session.flush()
+
+
+def mark_system_event_async_submitted(
+    session: Session,
+    event_type: str,
+    message: str,
+    request_notification_id: int,
+    *,
+    request_id: str = "",
+    task_type: str = "chat_continuation",
+) -> None:
+    notification = session.get(Notification, request_notification_id)
+    if notification is None:
+        return
+    metadata = parse_json_object(notification.metadata_json)
+    metadata.update(
+        {
+            "status": "awaiting_agent",
+            "request_message": message,
+            "event_type": event_type,
+            "async_continuation_status": "pending",
+            "async_continuation_type": task_type,
+            "agent_async_request_id": request_id,
+        }
+    )
+    notification.title = "에이전트 답변 대기"
+    notification.body = f"에이전트가 답변을 준비하고 있습니다: {message}"
+    notification.metadata_json = dump_json(metadata)
+    session.flush()
 
 
 def log_agent_tool_trace(notification_id: int, response: AgentResponse) -> None:
@@ -342,26 +408,8 @@ def _tool_call_log_payload(tool_call: dict) -> dict:
     arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
     return {
         "tool": str(tool_call.get("name") or ""),
-        "arguments": _safe_log_arguments(arguments),
+        "arguments": safe_log_arguments(arguments),
     }
-
-
-def _safe_log_arguments(arguments: dict) -> dict:
-    safe: dict = {}
-    for key, value in arguments.items():
-        key_text = str(key)
-        key_lower = key_text.lower()
-        if "token" in key_lower or key_lower.endswith("_key") or key_lower in {"phr_patient_key"}:
-            safe[f"{key_text}_present"] = bool(value)
-        elif isinstance(value, str):
-            safe[key_text] = trace_logging.snippet(value)
-        elif isinstance(value, list):
-            safe[key_text] = {"count": len(value)}
-        elif isinstance(value, dict):
-            safe[key_text] = {"keys": sorted(str(item) for item in value.keys())}
-        else:
-            safe[key_text] = value
-    return safe
 
 
 def _tool_result_log_payload(result: dict) -> dict:
@@ -409,25 +457,28 @@ def mark_system_event_request_failed(
     request_notification_id: int,
     error: Exception,
 ) -> None:
+    error_type = getattr(error, "error_type", type(error).__name__)
+    safe_error = safe_exception_summary(error)
+    failure_copy = copy_for_agent_error(str(error_type), source_event_type=event_type)
     trace_logging.log_warning(
         "system_event_request_failed",
         event_type=event_type,
         notification_id=request_notification_id,
         error_type=type(error).__name__,
-        error=trace_logging.snippet(error, 220),
+        error=safe_error,
     )
     update_system_event_request_notification(
         session,
         request_notification_id,
         status="failed",
         request_message=message,
-        result_message=str(error),
+        result_message=safe_error,
     )
     present_agent_error(
         session,
         "multiturn_chat",
         error,
-        user_message="AI가 대화를 처리하지 못했습니다. 잠시 후 다시 시도해주세요.",
+        user_message=failure_copy.body,
         add_chat=True,
     )
 

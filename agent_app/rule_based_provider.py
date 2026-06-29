@@ -34,6 +34,13 @@ class RuleBasedProvider(BaseLLMProvider):
                     "observations": ["부작용 가능성 확인을 위해 PHR 주의사항 조회가 필요합니다."],
                     "tool_calls": [side_effect_tool_call],
                 }
+            preference_tool_calls = _rule_based_preference_tool_calls(user_payload)
+            if preference_tool_calls:
+                return {
+                    "advice": "말씀하신 식사 선호와 제한을 저장해둘게요.",
+                    "observations": ["사용자가 명시적으로 말한 영양 선호도 ontology fact를 기록합니다."],
+                    "tool_calls": preference_tool_calls,
+                }
             policy_tool_call = _rule_based_policy_tool_call(user_payload)
             if policy_tool_call:
                 return {
@@ -139,6 +146,67 @@ def _rule_based_policy_tool_call(payload: dict[str, Any]) -> dict[str, Any] | No
     }
 
 
+def _rule_based_preference_tool_calls(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        return []
+    candidates = {
+        "짜장면": "food",
+        "탕수육": "food",
+        "콤비네이션피자": "food",
+        "피자": "food",
+        "콜라": "food",
+        "땅콩": "ingredient",
+        "한식": "cuisine",
+    }
+    calls: list[dict[str, Any]] = []
+    for label, object_type in candidates.items():
+        index = message.find(label)
+        if index < 0:
+            continue
+        window = _preference_window(message, label, candidates)
+        predicate = ""
+        if any(keyword in window for keyword in ("알레르기", "알러지")):
+            predicate = "allergic_to"
+        elif any(keyword in window for keyword in ("의사가 피하", "먹지 말", "금지", "제한")):
+            predicate = "medically_avoids"
+        elif any(keyword in window for keyword in ("싫", "안 좋아", "별로")):
+            predicate = "dislikes"
+        elif any(keyword in window for keyword in ("좋아", "선호", "위주")):
+            predicate = "prefers" if object_type in {"cuisine", "diet_style"} else "likes"
+        if not predicate:
+            continue
+        calls.append(
+            {
+                "name": "record_nutrition_preference",
+                "arguments": {
+                    "predicate": predicate,
+                    "object_label": label,
+                    "object_type": object_type,
+                    "confidence": 0.9,
+                    "strength": 1.0,
+                    "evidence_text": message,
+                },
+            }
+        )
+    return calls
+
+
+def _preference_window(message: str, label: str, candidates: dict[str, str]) -> str:
+    index = message.find(label)
+    if index < 0:
+        return ""
+    next_indices = [
+        found
+        for other_label in candidates
+        if other_label != label
+        for found in [message.find(other_label, index + len(label))]
+        if found >= 0
+    ]
+    boundary = min(next_indices) if next_indices else min(len(message), index + 28)
+    return message[index:boundary]
+
+
 def _multiturn_general_reply(payload: dict[str, Any]) -> str:
     message = str(payload.get("message") or "").strip()
     recent_chat = context_value(payload, "recent_chat")
@@ -152,6 +220,22 @@ def _multiturn_general_reply(payload: dict[str, Any]) -> str:
     if any(keyword in message for keyword in ("아까", "방금", "이전", "전에", "뭔말", "뭐라", "무슨 말", "기억")) and previous_turns:
         snippets = [str(item.get("content") or "").strip() for item in previous_turns[-4:]]
         return "앞선 대화에서는 " + " / ".join(snippets) + " 라고 이야기했습니다."
+    if _is_nutrition_medication_message(message):
+        return (
+            "영양과 복약을 함께 보면, 오늘 짠 식사를 하셨다면 저녁은 국물과 가공식품을 줄이고 채소와 단백질을 먼저 챙기세요. "
+            "당 수치가 걱정된다면 탄수화물 양을 평소보다 조금 낮추고, 처방된 복약 시간은 임의로 바꾸지 말고 예정된 시간에 맞춰 복용하세요."
+        )
+    if _is_nutrition_message(message):
+        return "오늘 식사는 나트륨과 탄수화물을 조금 낮추고 채소, 단백질, 수분을 함께 보강하는 방향이 좋겠습니다."
     if previous_turns:
         return "앞선 대화 맥락을 확인했습니다. 이어서 말씀해 주세요."
     return "말씀을 확인했습니다. 복약이나 증상과 관련해 더 이야기해 주세요."
+
+
+def _is_nutrition_medication_message(message: str) -> bool:
+    return _is_nutrition_message(message) and any(keyword in message for keyword in ("복약", "복용", "약", "처방"))
+
+
+def _is_nutrition_message(message: str) -> bool:
+    nutrition_keywords = ("식사", "아침", "점심", "저녁", "영양", "나트륨", "짜", "당 수치", "혈당", "탄수화물", "열량", "칼로리")
+    return any(keyword in message for keyword in nutrition_keywords)

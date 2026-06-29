@@ -41,9 +41,14 @@ def parse_times_csv(times_csv: str) -> list[str]:
         value = raw.strip()
         if not value:
             continue
-        parsed = datetime.strptime(value, "%H:%M").strftime("%H:%M")
+        try:
+            parsed = datetime.strptime(value, "%H:%M").strftime("%H:%M")
+        except ValueError as exc:
+            raise ValueError("invalid_schedule_time_format") from exc
         if parsed not in seen:
             seen.append(parsed)
+    if not seen:
+        raise ValueError("required_schedule_missing")
     return seen
 
 def resolve_choice_value(choice: str | None, custom_value: str | None = None, fallback_value: str | None = None) -> str:

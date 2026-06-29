@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from phr_app.main import app
+from shared.settings import get_settings
 
 
 def register_patient(client: TestClient, medications: list[dict]) -> str:
@@ -98,3 +99,18 @@ def test_phr_update_patient_medications_replaces_active_items():
 
     assert update_response.status_code == 200
     assert {row["item_name"] for row in list_response.json()["medications"]} == {"고지혈증약"}
+
+
+def test_phr_read_only_mode_rejects_writes_but_keeps_reads(monkeypatch):
+    monkeypatch.setenv("PHR_READ_ONLY", "true")
+    get_settings.cache_clear()
+    try:
+        with TestClient(app) as client:
+            register_response = client.post("/phr/patients/register", json={"medications": [{"item_name": "혈압약", "dosage": "1정"}]})
+            list_response = client.get("/phr/patients/seed-phr-patient-key/medications")
+    finally:
+        get_settings.cache_clear()
+
+    assert register_response.status_code == 503
+    assert register_response.json()["detail"] == "phr_read_only_mode"
+    assert list_response.status_code == 200

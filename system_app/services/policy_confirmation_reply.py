@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from sqlalchemy.orm import Session
 
 from shared.json_utils import parse_json_object
 from shared.schemas import AgentResponse, NotificationPolicyDelta, SystemPolicyDelta
+from shared.time_utils import utc_now
 from system_app.models import Notification
 from system_app.services.audit_service import record_agent_audit
 from system_app.services.policy_confirmation_apply import apply_policy_deltas_individually
@@ -68,7 +67,7 @@ def resolve_multiple_choice_reply(message: str, multiple_choice: object) -> str 
 
 def policy_confirmation_response(metadata: dict, human_summary: str, structured_payload: dict) -> AgentResponse:
     return AgentResponse(
-        trace_id=metadata.get("trace_id") or f"policy-confirmation-{datetime.utcnow().timestamp()}",
+        trace_id=metadata.get("trace_id") or f"policy-confirmation-{utc_now().timestamp()}",
         agent_name=metadata.get("agent_name") or "policy_confirmation",
         prompt_version_id=metadata.get("prompt_version_id") or "n/a",
         decision_type="policy_confirmation",

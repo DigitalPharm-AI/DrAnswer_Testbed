@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from shared.json_utils import dump_json, parse_json_object
 from shared.settings import get_settings
+from shared.time_utils import utc_now
 from system_app.models import ChatMessage, Notification, SystemPolicyOverride
 from system_app.services.clock_service import pause_simulation_clock_for_conversation, resume_simulation_clock_from_notification
 from system_app.services.notification_service import create_notification
@@ -57,7 +56,7 @@ def set_reminder_suppressed_after_side_effect(
     ).all()
     for row in active_rows:
         row.active = False
-        row.updated_at = datetime.utcnow()
+        row.updated_at = utc_now()
     session.add(
         SystemPolicyOverride(
             patient_id=settings.patient_id,
@@ -231,7 +230,7 @@ def handle_side_effect_reminder_safety_reply(
             "patient_reply": patient_reply,
             "agent_reply": result_message,
             "reply_result_message": result_message,
-            "reply_completed_at": datetime.utcnow().isoformat(),
+            "reply_completed_at": utc_now().isoformat(),
         }
     )
     notification.metadata_json = dump_json(metadata)

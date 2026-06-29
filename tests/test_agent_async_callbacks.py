@@ -8,18 +8,22 @@ from sqlalchemy.orm import sessionmaker
 from agent_app.agents.multiturn_chat import MultiturnChatAgent
 from agent_app.async_tasks import (
     DEAD,
+    FAILED,
     PENDING,
     async_task_by_request_id,
     async_task_observability_payload,
     async_task_rows,
     async_task_status_counts,
     claim_next_async_task,
+    dismiss_dead_async_task,
     enqueue_async_task,
     mark_async_task_failed,
+    retry_dead_async_task,
 )
 from agent_app.async_tasks import (
     RUNNING as TASK_RUNNING,
 )
+from agent_app.async_worker import _execute_snapshot
 from agent_app.models import AgentWorkerHeartbeat
 from agent_app.models import Base as AgentBase
 from agent_app.providers import RuleBasedProvider
@@ -34,6 +38,7 @@ from agent_app.worker_status import (
     record_worker_task_completed,
     worker_status_payload,
 )
+from shared.time_utils import utc_now
 from shared.schemas import (
     AgentAsyncChatResultRequest,
     AgentAsyncClinicianAlertRequest,
@@ -96,7 +101,7 @@ def test_agent_async_task_claim_sets_lock_metadata():
         assert claimed.attempts == 1
         assert claimed.locked_by == "worker-a"
         assert claimed.locked_until is not None
-        assert claimed.locked_until > datetime.utcnow()
+        assert claimed.locked_until > utc_now()
 
 
 def test_agent_async_task_failure_retries_then_dead():
@@ -120,7 +125,7 @@ def test_agent_async_task_failure_retries_then_dead():
         assert failed_task.locked_by == ""
         assert failed_task.locked_until is None
 
-        task.run_after = datetime.utcnow() - timedelta(seconds=1)
+        task.run_after = utc_now() - timedelta(seconds=1)
         session.flush()
         second_claim = claim_next_async_task(session, worker_id="worker-a")
         assert second_claim is not None
@@ -144,7 +149,7 @@ def test_agent_async_task_stale_lock_is_reclaimed():
         task.status = TASK_RUNNING
         task.attempts = 1
         task.locked_by = "dead-worker"
-        task.locked_until = datetime.utcnow() - timedelta(seconds=1)
+        task.locked_until = utc_now() - timedelta(seconds=1)
         session.flush()
 
         claimed = claim_next_async_task(session, worker_id="worker-b", visibility_timeout_seconds=60)
@@ -214,6 +219,24 @@ def test_agent_async_task_observability_payload_hides_payload_values():
         assert "secret-phr-key" not in json.dumps(payload, ensure_ascii=False)
 
 
+def test_agent_async_task_observability_payload_uses_completed_runtime():
+    with build_agent_session() as session:
+        task, _created = enqueue_async_task(
+            session,
+            request_id="missed_dose:observability:completed-runtime",
+            task_type="missed_dose",
+            payload={"dose_event_id": 1},
+        )
+        task.status = DEAD
+        task.started_at = utc_now() - timedelta(days=1)
+        task.completed_at = task.started_at + timedelta(seconds=7)
+        session.flush()
+
+        payload = async_task_observability_payload(task)
+
+        assert payload["runtime_seconds"] == 7
+
+
 def test_agent_async_task_observability_payload_survives_malformed_payload_json():
     with build_agent_session() as session:
         task, _created = enqueue_async_task(
@@ -232,6 +255,59 @@ def test_agent_async_task_observability_payload_survives_malformed_payload_json(
         assert payload["payload_parse_error"] is True
 
 
+def test_dead_async_task_operator_actions_retry_and_dismiss():
+    with build_agent_session() as session:
+        retry_task, _created = enqueue_async_task(
+            session,
+            request_id="missed_dose:operator:retry",
+            task_type="missed_dose",
+            payload={"dose_event_id": 1},
+            max_attempts=1,
+        )
+        retry_task.status = DEAD
+        retry_task.attempts = 1
+        retry_task.started_at = utc_now() - timedelta(seconds=10)
+        retry_task.completed_at = utc_now()
+        retry_task.locked_by = "worker-old"
+        retry_task.locked_until = utc_now() + timedelta(seconds=30)
+        retry_task.last_error = "token=secret-value"
+        session.flush()
+
+        retried = retry_dead_async_task(session, retry_task, reason="operator checked token=secret-value")
+
+        assert retried.status == PENDING
+        assert retried.attempts == 0
+        assert retried.started_at is None
+        assert retried.completed_at is None
+        assert retried.locked_by == ""
+        assert retried.locked_until is None
+        assert retried.run_after is not None
+        assert "operator_retry_requested" in retried.last_error
+        assert "secret-value" not in retried.last_error
+
+        dismiss_task, _created = enqueue_async_task(
+            session,
+            request_id="missed_dose:operator:dismiss",
+            task_type="missed_dose",
+            payload={"dose_event_id": 2},
+            max_attempts=1,
+        )
+        dismiss_task.status = DEAD
+        dismiss_task.attempts = 1
+        dismiss_task.locked_by = "worker-old"
+        dismiss_task.locked_until = utc_now() + timedelta(seconds=30)
+        session.flush()
+
+        dismissed = dismiss_dead_async_task(session, dismiss_task, reason="duplicate incident")
+
+        assert dismissed.status == FAILED
+        assert dismissed.completed_at is not None
+        assert dismissed.locked_by == ""
+        assert dismissed.locked_until is None
+        assert dismissed.run_after is None
+        assert dismissed.last_error == "operator_dismissed: duplicate incident"
+
+
 def test_agent_worker_heartbeat_status_tracks_running_stopped_and_stale(monkeypatch):
     with build_agent_session() as session:
         mark_worker_started(session, "worker-a")
@@ -241,14 +317,23 @@ def test_agent_worker_heartbeat_status_tracks_running_stopped_and_stale(monkeypa
             current_task_request_id="missed_dose:job:1",
             current_task_type="missed_dose",
         )
+        record_worker_heartbeat(
+            session,
+            "worker-private-error",
+            last_error="pytest private worker error peanut allergy token=secret-value",
+        )
         record_worker_task_completed(session, "worker-a")
         running_status = worker_status_payload(session)[0]
+        private_error_status = next(item for item in worker_status_payload(session) if item["worker_id"] == "worker-private-error")
 
         assert running_status["worker_id"] == "worker-a"
         assert running_status["status"] == WORKER_RUNNING
         assert running_status["current_task_request_id"] == ""
         assert running_status["current_task_type"] == ""
         assert running_status["processed_count"] == 1
+        assert private_error_status["last_error"].startswith("clinical text redacted")
+        assert "pytest private worker error" not in private_error_status["last_error"]
+        assert "secret-value" not in private_error_status["last_error"]
 
         mark_worker_stopped(session, "worker-a")
         stopped_status = worker_status_payload(session)[0]
@@ -262,7 +347,7 @@ def test_agent_worker_heartbeat_status_tracks_running_stopped_and_stale(monkeypa
         try:
             mark_worker_started(session, "worker-b")
             row = session.query(AgentWorkerHeartbeat).filter(AgentWorkerHeartbeat.worker_id == "worker-b").one()
-            row.heartbeat_at = datetime.utcnow() - timedelta(seconds=5)
+            row.heartbeat_at = utc_now() - timedelta(seconds=5)
             session.flush()
             stale_status = next(item for item in worker_status_payload(session) if item["worker_id"] == "worker-b")
         finally:
@@ -407,6 +492,71 @@ def test_async_chat_result_creates_ae_pro_ctcae_chat_prompt():
         metadata = json.loads(message.metadata_json)
         assert metadata["ae_pro_ctcae"]["matched"] is True
         assert metadata["ae_pro_ctcae"]["questions"][0]["item_code"] == "PROCTCAE_NAUSEA"
+
+
+def test_async_chat_worker_executes_required_continuation_before_callback(monkeypatch):
+    class ContinuationOrchestrator:
+        def __init__(self) -> None:
+            self.payloads = []
+
+        async def invoke(self, _mode, payload):
+            self.payloads.append(payload)
+            if len(self.payloads) == 1:
+                return AgentResponse(
+                    trace_id="trace-first",
+                    agent_name="system_event_agent",
+                    prompt_version_id="v1",
+                    decision_type="async_continuation_requested",
+                    structured_payload={
+                        "tool_calls": [{"name": "lookup_side_effect_info", "arguments": {"symptom_text": "메스꺼움"}}],
+                        "tool_results": [],
+                        "async_continuation_required": True,
+                        "async_continuation_type": "side_effect_lookup",
+                    },
+                    human_summary="증상 내용을 확인해서 문항을 준비할게요.",
+                )
+            return AgentResponse(
+                trace_id="trace-final",
+                agent_name="side_effect_triage_agent",
+                prompt_version_id="v1",
+                decision_type="side_effect_assessment",
+                structured_payload={"tool_results": [{"tool_name": "AE_pro_ctcae", "status": "success"}]},
+                human_summary="의료진에게 알려야 할 증상인지 확인하기 위해 식사와 수분 상태를 같이 확인해 주세요.",
+            )
+
+    captured = {}
+
+    async def fake_post_chat_result(snapshot, response):
+        captured["snapshot"] = snapshot
+        captured["response"] = response
+
+    monkeypatch.setattr("agent_app.async_worker._post_chat_result", fake_post_chat_result)
+    orchestrator = ContinuationOrchestrator()
+
+    asyncio.run(
+        _execute_snapshot(
+            {
+                "id": 1,
+                "request_id": "chat_continuation:conversation:system-event-test",
+                "task_type": "chat_continuation",
+                "payload": {
+                    "patient_id": "demo-patient",
+                    "event_type": "multiturn_chat",
+                    "message": "메스꺼움이 있어요",
+                    "current_time": "2026-04-20T09:35:00",
+                    "context": {},
+                },
+                "callback_context": {"app_base_url": "http://system", "notification_id": 1},
+            },
+            orchestrator,
+        )
+    )
+
+    assert len(orchestrator.payloads) == 2
+    assert orchestrator.payloads[1]["context"]["execute_async_continuation"] is True
+    assert orchestrator.payloads[1]["context"]["async_tool_calls"][0]["name"] == "lookup_side_effect_info"
+    assert captured["response"].decision_type == "side_effect_assessment"
+    assert "의료진" in captured["response"].human_summary
 
 
 def test_async_clinician_alert_callback_creates_internal_only_stub_once():

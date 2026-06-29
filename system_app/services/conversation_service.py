@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from sqlalchemy.orm import Session
 
 from shared.json_utils import dump_json, parse_json_object
 from shared.schemas import AgentResponse
+from shared.time_utils import utc_now
 from system_app.models import Notification
 from system_app.services.clock_service import resume_simulation_clock_from_notification
 from system_app.services.policy_confirmation import handle_policy_confirmation_reply
@@ -59,7 +58,7 @@ def update_conversation_alert_reply_state(
                 "reply_trace_id": response.trace_id,
                 "reply_decision_type": response.decision_type,
                 "reply_agent_name": response.agent_name,
-                "reply_completed_at": datetime.utcnow().isoformat(),
+                "reply_completed_at": utc_now().isoformat(),
             }
         )
     notification.metadata_json = dump_json(metadata)

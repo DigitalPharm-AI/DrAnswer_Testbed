@@ -1,7 +1,7 @@
-import { installChatLogScrollPreserver } from "./notifications/chat_scroll.js";
-import { createPanelRefresher } from "./notifications/panels.js";
-import { createPolicyConfirmationRenderer } from "./notifications/policy_confirmation.js";
-import { createButton, escapeHtml, fetchNotification, postAction, postFormAction, showNativeNotification } from "./notifications/shared.js";
+import { installChatLogScrollPreserver } from "./notifications/chat_scroll.js?v=20260619b";
+import { createPanelRefresher } from "./notifications/panels.js?v=20260619b";
+import { createPolicyConfirmationRenderer } from "./notifications/policy_confirmation.js?v=20260619b";
+import { createButton, escapeHtml, fetchNotification, postAction, postFormAction, showNativeNotification } from "./notifications/shared.js?v=20260619b";
 
 (function () {
   const stack = document.getElementById("popup-stack");
@@ -47,8 +47,10 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
     for (const tab of tabs) {
       tab.classList.toggle("is-active", tab.dataset.tabTarget === targetId);
     }
+    document.body.dataset.activeTab = targetId.replace("-page", "");
     if (updateHash) {
-      window.history.replaceState(null, "", targetId === "chat-page" ? "#chat" : "#home");
+      const hash = targetId === "chat-page" ? "#chat" : targetId === "logs-page" ? "#logs" : "#home";
+      window.history.replaceState(null, "", hash);
     }
     if (targetId === "chat-page") {
       window.setTimeout(() => {
@@ -60,16 +62,24 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
     }
   }
 
-  async function openChatPage(updateHash = true) {
+  async function openChatPage(updateHash = true, prefill = "") {
     openPage("chat-page", updateHash);
     state.chatScrollForceBottom = true;
+    applyChatPrefill(prefill);
     await Promise.all([refreshChatPanel(), refreshChatHistoryPanel()]);
-    window.requestAnimationFrame(() => {
-      const input = document.getElementById("agent-chat-message");
-      if (input) {
-        input.focus({ preventScroll: true });
-      }
-    });
+    window.requestAnimationFrame(() => applyChatPrefill(prefill));
+  }
+
+  function applyChatPrefill(prefill = "") {
+    const input = document.getElementById("agent-chat-message");
+    if (!input) {
+      return;
+    }
+    if (prefill) {
+      input.value = prefill;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    input.focus({ preventScroll: true });
   }
 
   function installAppTabs() {
@@ -88,10 +98,26 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
         return;
       }
       event.preventDefault();
-      openChatPage();
+      openChatPage(true, trigger.dataset.chatPrefill || "");
+    });
+    document.body.addEventListener("click", (event) => {
+      const trigger = event.target.closest("[data-scroll-target]");
+      if (!trigger) {
+        return;
+      }
+      const targetSelector = trigger.dataset.scrollTarget || "";
+      const target = targetSelector ? document.querySelector(targetSelector) : null;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      event.preventDefault();
+      target.scrollIntoView({ behavior: "auto", block: "start" });
+      target.focus({ preventScroll: true });
     });
     if (window.location.hash === "#chat") {
       openChatPage(false);
+    } else if (window.location.hash === "#logs") {
+      openPage("logs-page", false);
     } else {
       openPage("home-page", false);
     }
@@ -121,6 +147,79 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
       if (form) {
         form.requestSubmit();
       }
+    });
+  }
+
+  function installChatDraftPersistence() {
+    const storageKey = "daDrug.chatComposerDraft";
+
+    function readDraft() {
+      try {
+        const value = window.sessionStorage.getItem(storageKey);
+        return value ? JSON.parse(value) : null;
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    function writeDraft(input) {
+      if (!input.value) {
+        window.sessionStorage.removeItem(storageKey);
+        return;
+      }
+      window.sessionStorage.setItem(
+        storageKey,
+        JSON.stringify({
+          name: input.name,
+          value: input.value,
+          selectionStart: input.selectionStart,
+          selectionEnd: input.selectionEnd,
+        }),
+      );
+    }
+
+    function restoreDraft() {
+      const input = document.getElementById("agent-chat-message");
+      const draft = readDraft();
+      if (!(input instanceof HTMLTextAreaElement) || !draft || input.value || input.name !== draft.name) {
+        return;
+      }
+      input.value = draft.value || "";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      if (document.activeElement === input) {
+        input.setSelectionRange(draft.selectionStart || input.value.length, draft.selectionEnd || input.value.length);
+      }
+    }
+
+    document.body.addEventListener("input", (event) => {
+      const input = event.target;
+      if (input instanceof HTMLTextAreaElement && input.id === "agent-chat-message") {
+        writeDraft(input);
+      }
+    });
+    document.body.addEventListener("submit", (event) => {
+      const form = event.target;
+      if (form instanceof HTMLFormElement && form.classList.contains("chat-composer")) {
+        window.sessionStorage.removeItem(storageKey);
+      }
+    });
+    new MutationObserver(() => restoreDraft()).observe(document.body, { childList: true, subtree: true });
+    restoreDraft();
+  }
+
+  function installNutritionScenarioRefresh() {
+    document.body.addEventListener("htmx:afterRequest", (event) => {
+      const source = event.detail && event.detail.elt;
+      if (!(source instanceof HTMLFormElement)) {
+        return;
+      }
+      const action = source.getAttribute("action") || "";
+      if (!action.includes("/nutrition/scenarios/")) {
+        return;
+      }
+      panelRefresher.refreshNotificationsPanel();
+      panelRefresher.refreshChatLogPanel();
+      panelRefresher.refreshChatHistoryPanel();
     });
   }
 
@@ -286,6 +385,13 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
         refreshPanels();
       });
       actions.appendChild(retryButton);
+    }
+
+    if (notification.notification_type === "nutrition_alert") {
+      const chatButton = createButton("채팅 상담", "", () => {
+        openChatPage(true, `${notification.body} 다음 식사는 어떻게 조정하면 좋을까요?`);
+      });
+      actions.appendChild(chatButton);
     }
 
     if (!notification.acknowledged && notification.notification_type !== "conversation_alert") {
@@ -534,6 +640,8 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
   panelRefresher = createPanelRefresher({ stack, updatePopup });
   installAppTabs();
   installChatComposerShortcuts();
+  installChatDraftPersistence();
+  installNutritionScenarioRefresh();
   installChatLogScrollPreserver(state);
   installReplyFormSubmitLock();
   pollNotifications();

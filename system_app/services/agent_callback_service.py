@@ -10,6 +10,7 @@ from shared.schemas import (
     DoseTakenToolResult,
 )
 from system_app.models import AgentDecisionAudit, Notification
+from system_app.services.audit_service import create_agent_decision_audit
 from system_app.services.clock_service import ensure_clock
 from system_app.services.dose_event_service import mark_dose_taken
 from system_app.services.notification_service import create_notification
@@ -32,18 +33,17 @@ def apply_agent_dose_taken_request(session: Session, payload: DoseTakenToolReque
             taken_at=event.taken_at,
             message=f"{event.slot_label} {event.medication_name} 복약을 완료로 기록했습니다.",
         )
-    session.add(
-        AgentDecisionAudit(
-            trace_id=trace_id,
-            agent_name="agent_tool_executor",
-            prompt_version_id=payload.source_trace_id or "n/a",
-            decision_type="mark_dose_taken",
-            structured_payload=dump_metadata_json(payload.model_dump(mode="json")),
-            human_summary=result.message,
-            applied=result.status == "taken",
-            error_message="" if result.status == "taken" else result.message,
-            source_event_type="agent_dose_taken",
-        )
+    create_agent_decision_audit(
+        session,
+        trace_id=trace_id,
+        agent_name="agent_tool_executor",
+        prompt_version_id=payload.source_trace_id or "n/a",
+        decision_type="mark_dose_taken",
+        structured_payload=payload.model_dump(mode="json"),
+        human_summary=result.message,
+        applied=result.status == "taken",
+        error_message="" if result.status == "taken" else result.message,
+        source_event_type="agent_dose_taken",
     )
     session.commit()
     return result
@@ -93,18 +93,17 @@ def process_agent_notification_callback(session: Session, payload: AgentNotifica
         )
 
     if payload.idempotency_key:
-        session.add(
-            AgentDecisionAudit(
-                trace_id=payload.idempotency_key,
-                agent_name="agent_tool_executor",
-                prompt_version_id="n/a",
-                decision_type="agent_notification_callback",
-                structured_payload=dump_metadata_json({"notification_id": notification.id}),
-                human_summary=payload.body,
-                applied=True,
-                error_message="",
-                source_event_type="agent_notification_callback",
-            )
+        create_agent_decision_audit(
+            session,
+            trace_id=payload.idempotency_key,
+            agent_name="agent_tool_executor",
+            prompt_version_id="n/a",
+            decision_type="agent_notification_callback",
+            structured_payload={"notification_id": notification.id},
+            human_summary=payload.body,
+            applied=True,
+            error_message="",
+            source_event_type="agent_notification_callback",
         )
     session.commit()
     return {"status": "ok", "notification_id": notification.id}

@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from shared.json_utils import dump_json
+from shared.redaction import redact_for_logging
 from shared.settings import get_settings
 
 logger = logging.getLogger("uvicorn.error")
@@ -20,4 +21,4 @@ def snippet(value: Any, limit: int = 140) -> str:
 
 def log_info(event: str, **fields: Any) -> None:
     if enabled():
-        logger.info("%s %s", event, dump_json(fields))
+        logger.info("%s %s", event, dump_json(redact_for_logging(fields)))
