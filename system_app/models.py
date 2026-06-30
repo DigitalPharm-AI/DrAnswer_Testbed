@@ -170,6 +170,25 @@ class NutritionPatientPreferenceTriple(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class NutritionFoodRef(Base):
+    __tablename__ = "nutrition_food_ref"
+
+    food_ref_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    food_name: Mapped[str] = mapped_column(String(255), index=True)
+    category: Mapped[str] = mapped_column(String(120), default="")
+    serving_size: Mapped[float | None] = mapped_column(Float, nullable=True)
+    energy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    carbohydrate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    protein: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sodium: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sugar: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cholesterol: Mapped[float | None] = mapped_column(Float, nullable=True)
+    moisture: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source: Mapped[str] = mapped_column(String(120), default="")
+    manufacturer: Mapped[str] = mapped_column(String(120), default="")
+
+
 class DoseSchedule(Base):
     __tablename__ = "dose_schedules"
 

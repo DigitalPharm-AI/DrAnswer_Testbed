@@ -92,8 +92,13 @@ async def lifespan(_: FastAPI):
     run_migrations(engine)
     from system_app.services.nutrition_preference_service import seed_nutrition_ontology
 
+    from system_app.services.food_search_service import seed_food_ref_from_csv
+
+    _csv_path = Path(__file__).parent.parent / "data" / "nutrition_db.csv"
     with SessionLocal() as session:
         seed_nutrition_ontology(session)
+        if _csv_path.exists():
+            seed_food_ref_from_csv(session, _csv_path)
         session.commit()
     reload_policy_workbook()
     sync_worker_dependencies()

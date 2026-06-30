@@ -206,6 +206,21 @@ def conversation_alert_action_view(metadata: dict) -> dict | None:
     }
 
 
+def food_selection_view(metadata: dict, message_id: int) -> dict | None:
+    payload = metadata.get("food_selection")
+    if not isinstance(payload, dict):
+        return None
+    return {
+        "chat_message_id": message_id,
+        "stage": payload.get("stage", "awaiting_food_choice"),
+        "query": payload.get("query", ""),
+        "candidates": payload.get("candidates") if isinstance(payload.get("candidates"), list) else [],
+        "selected_food": payload.get("selected_food"),
+        "portion_g": payload.get("portion_g"),
+        "meal_type": payload.get("meal_type"),
+    }
+
+
 def chat_message_view(message) -> dict:
     metadata = parse_metadata_json(getattr(message, "metadata_json", "{}"))
     from_user = message.role == "user" or message.sender_type in {"patient", "user"}
@@ -231,6 +246,7 @@ def chat_message_view(message) -> dict:
         "policy_confirmation": policy_confirmation_view(metadata),
         "side_effect_reminder_safety": side_effect_reminder_safety_view(metadata),
         "ae_pro_ctcae": ae_prompt_view(metadata, message.id),
+        "food_selection": food_selection_view(metadata, message.id),
     }
 
 def is_hidden_policy_confirmation_reply(message) -> bool:
@@ -280,6 +296,11 @@ def pending_agent_chat_views(session: Session, current_time: datetime) -> list[d
                 "category_label": CHAT_CATEGORY_LABELS["multiturn_chat"],
                 "content": "응답 생성 중",
                 "time_label": row.created_at.strftime("%m-%d %H:%M"),
+                "conversation_alert": None,
+                "policy_confirmation": None,
+                "side_effect_reminder_safety": None,
+                "ae_pro_ctcae": None,
+                "food_selection": None,
             }
         )
     return views
@@ -347,6 +368,7 @@ def missing_chat_prompt_views(session: Session, current_time: datetime) -> list[
                 "policy_confirmation": policy_confirmation,
                 "side_effect_reminder_safety": side_effect_safety,
                 "ae_pro_ctcae": None,
+                "food_selection": None,
             }
         )
     return views
@@ -396,6 +418,7 @@ def notification_history_chat_views(session: Session, current_time: datetime) ->
                 "policy_confirmation": None,
                 "side_effect_reminder_safety": None,
                 "ae_pro_ctcae": None,
+                "food_selection": None,
             }
         )
     return views

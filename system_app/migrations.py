@@ -314,6 +314,31 @@ MIGRATIONS: list[tuple[str, str]] = [
         ON nutrition_patient_preference_triples (patient_id, status, safety_level)
         """,
     ),
+    (
+        "20260701_0001_nutrition_food_ref",
+        """
+        CREATE TABLE IF NOT EXISTS nutrition_food_ref (
+            food_ref_id  VARCHAR(120) NOT NULL PRIMARY KEY,
+            food_name    VARCHAR(255) NOT NULL,
+            category     VARCHAR(120) NOT NULL DEFAULT '',
+            serving_size FLOAT,
+            energy       FLOAT,
+            carbohydrate FLOAT,
+            protein      FLOAT,
+            fat          FLOAT,
+            sodium       FLOAT,
+            sugar        FLOAT,
+            cholesterol  FLOAT,
+            moisture     FLOAT,
+            source       VARCHAR(120) NOT NULL DEFAULT '',
+            manufacturer VARCHAR(120) NOT NULL DEFAULT ''
+        )
+        """,
+    ),
+    (
+        "20260701_0002_nutrition_food_ref_index",
+        "CREATE INDEX IF NOT EXISTS ix_nutrition_food_ref_name ON nutrition_food_ref (food_name)",
+    ),
 ]
 
 

@@ -72,8 +72,6 @@ def tool_result_summary(results: list[ToolCallResult], fallback: str) -> str:
         meal_label = meal.get("meal_label") or meal.get("meal_type") or "식사"
         if exceeded:
             return f"{meal_label} 식사를 기록했습니다. 오늘 기준 초과 항목은 {', '.join(exceeded)}입니다."
-        if last.response.get("alert_created"):
-            return f"{meal_label} 식사를 기록했습니다. 한 끼 기준 초과 항목이 있어 영양 알림을 만들었습니다."
         return f"{meal_label} 식사를 기록했습니다. 현재까지 초과 항목은 없습니다."
     if last.tool_name == "get_daily_nutrition_summary":
         if last.status != "success":

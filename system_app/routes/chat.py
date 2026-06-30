@@ -21,6 +21,8 @@ from system_app.services.missed_dose_reply_understanding import (
     build_rule_based_missed_dose_reply_understanding,
     missed_dose_reply_request_metadata,
 )
+from system_app.services.food_search_service import english_to_korean_nutrients, scale_nutrients
+from system_app.services.nutrition_service import MEAL_TYPE_LABELS, record_meal
 from system_app.services.side_effect_reminder_safety import create_side_effect_reminder_safety_prompt, handle_side_effect_reminder_safety_reply
 from system_app.services.system_request_service import create_system_event_request
 from system_app.services.timeline_service import add_chat_message, ensure_chat_message_for_conversation_alert
@@ -166,6 +168,105 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
             target=runtime.system_event_worker,
             args=(event_type, message, notification_id),
         )
+        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
+
+    @router.post("/chat/food-select")
+    async def food_select(
+        request: Request,
+        chat_message_id: int = Form(...),
+        food_ref_id: str = Form(...),
+        session: Session = Depends(get_session),
+    ):
+        runtime = get_runtime()
+        with runtime.write_lock:
+            message = session.get(ChatMessage, chat_message_id)
+            if message is None:
+                raise HTTPException(status_code=404, detail="chat_message_not_found")
+            metadata = parse_json_object(message.metadata_json)
+            fs = metadata.get("food_selection")
+            if not isinstance(fs, dict):
+                raise HTTPException(status_code=400, detail="no_food_selection")
+            candidates = fs.get("candidates") if isinstance(fs.get("candidates"), list) else []
+            selected = next((c for c in candidates if isinstance(c, dict) and c.get("food_ref_id") == food_ref_id), None)
+            if selected is None:
+                raise HTTPException(status_code=400, detail="candidate_not_found")
+            fs["selected_food"] = selected
+            fs["stage"] = "awaiting_grams"
+            metadata["food_selection"] = fs
+            message.metadata_json = dump_json(metadata)
+            session.commit()
+        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
+
+    @router.post("/chat/food-grams")
+    async def food_grams(
+        request: Request,
+        chat_message_id: int = Form(...),
+        portion_g: float = Form(...),
+        meal_type: str = Form(...),
+        session: Session = Depends(get_session),
+    ):
+        runtime = get_runtime()
+        with runtime.write_lock:
+            message = session.get(ChatMessage, chat_message_id)
+            if message is None:
+                raise HTTPException(status_code=404, detail="chat_message_not_found")
+            metadata = parse_json_object(message.metadata_json)
+            fs = metadata.get("food_selection")
+            if not isinstance(fs, dict) or not isinstance(fs.get("selected_food"), dict):
+                raise HTTPException(status_code=400, detail="no_food_selection")
+            selected = fs["selected_food"]
+            serving = float(selected.get("serving_size") or 100)
+            ratio = portion_g / serving if serving else 1.0
+            nutrients = selected.get("nutrients") if isinstance(selected.get("nutrients"), dict) else {}
+            selected["scaled_nutrients"] = scale_nutrients(nutrients, ratio)
+            fs["selected_food"] = selected
+            fs["portion_g"] = portion_g
+            fs["meal_type"] = meal_type
+            fs["stage"] = "awaiting_confirm"
+            metadata["food_selection"] = fs
+            message.metadata_json = dump_json(metadata)
+            session.commit()
+        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
+
+    @router.post("/chat/food-confirm")
+    async def food_confirm(
+        request: Request,
+        chat_message_id: int = Form(...),
+        session: Session = Depends(get_session),
+    ):
+        runtime = get_runtime()
+        with runtime.write_lock:
+            message = session.get(ChatMessage, chat_message_id)
+            if message is None:
+                raise HTTPException(status_code=404, detail="chat_message_not_found")
+            metadata = parse_json_object(message.metadata_json)
+            fs = metadata.get("food_selection")
+            if not isinstance(fs, dict) or not isinstance(fs.get("selected_food"), dict):
+                raise HTTPException(status_code=400, detail="no_food_selection")
+            selected = fs["selected_food"]
+            meal_type = str(fs.get("meal_type") or "lunch")
+            portion_g = float(fs.get("portion_g") or selected.get("serving_size") or 100)
+            scaled = selected.get("scaled_nutrients") if isinstance(selected.get("scaled_nutrients"), dict) else selected.get("nutrients", {})
+            korean_nutrients = english_to_korean_nutrients(scaled)
+            food_item = {
+                "food_ref_id": selected.get("food_ref_id", ""),
+                "food_name": selected["food_name"],
+                "portion": f"{int(portion_g)}g",
+                "nutrients": korean_nutrients,
+            }
+            record_meal(session, foods=[food_item], meal_type=meal_type)
+            fs["stage"] = "done"
+            metadata["food_selection"] = fs
+            message.metadata_json = dump_json(metadata)
+            meal_label = MEAL_TYPE_LABELS.get(meal_type, meal_type)
+            add_chat_message(
+                session,
+                role="assistant",
+                content=f"{selected['food_name']} {int(portion_g)}g ({meal_label}) 식사를 기록했습니다.",
+                sender_type="assistant",
+                category="nutrition",
+            )
+            session.commit()
         return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
 
     return router

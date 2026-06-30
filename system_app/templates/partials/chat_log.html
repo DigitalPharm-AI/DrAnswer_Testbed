@@ -130,6 +130,68 @@
             </div>
           </div>
         {% endif %}
+        {% if message.food_selection %}
+          {% set fs = message.food_selection %}
+          {% if fs.stage == "awaiting_food_choice" %}
+            <div class="chat-action-card food-search-card">
+              {% if fs.query %}<p class="muted">검색어: {{ fs.query }}</p>{% endif %}
+              <div class="food-candidate-grid">
+                {% for candidate in fs.candidates %}
+                  <form hx-post="/chat/food-select" hx-target="#chat-panel" hx-swap="outerHTML">
+                    <input type="hidden" name="chat_message_id" value="{{ fs.chat_message_id }}">
+                    <input type="hidden" name="food_ref_id" value="{{ candidate.food_ref_id }}">
+                    <button class="food-candidate-card" type="submit">
+                      <strong>{{ candidate.food_name }}</strong>
+                      {% if candidate.category %}<span class="muted">{{ candidate.category }}</span>{% endif %}
+                      <span>{{ (candidate.nutrients.energy.value | float) | round | int }}kcal / {{ candidate.serving_size | int }}g 기준</span>
+                    </button>
+                  </form>
+                {% else %}
+                  <p class="muted">일치하는 음식이 없습니다.</p>
+                {% endfor %}
+              </div>
+            </div>
+          {% elif fs.stage == "awaiting_grams" %}
+            <div class="chat-action-card food-grams-card">
+              <p><strong>{{ fs.selected_food.food_name }}</strong> 선택됨</p>
+              <p class="muted">기준 1회 제공량: {{ fs.selected_food.serving_size | int }}g</p>
+              <form class="stack-form inline-chat-reply-form" hx-post="/chat/food-grams" hx-target="#chat-panel" hx-swap="outerHTML">
+                <input type="hidden" name="chat_message_id" value="{{ fs.chat_message_id }}">
+                <label>섭취량 (g)</label>
+                <input type="number" name="portion_g" min="1" max="2000" required value="{{ fs.selected_food.serving_size | int }}">
+                <label>식사 종류</label>
+                <select name="meal_type" required>
+                  <option value="breakfast">아침</option>
+                  <option value="lunch">점심</option>
+                  <option value="dinner">저녁</option>
+                  <option value="snack">간식</option>
+                </select>
+                <button type="submit">다음</button>
+              </form>
+            </div>
+          {% elif fs.stage == "awaiting_confirm" %}
+            {% set sf = fs.selected_food %}
+            {% set meal_labels = {"breakfast": "아침", "lunch": "점심", "dinner": "저녁", "snack": "간식"} %}
+            <div class="chat-action-card food-confirm-card">
+              <p><strong>{{ sf.food_name }}</strong> — {{ fs.portion_g | int }}g ({{ meal_labels.get(fs.meal_type, fs.meal_type) }})</p>
+              {% if sf.scaled_nutrients %}
+                <ul class="nutrient-preview">
+                  {% for key, entry in sf.scaled_nutrients.items() %}
+                    <li>{{ key }}: {{ entry.value }}{{ entry.unit }}</li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+              <form hx-post="/chat/food-confirm" hx-target="#chat-panel" hx-swap="outerHTML">
+                <input type="hidden" name="chat_message_id" value="{{ fs.chat_message_id }}">
+                <button type="submit" class="ghost compact-button">기록하기</button>
+              </form>
+            </div>
+          {% elif fs.stage == "done" %}
+            <div class="chat-action-card food-done-card">
+              <p class="muted">식사 기록 완료.</p>
+            </div>
+          {% endif %}
+        {% endif %}
         <div class="chat-time">{{ message.time_label }}</div>
       </article>
     {% else %}

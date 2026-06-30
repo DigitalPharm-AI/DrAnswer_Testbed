@@ -76,6 +76,26 @@ def ae_pro_ctcae_chat_metadata(response: AgentResponse) -> dict:
     }
 
 
+def food_selection_chat_metadata(response: AgentResponse) -> dict:
+    candidates = response.structured_payload.get("food_candidates")
+    if not isinstance(candidates, list) or not candidates:
+        return {}
+    tool_call = response.structured_payload.get("tool_call")
+    query = ""
+    if isinstance(tool_call, dict) and tool_call.get("name") == "search_food_nutrition":
+        query = str(tool_call.get("input", {}).get("query", "") or tool_call.get("arguments", {}).get("query", ""))
+    return {
+        "food_selection": {
+            "stage": "awaiting_food_choice",
+            "query": query,
+            "candidates": candidates,
+            "selected_food": None,
+            "portion_g": None,
+            "meal_type": None,
+        }
+    }
+
+
 def policy_deltas_from_response_payload(response: AgentResponse) -> list[NotificationPolicyDelta]:
     raw_deltas = response.structured_payload.get("policy_deltas")
     if isinstance(raw_deltas, list):
@@ -94,6 +114,9 @@ def persist_agent_summary(
     existing = get_unacknowledged_conversation_alert(session, related_dose_event_id)
     conversation_notification = None
     message_metadata = ae_pro_ctcae_chat_metadata(response)
+    food_metadata = food_selection_chat_metadata(response)
+    if food_metadata:
+        message_metadata.update(food_metadata)
     should_update_existing_missed_dose_alert = category == "missed_dose" and existing is not None
     if response.requires_conversation_alert or should_update_existing_missed_dose_alert:
         if existing is not None:
@@ -139,6 +162,10 @@ def persist_agent_summary(
             message_content = pattern_message
     if not message_content and "ae_pro_ctcae" in message_metadata:
         message_content = "PRO-CTCAE 자기보고 문항을 준비했어요. 아래 문항에 답해주세요."
+    if not message_content and "food_selection" in message_metadata:
+        fs_candidates = message_metadata["food_selection"].get("candidates", [])
+        names = [str(c.get("food_name")) for c in fs_candidates[:3] if isinstance(c, dict) and c.get("food_name")]
+        message_content = f"음식 후보를 찾았습니다. 아래에서 선택해주세요: {', '.join(names)}" if names else "음식 후보를 찾았습니다. 아래에서 선택해주세요."
     if conversation_notification is not None and category == "missed_dose":
         ensure_chat_message_for_conversation_alert(
             session,

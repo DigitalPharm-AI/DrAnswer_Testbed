@@ -442,9 +442,7 @@ def daily_summary_payload(
 
 def create_nutrition_alert(session: Session, meal: NutritionMeal, summary: dict[str, Any]):
     daily_exceeded = summary.get("summary", {}).get("exceeded_nutrients") or []
-    meal_exceeded = meal_exceeded_nutrients(session, meal, summary)
-    exceeded = list(dict.fromkeys([*daily_exceeded, *meal_exceeded]))
-    if not exceeded:
+    if not daily_exceeded:
         return None
     existing = existing_nutrition_alert(
         session,
@@ -457,11 +455,10 @@ def create_nutrition_alert(session: Session, meal: NutritionMeal, summary: dict[
         setattr(existing, "_nutrition_alert_reused", True)
         return existing
     clock = ensure_clock(session)
-    primary = exceeded[0]
-    details = ", ".join(exceeded)
+    primary = daily_exceeded[0]
+    details = ", ".join(daily_exceeded)
     meal_label = MEAL_TYPE_LABELS.get(meal.meal_type, meal.meal_type)
-    basis = "오늘 기준" if daily_exceeded else "한 끼 기준"
-    body = f"{meal_label} 기록 후 {details} 섭취량이 {basis}을 초과했습니다. 채팅에서 조정 방법을 확인할 수 있어요."
+    body = f"{meal_label} 기록 후 {details} 하루 섭취 기준을 초과했습니다. 채팅에서 조정 방법을 확인할 수 있어요."
     return create_notification(
         session,
         notification_type="nutrition_alert",
@@ -475,31 +472,11 @@ def create_nutrition_alert(session: Session, meal: NutritionMeal, summary: dict[
             "meal_type": meal.meal_type,
             "meal_id": meal.id,
             "scenario_key": meal.scenario_key,
-            "exceeded_nutrients": exceeded,
-            "daily_exceeded_nutrients": daily_exceeded,
-            "meal_exceeded_nutrients": meal_exceeded,
+            "exceeded_nutrients": daily_exceeded,
             "severity": "warning",
         },
         patient_id=meal.patient_id,
     )
-
-
-def meal_exceeded_nutrients(session: Session, meal: NutritionMeal, summary: dict[str, Any]) -> list[str]:
-    thresholds = summary.get("thresholds") if isinstance(summary.get("thresholds"), dict) else {}
-    totals = {nutrient: 0.0 for nutrient in NUTRIENTS}
-    for food in foods_for_meal(session, meal.id):
-        totals["칼로리"] += food.calories
-        totals["단백질"] += food.protein
-        totals["나트륨"] += food.sodium
-        totals["지방"] += food.fat
-        totals["탄수화물"] += food.carbohydrates
-    exceeded: list[str] = []
-    for nutrient, total in totals.items():
-        threshold = thresholds.get(nutrient) if isinstance(thresholds.get(nutrient), dict) else {}
-        daily_value = float(threshold.get("value") or 0)
-        if daily_value and total > daily_value / 3:
-            exceeded.append(nutrient)
-    return exceeded
 
 
 def existing_nutrition_alert(
@@ -591,9 +568,7 @@ def run_nutrition_scenario(session: Session, scenario_key: str, patient_id: str 
             replace_existing=True,
         )
         message = nutrition_summary_text(result["daily_summary"])
-        if result.get("alert_created") and not result["daily_summary"].get("summary", {}).get("exceeded_nutrients"):
-            message += "\n이번 식사는 한 끼 기준 초과 항목이 있어 영양 알림을 만들었어요."
-        elif result.get("alert_reused"):
+        if result.get("alert_reused"):
             message += "\n이미 같은 시나리오 알림이 있어 기존 알림을 유지했어요."
         add_chat_message(session, role="assistant", sender_type="assistant", category="nutrition", content=message, patient_id=target_patient_id)
         return {"scenario_key": scenario_key, "message": message, **result}
@@ -711,14 +686,6 @@ def nutrition_dashboard_view(session: Session, patient_id: str | None = None) ->
 
 def nutrition_metric_views(summary: dict[str, Any], meals: list[dict[str, Any]]) -> list[dict[str, Any]]:
     nutrients = summary.get("nutrients") if isinstance(summary.get("nutrients"), dict) else {}
-    latest_meal = meals[-1] if meals else None
-    latest_meal_totals = {nutrient: 0.0 for nutrient in NUTRIENTS}
-    if latest_meal:
-        for food in latest_meal.get("foods", []):
-            food_nutrients = food.get("nutrients") if isinstance(food.get("nutrients"), dict) else {}
-            for nutrient in NUTRIENTS:
-                value = food_nutrients.get(nutrient, {})
-                latest_meal_totals[nutrient] += float(value.get("value") or 0) if isinstance(value, dict) else 0.0
 
     metrics: list[dict[str, Any]] = []
     for nutrient in NUTRIENTS:
@@ -727,16 +694,8 @@ def nutrition_metric_views(summary: dict[str, Any], meals: list[dict[str, Any]])
         intake = float(item.get("intake") or 0)
         percent = round((intake / threshold) * 100, 1) if threshold else 0.0
         daily_exceeded = bool(item.get("exceeded"))
-        meal_exceeded = bool(latest_meal and threshold and latest_meal_totals[nutrient] > threshold / 3)
-        if daily_exceeded:
-            basis_label = "일일 기준 초과"
-            risk_rank = 0
-        elif meal_exceeded:
-            basis_label = "최근 한 끼 기준 초과"
-            risk_rank = 1
-        else:
-            basis_label = "기준 내"
-            risk_rank = 2
+        basis_label = "일일 기준 초과" if daily_exceeded else "기준 내"
+        risk_rank = 0 if daily_exceeded else 1
         metrics.append(
             {
                 "name": nutrient,
@@ -747,8 +706,8 @@ def nutrition_metric_views(summary: dict[str, Any], meals: list[dict[str, Any]])
                 "percent": percent,
                 "bar_percent": min(100.0, max(0.0, percent)),
                 "daily_exceeded": daily_exceeded,
-                "meal_exceeded": meal_exceeded,
-                "is_warning": daily_exceeded or meal_exceeded,
+                "meal_exceeded": False,
+                "is_warning": daily_exceeded,
                 "basis_label": basis_label,
                 "risk_rank": risk_rank,
             }
@@ -805,18 +764,9 @@ def search_foods(query: str, limit: int = 10, *, session: Session | None = None,
     needle = query.strip().lower()
     if not needle:
         return {"success": False, "error": "query_required", "candidates": []}
-    candidates: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for scenario in NUTRITION_SCENARIOS.values():
-        for food in scenario["foods"]:
-            name = food["food_name"]
-            if needle not in name.lower() or name in seen:
-                continue
-            seen.add(name)
-            candidates.append(_annotate_food_candidate(session, _food_search_candidate(food), patient_id))
-            if len(candidates) >= limit:
-                return {"success": True, "candidates": candidates, "source": "sample"}
-    return {"success": True, "candidates": candidates, "source": "sample"}
+    from system_app.services.food_search_service import search_food_candidates
+    candidates = search_food_candidates(needle, limit, session=session, patient_id=patient_id)
+    return {"success": True, "candidates": candidates, "source": "db" if candidates else "sample"}
 
 
 def _food_search_candidate(food: dict[str, Any]) -> dict[str, Any]:
