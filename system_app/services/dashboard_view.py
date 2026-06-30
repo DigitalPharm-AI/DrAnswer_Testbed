@@ -210,6 +210,8 @@ def food_selection_view(metadata: dict, message_id: int) -> dict | None:
     payload = metadata.get("food_selection")
     if not isinstance(payload, dict):
         return None
+    foods_queue = payload.get("foods_queue") if isinstance(payload.get("foods_queue"), list) else []
+    confirmed_foods = payload.get("confirmed_foods") if isinstance(payload.get("confirmed_foods"), list) else []
     return {
         "chat_message_id": message_id,
         "stage": payload.get("stage", "awaiting_food_choice"),
@@ -218,6 +220,10 @@ def food_selection_view(metadata: dict, message_id: int) -> dict | None:
         "selected_food": payload.get("selected_food"),
         "portion_g": payload.get("portion_g"),
         "meal_type": payload.get("meal_type"),
+        "foods_queue": foods_queue,
+        "confirmed_foods": confirmed_foods,
+        "total_foods": len(confirmed_foods) + len(foods_queue) + 1,
+        "current_index": len(confirmed_foods) + 1,
     }
 
 

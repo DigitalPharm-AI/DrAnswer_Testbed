@@ -77,21 +77,29 @@ def ae_pro_ctcae_chat_metadata(response: AgentResponse) -> dict:
 
 
 def food_selection_chat_metadata(response: AgentResponse) -> dict:
-    candidates = response.structured_payload.get("food_candidates")
-    if not isinstance(candidates, list) or not candidates:
-        return {}
-    tool_call = response.structured_payload.get("tool_call")
-    query = ""
-    if isinstance(tool_call, dict) and tool_call.get("name") == "search_food_nutrition":
-        query = str(tool_call.get("input", {}).get("query", "") or tool_call.get("arguments", {}).get("query", ""))
+    food_searches = response.structured_payload.get("food_searches")
+    # 단일 검색 결과도 처리 (food_searches 없을 때 폴백)
+    if not isinstance(food_searches, list) or not food_searches:
+        candidates = response.structured_payload.get("food_candidates")
+        if not isinstance(candidates, list) or not candidates:
+            return {}
+        tool_call = response.structured_payload.get("tool_call")
+        query = ""
+        if isinstance(tool_call, dict) and tool_call.get("name") == "search_food_nutrition":
+            query = str(tool_call.get("input", {}).get("query", "") or tool_call.get("arguments", {}).get("query", ""))
+        food_searches = [{"query": query, "candidates": candidates}]
+
+    first = food_searches[0]
     return {
         "food_selection": {
             "stage": "awaiting_food_choice",
-            "query": query,
-            "candidates": candidates,
+            "query": first.get("query", ""),
+            "candidates": first.get("candidates", []),
             "selected_food": None,
             "portion_g": None,
             "meal_type": None,
+            "foods_queue": food_searches[1:],
+            "confirmed_foods": [],
         }
     }
 

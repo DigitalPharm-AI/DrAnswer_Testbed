@@ -316,6 +316,11 @@
 .food-candidate-card strong {
   font-size: 0.9rem;
   line-height: 1.3;
+  color: #111;
+}
+
+.food-progress-label {
+  margin-bottom: 4px;
 }
 
 .food-candidate-card .muted {

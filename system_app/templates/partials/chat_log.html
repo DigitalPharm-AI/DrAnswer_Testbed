@@ -132,6 +132,9 @@
         {% endif %}
         {% if message.food_selection %}
           {% set fs = message.food_selection %}
+          {% if fs.total_foods > 1 %}
+            <p class="muted food-progress-label">{{ fs.current_index }} / {{ fs.total_foods }}번째 음식</p>
+          {% endif %}
           {% if fs.stage == "awaiting_food_choice" %}
             <div class="chat-action-card food-search-card">
               {% if fs.query %}<p class="muted">검색어: {{ fs.query }}</p>{% endif %}

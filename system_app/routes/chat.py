@@ -248,24 +248,49 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
             portion_g = float(fs.get("portion_g") or selected.get("serving_size") or 100)
             scaled = selected.get("scaled_nutrients") if isinstance(selected.get("scaled_nutrients"), dict) else selected.get("nutrients", {})
             korean_nutrients = english_to_korean_nutrients(scaled)
-            food_item = {
+
+            confirmed_foods = fs.get("confirmed_foods") if isinstance(fs.get("confirmed_foods"), list) else []
+            confirmed_foods.append({
                 "food_ref_id": selected.get("food_ref_id", ""),
                 "food_name": selected["food_name"],
                 "portion": f"{int(portion_g)}g",
                 "nutrients": korean_nutrients,
-            }
-            record_meal(session, foods=[food_item], meal_type=meal_type)
-            fs["stage"] = "done"
+                "meal_type": meal_type,
+            })
+            fs["confirmed_foods"] = confirmed_foods
+
+            foods_queue = fs.get("foods_queue") if isinstance(fs.get("foods_queue"), list) else []
+
+            if foods_queue:
+                # 큐에 남은 음식이 있으면 다음 음식 카드 선택으로 이동
+                next_search = foods_queue.pop(0)
+                fs["foods_queue"] = foods_queue
+                fs["stage"] = "awaiting_food_choice"
+                fs["query"] = next_search.get("query", "")
+                fs["candidates"] = next_search.get("candidates", [])
+                fs["selected_food"] = None
+                fs["portion_g"] = None
+                fs["meal_type"] = None
+            else:
+                # 모든 음식 처리 완료 → 한꺼번에 기록
+                record_meal(
+                    session,
+                    foods=confirmed_foods,
+                    meal_type=meal_type,
+                )
+                fs["stage"] = "done"
+                meal_label = MEAL_TYPE_LABELS.get(meal_type, meal_type)
+                names = ", ".join(f["food_name"] for f in confirmed_foods)
+                add_chat_message(
+                    session,
+                    role="assistant",
+                    content=f"{meal_label} 식사를 기록했습니다: {names}",
+                    sender_type="assistant",
+                    category="nutrition",
+                )
+
             metadata["food_selection"] = fs
             message.metadata_json = dump_json(metadata)
-            meal_label = MEAL_TYPE_LABELS.get(meal_type, meal_type)
-            add_chat_message(
-                session,
-                role="assistant",
-                content=f"{selected['food_name']} {int(portion_g)}g ({meal_label}) 식사를 기록했습니다.",
-                sender_type="assistant",
-                category="nutrition",
-            )
             session.commit()
         return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
 

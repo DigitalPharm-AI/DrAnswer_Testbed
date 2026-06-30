@@ -30,6 +30,14 @@ def tool_calls_payload(tool_calls: list[dict[str, Any]], results: list[ToolCallR
         elif result.tool_name == "list_meals" and result.status == "success":
             payload["nutrition_meals"] = result.response.get("meals", [])
         elif result.tool_name == "search_food_nutrition" and result.status == "success":
+            search_entry = {
+                "query": result.response.get("query", ""),
+                "candidates": result.response.get("candidates", []),
+            }
+            if "food_searches" not in payload:
+                payload["food_searches"] = []
+            payload["food_searches"].append(search_entry)
+            # 단일 검색 호환성 유지 (마지막 검색 결과)
             payload["food_candidates"] = result.response.get("candidates", [])
         elif result.tool_name == "record_nutrition_preference" and result.status == "success":
             payload["nutrition_preference_result"] = result.response
