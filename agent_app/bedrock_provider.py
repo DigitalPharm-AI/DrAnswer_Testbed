@@ -94,7 +94,7 @@ class BedrockAnthropicProvider(BaseLLMProvider):
             "messages": [{"role": "user", "content": [{"text": json.dumps(user_payload, ensure_ascii=False)}]}],
             "inferenceConfig": {
                 "maxTokens": self.settings.llm_max_tokens,
-                "temperature": self.settings.llm_temperature,
+                # "temperature": self.settings.llm_temperature,  # deprecated in claude-sonnet-5+
             },
         }
         headers = {

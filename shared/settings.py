@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     llm_provider: str = "bedrock_anthropic"
     llm_model_tier: str = "fast"
     llm_fast_model: str = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-    llm_sonnet_model: str = "global.anthropic.claude-sonnet-4-6"
+    llm_sonnet_model: str = "global.anthropic.claude-sonnet-5"  # global.anthropic.claude-sonnet-4-6
     llm_timeout_seconds: int = 60
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.2
