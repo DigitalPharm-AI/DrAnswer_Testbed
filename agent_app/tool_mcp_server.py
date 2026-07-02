@@ -147,6 +147,8 @@ class AgentMcpToolServer:
             return await self._record_nutrition_preference(arguments, trace_id=trace_id, payload=payload)
         if tool_name == "get_nutrition_preferences":
             return await self._get_nutrition_preferences(arguments, trace_id=trace_id, payload=payload)
+        if tool_name == "recommend_diet":
+            return await self._recommend_diet(arguments, trace_id=trace_id, payload=payload)
         if tool_name == "lookup_side_effect_info":
             return await self._lookup_side_effect_info(arguments, trace_id=trace_id, payload=payload)
         if tool_name == "AE_pro_ctcae":
@@ -310,6 +312,29 @@ class AgentMcpToolServer:
             response=result,
             error=safe_tool_error(result.get("error")),
             idempotency_key=f"{trace_id}:get_nutrition_preferences",
+        )
+
+    async def _recommend_diet(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
+        request_payload = {
+            "patient_id": arguments.get("patient_id") or payload.get("patient_id"),
+            "constraints": arguments.get("constraints") or {},
+            "meal_type": arguments.get("meal_type"),
+            "limit": arguments.get("limit", 5),
+        }
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
+            response = await client.post(
+                f"{self.system_base_url}/api/agent/nutrition/recommend",
+                json=request_payload,
+                headers=self._internal_headers(),
+            )
+            response.raise_for_status()
+        result = response.json()
+        return ToolCallResult(
+            tool_name="recommend_diet",
+            status="success" if result.get("success") else "error",
+            response=result,
+            error=safe_tool_error(result.get("error")),
+            idempotency_key=f"{trace_id}:recommend_diet",
         )
 
     async def _lookup_side_effect_info(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:

@@ -200,6 +200,46 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
+                "name": "recommend_diet",
+                "title": "Recommend Diet",
+                "description": (
+                    "환자의 질환, CKD 위험도, 오늘 섭취 현황을 고려해 영양 제약 조건에 맞는 음식을 추천합니다. "
+                    "context.nutrition.today_summary에서 초과 또는 기준치 근접 영양소를 'low'로, "
+                    "칼로리가 적절한 범위이면 'moderate'로 constraints에 지정하세요. "
+                    "hard_constraints에 있는 음식은 자동으로 제외됩니다. "
+                    "식사 기록(record_meal)이 아닌 추천 요청에만 사용합니다."
+                ),
+                "annotations": {
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "idempotentHint": True,
+                    "openWorldHint": False,
+                },
+                "required_arguments": ["constraints"],
+                "optional_arguments": ["patient_id", "meal_type", "limit"],
+                "inputSchema": _object_schema(
+                    {
+                        "patient_id": {"type": "string", "description": "대상 환자 ID, 생략하면 기본 환자"},
+                        "constraints": {
+                            "type": "object",
+                            "description": (
+                                "영양소별 제약 수준. 키: 나트륨|단백질|칼로리|지방|탄수화물, "
+                                "값: low(낮게 유지) 또는 moderate(적정 범위). "
+                                "예: {\"나트륨\": \"low\", \"단백질\": \"low\", \"칼로리\": \"moderate\"}"
+                            ),
+                        },
+                        "meal_type": {
+                            "type": "string",
+                            "enum": ["breakfast", "lunch", "dinner", "snack"],
+                            "description": "식사 유형 (참고용, 검색 필터 아님). 생략 가능.",
+                        },
+                        "limit": {"type": "integer", "description": "최대 추천 개수 (기본 5)"},
+                    },
+                    ["constraints"],
+                ),
+                "outputSchema": _tool_result_schema(),
+            },
+            {
                 "name": "apply_notification_policy",
                 "title": "Create Notification Policy Candidate",
                 "description": (

@@ -19,6 +19,8 @@ from shared.schemas import (
     NutritionPreferenceFactRequest,
     NutritionPreferenceFactResult,
     NutritionPreferenceSummaryResult,
+    NutritionRecommendRequest,
+    NutritionRecommendResult,
     PolicyApplyRequest,
     SystemPolicyApplyRequest,
 )
@@ -153,6 +155,24 @@ def create_agent_api_router(get_runtime: Callable[[], SystemRuntime]) -> APIRout
         session: Session = Depends(get_session),
     ) -> NutritionPreferenceSummaryResult:
         return NutritionPreferenceSummaryResult(success=True, preferences=nutrition_preference_summary(session, patient_id=patient_id))
+
+    @router.post("/api/agent/nutrition/recommend", response_model=NutritionRecommendResult)
+    async def agent_nutrition_recommend(
+        payload: NutritionRecommendRequest,
+        session: Session = Depends(get_session),
+    ) -> NutritionRecommendResult:
+        from system_app.services.diet_recommendation_service import recommend_diet as diet_recommend
+        try:
+            result = diet_recommend(
+                session,
+                patient_id=payload.patient_id,
+                constraints=payload.constraints,
+                meal_type=payload.meal_type,
+                limit=payload.limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=public_error_code(exc, allowed_codes={"constraints_required", "invalid_constraint_level"}, fallback="diet_recommend_invalid")) from exc
+        return NutritionRecommendResult.model_validate(result)
 
     @router.post("/api/agent/notifications")
     async def agent_notification_callback(payload: AgentNotificationRequest, session: Session = Depends(get_session)) -> dict:

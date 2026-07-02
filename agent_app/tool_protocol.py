@@ -16,6 +16,7 @@ ALLOWED_TOOL_NAMES = {
     "get_daily_nutrition_summary",
     "record_nutrition_preference",
     "get_nutrition_preferences",
+    "recommend_diet",
     "apply_notification_policy",
     "apply_system_policy",
 }

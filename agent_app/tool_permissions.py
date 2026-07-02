@@ -13,6 +13,7 @@ NUTRITION_TOOLS = {
     "get_daily_nutrition_summary",
     "record_nutrition_preference",
     "get_nutrition_preferences",
+    "recommend_diet",
 }
 HIGH_RISK_HUMAN_HANDOFF_TOOLS = POLICY_TOOLS
 
@@ -72,6 +73,9 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
             return "record_meal requires meal_type"
         if not isinstance(arguments.get("foods"), list) or not arguments.get("foods"):
             return "record_meal requires foods"
+    if tool_name == "recommend_diet":
+        if not isinstance(arguments.get("constraints"), dict) or not arguments.get("constraints"):
+            return "recommend_diet requires constraints"
     if tool_name == "record_nutrition_preference":
         if arguments.get("predicate") not in {
             "likes",

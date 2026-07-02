@@ -43,6 +43,8 @@ def tool_calls_payload(tool_calls: list[dict[str, Any]], results: list[ToolCallR
             payload["nutrition_preference_result"] = result.response
         elif result.tool_name == "get_nutrition_preferences" and result.status == "success":
             payload["nutrition_preferences"] = result.response.get("preferences", {})
+        elif result.tool_name == "recommend_diet" and result.status == "success":
+            payload["diet_recommendations"] = result.response.get("recommendations", [])
         elif result.tool_name == "apply_notification_policy" and result.status == "success":
             payload["policy_apply_result"] = result.response
         elif result.tool_name == "apply_system_policy" and result.status == "success":
@@ -110,6 +112,18 @@ def tool_result_summary(results: list[ToolCallResult], fallback: str) -> str:
         label = fact.get("object_label") or "해당 항목"
         predicate = fact.get("predicate_label") or fact.get("predicate") or "선호도"
         return f"{label}에 대한 {predicate} 정보를 저장했습니다."
+    if last.tool_name == "recommend_diet":
+        if last.status != "success":
+            return _safe_result_error(last.error) or "식단 추천을 처리하지 못했습니다."
+        recommendations = last.response.get("recommendations") if isinstance(last.response.get("recommendations"), list) else []
+        if not recommendations:
+            return "현재 조건에 맞는 음식을 찾지 못했습니다. 제약 조건을 조정하거나 다른 음식을 검색해보세요."
+        names = [str(r.get("food_name", "")) for r in recommendations[:3] if isinstance(r, dict) and r.get("food_name")]
+        blocked = last.response.get("blocked_count", 0)
+        text = f"조건에 맞는 음식 {len(recommendations)}가지를 찾았습니다: {', '.join(names)}"
+        if blocked:
+            text += f" (선호도 제한으로 {blocked}가지 제외됨)"
+        return text
     if last.tool_name == "get_nutrition_preferences":
         if last.status != "success":
             return _safe_result_error(last.error) or "영양 선호도를 조회하지 못했습니다."

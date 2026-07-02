@@ -525,3 +525,22 @@ class AgentNotificationRequest(BaseModel):
     visible_at: datetime | None = None
     chat_category: str | None = None
     idempotency_key: str | None = None
+
+
+class NutritionRecommendRequest(BaseModel):
+    patient_id: str | None = None
+    constraints: dict[str, str] = Field(default_factory=dict)
+    meal_type: str | None = None
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class NutritionRecommendResult(BaseModel):
+    success: bool = True
+    disease: str = ""
+    ckd_risk: str = ""
+    constraints_applied: dict[str, str] = Field(default_factory=dict)
+    limits_used: dict[str, Any] = Field(default_factory=dict)
+    recommendations: list[dict[str, Any]] = Field(default_factory=list)
+    blocked_count: int = 0
+    total_candidates: int = 0
+    error: str = ""
