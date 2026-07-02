@@ -55,11 +55,26 @@ def _search_from_db(
     if not count:
         return _fallback_scenario_search(needle, limit, session=session, patient_id=patient_id)
 
+    # 전체 구절로 먼저 검색
     rows = session.scalars(
         select(NutritionFoodRef)
         .where(NutritionFoodRef.food_name.like(f"%{needle}%"))
         .limit(limit)
     ).all()
+
+    # 결과 부족 시 공백 분리 토큰 중 가장 긴 토큰으로 재검색
+    if not rows:
+        tokens = sorted(needle.split(), key=len, reverse=True)
+        for token in tokens:
+            if len(token) < 2:
+                continue
+            rows = session.scalars(
+                select(NutritionFoodRef)
+                .where(NutritionFoodRef.food_name.like(f"%{token}%"))
+                .limit(limit)
+            ).all()
+            if rows:
+                break
 
     candidates = [_row_to_candidate(row) for row in rows]
 

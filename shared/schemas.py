@@ -418,6 +418,7 @@ class NutritionFoodSearchResult(BaseModel):
     candidates: list[dict[str, Any]] = Field(default_factory=list)
     source: str = "sample"
     error: str = ""
+    query: str = ""
 
 
 class NutritionPreferenceFactRequest(BaseModel):

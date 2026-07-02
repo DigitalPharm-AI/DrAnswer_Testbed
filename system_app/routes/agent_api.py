@@ -71,7 +71,9 @@ def create_agent_api_router(get_runtime: Callable[[], SystemRuntime]) -> APIRout
         payload: NutritionFoodSearchRequest,
         session: Session = Depends(get_session),
     ) -> NutritionFoodSearchResult:
-        return NutritionFoodSearchResult.model_validate(search_foods(payload.query, limit=payload.limit, session=session, patient_id=payload.patient_id))
+        result = search_foods(payload.query, limit=payload.limit, session=session, patient_id=payload.patient_id)
+        result["query"] = payload.query
+        return NutritionFoodSearchResult.model_validate(result)
 
     @router.post("/api/agent/nutrition/meals", response_model=NutritionMealRecordResult)
     async def agent_nutrition_record_meal(
