@@ -10,12 +10,25 @@ from uuid import uuid4
 
 import httpx
 from fastapi.testclient import TestClient
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from pydantic import ConfigDict, Field
 
 import agent_app.main as native_agent_main
 from agent_app.async_tasks import DEAD, enqueue_async_task
+from agent_app.chat_tooling import (
+    ai_message_from_tool_calls,
+    human_payload_from_messages,
+    langchain_tool_name,
+    system_prompt_from_messages,
+    tool_results_from_messages,
+)
 from agent_app.graph import AgentLangGraphNativeOrchestrator
+from agent_app.output_validation import validate_llm_output
 from agent_app.providers import BaseLLMProvider, RuleBasedProvider
-from agent_app.response_builders import missed_dose_hybrid_payload
+from agent_app.response_builders import missed_dose_hybrid_payload, natural_chat_summary
+from agent_app.tool_calling import normalize_tool_calls
 from agent_app.tool_catalog import ToolCatalog
 from agent_app.tool_executor import McpAgentToolExecutor
 from agent_app.tool_policy import _notification_policy_deltas, deferred_policy_tool_result, is_deferred_policy_tool_call
@@ -29,15 +42,60 @@ from agent_app.tool_protocol import (
     mcp_tools_list,
     tool_result_from_mcp_result,
 )
+from agent_app.tool_results import tool_result_summary
 from agent_app.tool_side_effects import ae_tool_call_from_lookup
 from shared.schemas import AgentCallbackContext, DailyMedicationPattern, DosePatternEvent, MissedDoseEventPayload, MultiturnChatRequest, SlotAdherenceSummary, ToolCallResult
 from shared.settings import get_settings
 
 
-class NativeFakeProvider(BaseLLMProvider):
+class NativeChatProvider(BaseLLMProvider):
+    def chat_model(self):
+        return NativeProviderChatModel(provider=self)
+
+
+class NativeProviderChatModel(BaseChatModel):
+    provider: Any
+    bound_tools: list[dict[str, Any]] = Field(default_factory=list)
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @property
+    def _llm_type(self) -> str:
+        return "native_test_chat_model"
+
+    def bind_tools(self, tools, *, tool_choice: str | None = None, **kwargs):
+        setattr(self.provider, "bound_tool_names", [langchain_tool_name(tool) for tool in tools])
+        return self.model_copy(update={"bound_tools": list(tools)})
+
+    def _generate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager=None, **kwargs: Any) -> ChatResult:
+        return asyncio.run(self._agenerate(messages, stop=stop, run_manager=None, **kwargs))
+
+    async def _agenerate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager=None, **kwargs: Any) -> ChatResult:
+        tool_results = tool_results_from_messages(messages)
+        if tool_results:
+            fallback = tool_result_summary(tool_results, "도구 실행 결과를 확인했습니다.")
+            return _chat_result(AIMessage(content=fallback, response_metadata={"model_output": {"message": fallback, "fallback": "tool_result_summary"}}))
+
+        payload = human_payload_from_messages(messages)
+        output = await self.provider.generate_json(system_prompt_from_messages(messages), payload)
+        if not isinstance(output, dict):
+            output = {}
+        validate_llm_output(str(payload.get("decision_type") or "system_guidance"), output, payload)
+        tool_calls = normalize_tool_calls(output)
+        if tool_calls:
+            return _chat_result(ai_message_from_tool_calls(tool_calls, content=natural_chat_summary(output), model_output=output))
+        return _chat_result(AIMessage(content=natural_chat_summary(output), response_metadata={"model_output": output}))
+
+
+def _chat_result(message: AIMessage) -> ChatResult:
+    return ChatResult(generations=[ChatGeneration(message=message)])
+
+
+class NativeFakeProvider(NativeChatProvider):
     def __init__(self) -> None:
         self.seen_payloads: list[dict[str, Any]] = []
         self.seen_prompts: list[str] = []
+        self.bound_tool_names: list[str] = []
 
     async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         self.seen_prompts.append(system_prompt)
@@ -82,7 +140,7 @@ class NativeFakeProvider(BaseLLMProvider):
         return {"advice": "현재 복약 상태를 확인했습니다.", "observations": ["추가 도구 실행은 필요하지 않습니다."]}
 
 
-class NativeSideEffectLookupProvider(BaseLLMProvider):
+class NativeSideEffectLookupProvider(NativeChatProvider):
     async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         assert user_payload["response_mode"] == "multiturn_chat"
         return {
@@ -97,7 +155,7 @@ class NativeSideEffectLookupProvider(BaseLLMProvider):
         }
 
 
-class NativeRecentChatProvider(BaseLLMProvider):
+class NativeRecentChatProvider(NativeChatProvider):
     def __init__(self) -> None:
         self.seen_payloads: list[dict[str, Any]] = []
         self.seen_prompts: list[str] = []
@@ -714,7 +772,9 @@ def test_agent_app_multiturn_mark_taken_tool_call(monkeypatch):
     assert payload["structured_payload"]["tool_call"]["arguments"]["dose_event_id"] == 12
     assert payload["structured_payload"]["tools_executed"] is True
     assert payload["structured_payload"]["tool_results"][0]["tool_name"] == "mark_dose_taken"
+    assert payload["structured_payload"]["message_flow"] == ["HumanMessage", "AIMessage(tool_calls)", "ToolMessage", "AIMessage(final_answer)"]
     assert tool_executor.calls[0]["name"] == "mark_dose_taken"
+    assert {"mark_dose_taken", "recommend_diet"} <= set(provider.bound_tool_names)
 
 
 def test_agent_app_multiturn_forces_ae_after_positive_side_effect_lookup(monkeypatch):

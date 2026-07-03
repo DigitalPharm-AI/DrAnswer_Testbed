@@ -1,13 +1,32 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import date, timedelta
 from typing import Any
 
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from pydantic import ConfigDict, Field
+
+from agent_app.chat_tooling import (
+    ai_message_from_tool_calls,
+    human_payload_from_messages,
+    system_prompt_from_messages,
+    tool_results_from_messages,
+)
+from agent_app.output_validation import validate_llm_output
 from agent_app.payload_context import context_value
 from agent_app.provider_base import BaseLLMProvider
+from agent_app.response_builders import natural_chat_summary
+from agent_app.tool_calling import normalize_tool_calls
+from agent_app.tool_results import tool_result_summary
 
 
 class RuleBasedProvider(BaseLLMProvider):
+    def chat_model(self):
+        return RuleBasedChatModel(provider=self)
+
     async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         response_mode = user_payload.get("response_mode")
         if response_mode == "daily_pattern_analysis":
@@ -229,7 +248,44 @@ def _multiturn_general_reply(payload: dict[str, Any]) -> str:
         return "오늘 식사는 나트륨과 탄수화물을 조금 낮추고 채소, 단백질, 수분을 함께 보강하는 방향이 좋겠습니다."
     if previous_turns:
         return "앞선 대화 맥락을 확인했습니다. 이어서 말씀해 주세요."
-    return "말씀을 확인했습니다. 복약이나 증상과 관련해 더 이야기해 주세요."
+        return "말씀을 확인했습니다. 복약이나 증상과 관련해 더 이야기해 주세요."
+
+
+class RuleBasedChatModel(BaseChatModel):
+    provider: RuleBasedProvider
+    bound_tools: list[dict[str, Any]] = Field(default_factory=list)
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @property
+    def _llm_type(self) -> str:
+        return "rule_based_chat_model"
+
+    def bind_tools(self, tools, *, tool_choice: str | None = None, **kwargs):
+        return self.model_copy(update={"bound_tools": list(tools)})
+
+    def _generate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager=None, **kwargs: Any) -> ChatResult:
+        return asyncio.run(self._agenerate(messages, stop=stop, run_manager=None, **kwargs))
+
+    async def _agenerate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager=None, **kwargs: Any) -> ChatResult:
+        tool_results = tool_results_from_messages(messages)
+        if tool_results:
+            fallback = tool_result_summary(tool_results, "도구 실행 결과를 확인했습니다.")
+            return _chat_result(AIMessage(content=fallback, response_metadata={"model_output": {"message": fallback, "fallback": "tool_result_summary"}}))
+
+        payload = human_payload_from_messages(messages)
+        output = await self.provider.generate_json(system_prompt_from_messages(messages), payload)
+        if not isinstance(output, dict):
+            output = {}
+        validate_llm_output(str(payload.get("decision_type") or "system_guidance"), output, payload)
+        tool_calls = normalize_tool_calls(output)
+        if tool_calls:
+            return _chat_result(ai_message_from_tool_calls(tool_calls, content=natural_chat_summary(output), model_output=output))
+        return _chat_result(AIMessage(content=natural_chat_summary(output), response_metadata={"model_output": output}))
+
+
+def _chat_result(message: AIMessage) -> ChatResult:
+    return ChatResult(generations=[ChatGeneration(message=message)])
 
 
 def _is_nutrition_medication_message(message: str) -> bool:

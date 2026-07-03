@@ -416,3 +416,55 @@
 - Ran syntax/import compilation check:
   - `.venv\Scripts\python.exe -m py_compile system_app\services\nutrition_service.py system_app\routes\agent_api.py tests\test_nutrition_integration.py`
 - Result: passed.
+
+### Multiturn native ChatModel.bind_tools loop
+
+- Replaced the temporary provider-level bind-tools adapter with an actual ChatModel path:
+  - `provider.chat_model()`
+  - `ChatModel.bind_tools(...)`
+  - `ChatModel.ainvoke(...)`
+- Removed `BaseLLMProvider.bind_tools(...)` and deleted the adapter module that was wrapping `generate_json(...)`.
+- Added `agent_app.chat_tooling` for only the reusable pieces that remain necessary:
+  - MCP-ish tool catalog to LangChain function tool spec conversion.
+  - `HumanMessage` payload construction.
+  - `AIMessage.tool_calls` extraction.
+  - `ToolMessage` construction from MCP tool results.
+  - final answer/model-output parsing.
+- Added Bedrock native ChatModel support through `ChatBedrockConverse`, so production multiturn tool calling now binds tools on the underlying LangChain chat model.
+- Kept the existing MCP executor boundary for actual tool execution, so permissions, internal API calls, idempotency, redaction, and trace logging still flow through `ToolRuntime` and `AgentMcpToolServer`.
+- Added a local `RuleBasedChatModel` for rule-based development/test mode, separate from the production Bedrock ChatModel.
+- Preserved native tool call ids when available and rebuilt the final tool-call message from the executed tool list so runtime-forced continuation tools, such as `AE_pro_ctcae`, have matching `ToolMessage.tool_call_id` values.
+- Added `langchain-aws` as a direct dependency for `ChatBedrockConverse`.
+- Installed `langchain-aws 1.6.1` into the local `.venv` after the sandboxed PyPI attempt was blocked by `WinError 10013`.
+
+### Verification
+
+- Ran syntax/import compilation check:
+  - `.venv\Scripts\python.exe -m py_compile agent_app\provider_base.py agent_app\chat_tooling.py agent_app\bedrock_provider.py agent_app\rule_based_provider.py agent_app\agents\multiturn_chat.py tests\test_agent_app_langgraph_native.py tests\test_agent_server_structure.py`
+- Result: passed.
+- Ran targeted ChatModel.bind_tools/multiturn regression tests:
+  - `.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider tests\test_agent_server_structure.py tests\test_agent_app_langgraph_native.py::test_agent_app_multiturn_mark_taken_tool_call tests\test_agent_app_langgraph_native.py::test_agent_app_multiturn_forces_ae_after_positive_side_effect_lookup tests\test_agent_app_langgraph_native.py::test_agent_app_multiturn_uses_provider_for_general_recent_chat_reply tests\test_agent_async_callbacks.py::test_multiturn_side_effect_request_returns_async_continuation_ack tests\test_agent_async_callbacks.py::test_multiturn_policy_request_returns_async_continuation_ack`
+- Result: `10 passed, 1 warning`.
+- Ran broader structure/nutrition regression sweep:
+  - `.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider tests\test_agent_server_structure.py tests\test_agent_app_langgraph_native.py tests\test_nutrition_integration.py`
+- Result: `53 passed, 2 failed, 1 warning`.
+- The two failures are existing `feature/nutrition-chat-crud` nutrition alert expectation mismatches:
+  - `tests\test_nutrition_integration.py::test_nutrition_scenario_records_meal_chat_and_alert`
+  - `tests\test_nutrition_integration.py::test_nutrition_scenario_rerun_replaces_meal_and_reuses_alert`
+- Failure cause: this feature branch removed the previous one-meal-threshold nutrition alert behavior and now creates alerts only for daily-threshold exceedance. The ChatModel.bind_tools changes did not touch that alert policy.
+
+### Nutrition daily-threshold alert test alignment
+
+- Updated the two nutrition scenario tests that still expected one-meal threshold alerts.
+- The tests now preload `normal_breakfast` before `high_sodium_lunch`, so the alert is asserted only after the daily sodium total exceeds the current daily threshold.
+- Updated alert assertions from `meal_exceeded_nutrients` and "한 끼 기준" to the current `exceeded_nutrients` metadata and "하루 섭취 기준" copy.
+- Updated rerun expectations to keep breakfast plus lunch rows while verifying the lunch scenario meal is replaced and the daily nutrition alert is reused.
+
+### Verification
+
+- Ran:
+  - `.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider tests\test_nutrition_integration.py::test_nutrition_scenario_records_daily_threshold_alert tests\test_nutrition_integration.py::test_nutrition_scenario_rerun_replaces_meal_and_reuses_daily_alert`
+- Result: `2 passed, 1 warning`.
+- Ran the previously failing broader sweep:
+  - `.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider tests\test_agent_server_structure.py tests\test_agent_app_langgraph_native.py tests\test_nutrition_integration.py`
+- Result: `55 passed, 1 warning`.

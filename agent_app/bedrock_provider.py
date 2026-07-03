@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from time import perf_counter
 from typing import Any
 from urllib.parse import quote
@@ -17,6 +18,25 @@ from shared.settings import get_settings
 class BedrockAnthropicProvider(BaseLLMProvider):
     def __init__(self) -> None:
         self.settings = get_settings()
+
+    def chat_model(self):
+        try:
+            import boto3
+            from langchain_aws import ChatBedrockConverse
+        except ImportError as exc:  # pragma: no cover - depends on optional runtime dependency
+            raise RuntimeError("langchain-aws and boto3 are required for ChatModel.bind_tools() with Bedrock.") from exc
+
+        if self.settings.aws_bearer_token_bedrock:
+            os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self.settings.aws_bearer_token_bedrock
+
+        session = boto3.Session(**self._session_kwargs())
+        client = session.client("bedrock-runtime")
+        return ChatBedrockConverse(
+            client=client,
+            model=self.settings.model_id_for_tier(get_runtime_model_tier()),
+            max_tokens=self.settings.llm_max_tokens,
+            temperature=self.settings.llm_temperature,
+        )
 
     async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         model_id = self.settings.model_id_for_tier(get_runtime_model_tier())
@@ -55,16 +75,7 @@ class BedrockAnthropicProvider(BaseLLMProvider):
         except ImportError as exc:  # pragma: no cover - depends on optional runtime dependency
             raise RuntimeError("boto3 is required for LLM_PROVIDER=bedrock_anthropic.") from exc
 
-        session_kwargs: dict[str, Any] = {"region_name": self.settings.aws_region}
-        if self.settings.aws_profile:
-            session_kwargs["profile_name"] = self.settings.aws_profile
-        if self.settings.aws_access_key_id and self.settings.aws_secret_access_key:
-            session_kwargs["aws_access_key_id"] = self.settings.aws_access_key_id
-            session_kwargs["aws_secret_access_key"] = self.settings.aws_secret_access_key
-        if self.settings.aws_session_token:
-            session_kwargs["aws_session_token"] = self.settings.aws_session_token
-
-        session = boto3.Session(**session_kwargs)
+        session = boto3.Session(**self._session_kwargs())
         client = session.client("bedrock-runtime")
         body = {
             "anthropic_version": "bedrock-2023-05-31",
@@ -107,3 +118,14 @@ class BedrockAnthropicProvider(BaseLLMProvider):
             if response.is_error:
                 raise RuntimeError(f"Bedrock bearer call failed: HTTP {response.status_code} {response.text[:500]}")
             return response.json()
+
+    def _session_kwargs(self) -> dict[str, Any]:
+        session_kwargs: dict[str, Any] = {"region_name": self.settings.aws_region}
+        if self.settings.aws_profile:
+            session_kwargs["profile_name"] = self.settings.aws_profile
+        if self.settings.aws_access_key_id and self.settings.aws_secret_access_key:
+            session_kwargs["aws_access_key_id"] = self.settings.aws_access_key_id
+            session_kwargs["aws_secret_access_key"] = self.settings.aws_secret_access_key
+        if self.settings.aws_session_token:
+            session_kwargs["aws_session_token"] = self.settings.aws_session_token
+        return session_kwargs

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
+from agent_app.chat_tooling import langchain_tools_from_catalog
 from agent_app.main import app as agent_app
+from agent_app.provider_base import BaseLLMProvider
 from agent_app.tool_catalog import ToolCatalog
 from agent_app.tool_permissions import requires_human_handoff
 from agent_app.tool_policy import DEFERRED_POLICY_TOOL_NAMES
@@ -65,6 +67,17 @@ def test_tool_catalog_protocol_allowlist_and_handoff_flags_are_aligned():
         assert isinstance(tool.get("inputSchema"), dict)
         assert isinstance(tool.get("outputSchema"), dict)
         assert tool.get("description")
+
+
+def test_multiturn_tools_bind_through_chat_model_tool_specs():
+    tools = langchain_tools_from_catalog(ToolCatalog.available_tools_payload())
+    by_name = {tool["function"]["name"]: tool for tool in tools}
+
+    assert not hasattr(BaseLLMProvider, "bind_tools")
+    assert {"mark_dose_taken", "record_meal", "recommend_diet"} <= set(by_name)
+    assert by_name["mark_dose_taken"]["type"] == "function"
+    assert by_name["mark_dose_taken"]["function"]["parameters"]["type"] == "object"
+    assert "dose_event_id" in by_name["mark_dose_taken"]["function"]["parameters"]["required"]
 
 
 def test_tool_runtime_delegates_permission_decisions_to_executor_boundary():

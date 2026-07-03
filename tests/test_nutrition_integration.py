@@ -26,40 +26,45 @@ from system_app.services.system_request_service import build_multiturn_chat_requ
 from tests.helpers import build_session
 
 
-def test_nutrition_scenario_records_meal_chat_and_alert():
+def test_nutrition_scenario_records_daily_threshold_alert():
     with build_session() as session:
+        breakfast = run_nutrition_scenario(session, "normal_breakfast")
         result = run_nutrition_scenario(session, "high_sodium_lunch")
         session.commit()
 
+        assert breakfast["success"] is True
+        assert breakfast["alert_created"] is False
         assert result["success"] is True
         assert result["alert_created"] is True
-        assert session.query(NutritionMeal).count() == 1
-        assert session.query(NutritionFood).count() == 2
+        assert session.query(NutritionMeal).count() == 2
+        assert session.query(NutritionFood).count() == 5
 
         notification = session.query(Notification).filter(Notification.notification_type == "nutrition_alert").one()
         metadata = json.loads(notification.metadata_json)
         assert metadata["category"] == "nutrition"
-        assert "나트륨" in metadata["meal_exceeded_nutrients"]
-        assert "한 끼 기준" in notification.body
+        assert "나트륨" in metadata["exceeded_nutrients"]
+        assert "하루 섭취 기준" in notification.body
 
         messages = session.query(ChatMessage).filter(ChatMessage.category == "nutrition").all()
-        assert len(messages) == 2
-        assert "가상 영양 입력" in messages[0].content
-        assert "영양 요약" in messages[1].content
+        assert len(messages) == 4
+        assert "가상 영양 입력" in messages[-2].content
+        assert "영양 요약" in messages[-1].content
 
 
-def test_nutrition_scenario_rerun_replaces_meal_and_reuses_alert():
+def test_nutrition_scenario_rerun_replaces_meal_and_reuses_daily_alert():
     with build_session() as session:
+        breakfast = run_nutrition_scenario(session, "normal_breakfast")
         first = run_nutrition_scenario(session, "high_sodium_lunch")
         second = run_nutrition_scenario(session, "high_sodium_lunch")
         session.commit()
 
+        assert breakfast["alert_created"] is False
         assert first["alert_created"] is True
         assert second["replaced_existing"] is True
         assert second["alert_created"] is False
         assert second["alert_reused"] is True
-        assert session.query(NutritionMeal).count() == 1
-        assert session.query(NutritionFood).count() == 2
+        assert session.query(NutritionMeal).count() == 2
+        assert session.query(NutritionFood).count() == 5
         assert session.query(Notification).filter(Notification.notification_type == "nutrition_alert").count() == 1
 
 
