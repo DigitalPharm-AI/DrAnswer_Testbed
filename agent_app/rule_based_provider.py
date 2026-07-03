@@ -248,7 +248,7 @@ def _multiturn_general_reply(payload: dict[str, Any]) -> str:
         return "오늘 식사는 나트륨과 탄수화물을 조금 낮추고 채소, 단백질, 수분을 함께 보강하는 방향이 좋겠습니다."
     if previous_turns:
         return "앞선 대화 맥락을 확인했습니다. 이어서 말씀해 주세요."
-        return "말씀을 확인했습니다. 복약이나 증상과 관련해 더 이야기해 주세요."
+    return "말씀을 확인했습니다. 복약이나 증상과 관련해 더 이야기해 주세요."
 
 
 class RuleBasedChatModel(BaseChatModel):
