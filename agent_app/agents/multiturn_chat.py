@@ -2,6 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_app.agent_delegation import (
+    delegation_reason,
+    delegation_target,
+    delegation_tools_payload,
+    is_delegation_tool_call,
+)
+from agent_app.agents.medication import MedicationAgent
+from agent_app.agents.nutrition_management import NutritionManagementAgent
+from agent_app.agents.nutrition_recommendation import NutritionRecommendationAgent
 from agent_app.chat_tooling import (
     ai_message_from_tool_calls,
     build_chat_messages,
@@ -27,6 +36,9 @@ class MultiturnChatAgent:
     def __init__(self, provider: BaseLLMProvider, tool_runtime: ToolRuntime) -> None:
         self.provider = provider
         self.tool_runtime = tool_runtime
+        self.medication_agent = MedicationAgent(provider, tool_runtime)
+        self.nutrition_management_agent = NutritionManagementAgent(provider, tool_runtime)
+        self.nutrition_recommendation_agent = NutritionRecommendationAgent(provider, tool_runtime)
 
     async def run(self, trace_id: str, payload: dict[str, Any]) -> AgentResponse:
         agent_name = "system_event_agent"
@@ -35,7 +47,7 @@ class MultiturnChatAgent:
             request_payload = request.model_dump(mode="json")
             context = request.context if isinstance(request.context, dict) else {}
             async_tool_calls = context.get("async_tool_calls")
-            catalog_tools = ToolCatalog.available_tools_payload()
+            catalog_tools = [*ToolCatalog.available_tools_payload(), *delegation_tools_payload()]
             bound_model = self.provider.chat_model().bind_tools(langchain_tools_from_catalog(catalog_tools))
             messages = build_chat_messages(
                 multiturn_chat_prompt(),
@@ -58,6 +70,10 @@ class MultiturnChatAgent:
                 output = model_output_from_ai_message(ai_message)
                 tool_calls = normalize_policy_tool_calls(tool_calls_from_ai_message(ai_message), source_event_type="multiturn_chat")
                 ai_message = ai_message_from_tool_calls(tool_calls, content=str(ai_message.content or ""), model_output=output)
+            delegated_call = next((call for call in tool_calls if is_delegation_tool_call(call)), None)
+            if delegated_call is not None:
+                delegated_response = await self._run_delegation(trace_id, request_payload, delegated_call)
+                return self._delegated_response(delegated_response, reason=delegation_reason(delegated_call))
             continuation_type = async_continuation_type(tool_calls)
             if continuation_type and context.get("execute_async_continuation") is not True and not any(
                 str(call.get("name") or "") == "mark_dose_taken" for call in tool_calls
@@ -146,4 +162,32 @@ class MultiturnChatAgent:
             },
             human_summary=human_summary,
             requires_conversation_alert=False,
+        )
+
+    async def _run_delegation(self, trace_id: str, request_payload: dict[str, Any], tool_call: dict[str, Any]) -> AgentResponse:
+        target = delegation_target(tool_call)
+        if target == "medication_agent":
+            return await self.medication_agent.run(trace_id, request_payload)
+        if target == "nutrition_management_agent":
+            return await self.nutrition_management_agent.run(trace_id, request_payload)
+        if target == "nutrition_recommendation_agent":
+            return await self.nutrition_recommendation_agent.run(trace_id, request_payload)
+        raise ValueError(f"unsupported_delegation_target:{target or 'unknown'}")
+
+    @staticmethod
+    def _delegated_response(delegated_response: AgentResponse, *, reason: str = "") -> AgentResponse:
+        structured = dict(delegated_response.structured_payload)
+        structured["delegated_agent"] = delegated_response.agent_name
+        structured["delegation_reason"] = reason
+        structured["delegated_by"] = "system_event_agent"
+        return AgentResponse(
+            trace_id=delegated_response.trace_id,
+            agent_name=delegated_response.agent_name,
+            prompt_version_id=delegated_response.prompt_version_id,
+            decision_type=delegated_response.decision_type,
+            structured_payload=structured,
+            human_summary=delegated_response.human_summary,
+            requires_conversation_alert=delegated_response.requires_conversation_alert,
+            validation_passed=delegated_response.validation_passed,
+            validation_errors=delegated_response.validation_errors,
         )

@@ -140,6 +140,38 @@ class NativeFakeProvider(NativeChatProvider):
         return {"advice": "현재 복약 상태를 확인했습니다.", "observations": ["추가 도구 실행은 필요하지 않습니다."]}
 
 
+class NativeDelegatingMedicationProvider(NativeChatProvider):
+    def __init__(self) -> None:
+        self.seen_payloads: list[dict[str, Any]] = []
+        self.bound_tool_names: list[str] = []
+
+    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        self.seen_payloads.append(user_payload)
+        if user_payload.get("response_mode") == "multiturn_chat":
+            return {
+                "message": "복약 담당 에이전트가 확인하겠습니다.",
+                "tool_call": {
+                    "name": "call_medication_agent",
+                    "arguments": {
+                        "task": "record reported dose as taken",
+                        "reason": "patient reported taking a current medication dose",
+                    },
+                },
+            }
+        if user_payload.get("response_mode") == "medication_chat":
+            return {
+                "message": "복약 완료를 기록하겠습니다.",
+                "tool_call": {
+                    "name": "mark_dose_taken",
+                    "arguments": {
+                        "dose_event_id": 12,
+                        "reason": "patient_reported_taken",
+                    },
+                },
+            }
+        return {"advice": "확인했습니다."}
+
+
 class NativeSideEffectLookupProvider(NativeChatProvider):
     async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         assert user_payload["response_mode"] == "multiturn_chat"
@@ -609,6 +641,30 @@ def test_agent_app_mcp_tools_list_endpoint_reports_context_allowed_catalog():
     assert policy_meta["handoff_gate"] == "high_risk_policy_change"
 
 
+def test_tool_call_validation_accepts_tool_name_alias():
+    output = {
+        "message": "음식 정보를 먼저 찾아볼게요.",
+        "tool_calls": [
+            {
+                "tool_name": "search_food_nutrition",
+                "args": {"query": "마라탕"},
+            }
+        ],
+    }
+
+    validate_llm_output("system_guidance", output, {})
+    calls = normalize_tool_calls(output)
+
+    assert calls == [
+        {
+            "tool_name": "search_food_nutrition",
+            "args": {"query": "마라탕"},
+            "name": "search_food_nutrition",
+            "arguments": {"query": "마라탕"},
+        }
+    ]
+
+
 def test_agent_app_mcp_direct_call_enforces_default_tool_allowlist():
     request = mcp_json_rpc_request(
         MCP_METHOD_TOOLS_CALL,
@@ -775,6 +831,29 @@ def test_agent_app_multiturn_mark_taken_tool_call(monkeypatch):
     assert payload["structured_payload"]["message_flow"] == ["HumanMessage", "AIMessage(tool_calls)", "ToolMessage", "AIMessage(final_answer)"]
     assert tool_executor.calls[0]["name"] == "mark_dose_taken"
     assert {"mark_dose_taken", "recommend_diet"} <= set(provider.bound_tool_names)
+
+
+def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_permission(monkeypatch):
+    provider = NativeDelegatingMedicationProvider()
+    tool_executor = NativeFakeToolExecutor()
+    monkeypatch.setattr(native_agent_main, "orchestrator", AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=tool_executor))
+    client = TestClient(native_agent_main.app)
+
+    response = client.post("/agent/multiturn-chat", json=build_taken_chat_request().model_dump(mode="json"), headers=internal_auth_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["agent_name"] == "medication_agent"
+    assert payload["decision_type"] == "tool_call"
+    assert payload["structured_payload"]["delegated_agent"] == "medication_agent"
+    assert payload["structured_payload"]["tool_call"]["name"] == "mark_dose_taken"
+    assert payload["structured_payload"]["tool_results"][0]["tool_name"] == "mark_dose_taken"
+    assert payload["structured_payload"]["tool_results"][0]["status"] == "success"
+    assert payload["structured_payload"]["tool_results"][0]["response"]["status"] == "taken"
+    assert tool_executor.calls[0]["name"] == "mark_dose_taken"
+    assert [seen["response_mode"] for seen in provider.seen_payloads] == ["multiturn_chat", "medication_chat"]
+    assert {"mark_dose_taken", "lookup_side_effect_info", "AE_pro_ctcae"} <= set(provider.bound_tool_names)
+    assert "recommend_diet" not in provider.bound_tool_names
 
 
 def test_agent_app_multiturn_forces_ae_after_positive_side_effect_lookup(monkeypatch):

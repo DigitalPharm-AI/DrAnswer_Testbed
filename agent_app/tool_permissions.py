@@ -15,6 +15,22 @@ NUTRITION_TOOLS = {
     "get_nutrition_preferences",
     "recommend_diet",
 }
+MEDICATION_CHAT_TOOLS = {"mark_dose_taken", *SIDE_EFFECT_TOOLS}
+NUTRITION_MANAGEMENT_TOOLS = {
+    "search_food_nutrition",
+    "record_meal",
+    "list_meals",
+    "get_daily_nutrition_summary",
+    "record_nutrition_preference",
+    "get_nutrition_preferences",
+}
+NUTRITION_RECOMMENDATION_TOOLS = {
+    "search_food_nutrition",
+    "list_meals",
+    "get_daily_nutrition_summary",
+    "get_nutrition_preferences",
+    "recommend_diet",
+}
 HIGH_RISK_HUMAN_HANDOFF_TOOLS = POLICY_TOOLS
 
 TOOL_ALLOWLIST: dict[str, set[str]] = {

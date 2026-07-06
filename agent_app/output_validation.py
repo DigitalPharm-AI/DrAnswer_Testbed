@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from agent_app.agent_delegation import DELEGATION_TOOL_NAMES
 from agent_app.tool_protocol import ALLOWED_TOOL_NAMES
 
 ALLOWED_PATTERN_CODES = {"A", "B", "C", "D", "E", "unknown", ""}
@@ -17,10 +18,22 @@ class LlmToolCall(BaseModel):
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_tool_shape(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        if not normalized.get("name") and normalized.get("tool_name"):
+            normalized["name"] = normalized["tool_name"]
+        if not isinstance(normalized.get("arguments"), dict) and isinstance(normalized.get("args"), dict):
+            normalized["arguments"] = normalized["args"]
+        return normalized
+
     @field_validator("name")
     @classmethod
     def validate_tool_name(cls, value: str) -> str:
-        if value not in ALLOWED_TOOL_NAMES:
+        if value not in ALLOWED_TOOL_NAMES and value not in DELEGATION_TOOL_NAMES:
             raise ValueError(f"unsupported_tool:{value}")
         return value
 
