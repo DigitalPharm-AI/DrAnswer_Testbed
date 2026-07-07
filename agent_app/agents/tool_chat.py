@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_app import trace_logging
 from agent_app.chat_tooling import (
     ai_message_from_tool_calls,
     build_chat_messages,
     langchain_tools_from_catalog,
     model_output_from_ai_message,
-    patient_summary_from_ai_message,
+    patient_summary_with_source,
     tool_calls_from_ai_message,
     tool_messages_from_results,
 )
@@ -124,7 +125,22 @@ async def run_tool_chat_agent(
             "policy_confirmation_required": has_deferred_policy_tool_call(executed_calls),
         }
         fallback_summary = tool_result_summary(results, natural_chat_summary(output) or "도구를 실행했습니다.")
-        final_summary = patient_summary_from_ai_message(final_ai_message, fallback_summary)
+        final_summary, final_answer_source = patient_summary_with_source(
+            final_ai_message,
+            fallback_summary,
+            fallback_source="tool_result_summary",
+        )
+        structured_payload["final_answer_source"] = final_answer_source
+        structured_payload["tool_result_summary_used"] = final_answer_source == "tool_result_summary"
+        if final_answer_source == "tool_result_summary":
+            trace_logging.log_info(
+                "agent_final_answer_fallback_used",
+                trace_id=trace_id,
+                agent_name=agent_name,
+                routing_mode=structured_payload["routing_mode"],
+                fallback_source=final_answer_source,
+                tool_names=[str(call.get("name") or "") for call in executed_calls],
+            )
         return AgentResponse(
             trace_id=trace_id,
             agent_name=agent_name,
@@ -135,6 +151,7 @@ async def run_tool_chat_agent(
             requires_conversation_alert=False,
         )
 
+    human_summary, final_answer_source = patient_summary_with_source(ai_message, natural_chat_summary(output), fallback_source="model_output")
     return AgentResponse(
         trace_id=trace_id,
         agent_name=agent_name,
@@ -150,8 +167,9 @@ async def run_tool_chat_agent(
             "tool_calls": [],
             "tool_results": [],
             "tools_executed": False,
+            "final_answer_source": final_answer_source,
             "message_flow": ["HumanMessage", "AIMessage(final_answer)"],
         },
-        human_summary=patient_summary_from_ai_message(ai_message, natural_chat_summary(output)),
+        human_summary=human_summary,
         requires_conversation_alert=False,
     )

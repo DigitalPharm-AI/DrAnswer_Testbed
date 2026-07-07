@@ -76,6 +76,14 @@ def ae_pro_ctcae_chat_metadata(response: AgentResponse) -> dict:
     }
 
 
+def ae_pro_ctcae_chat_content(response: AgentResponse) -> str:
+    payload = ae_pro_ctcae_payload(response) or {}
+    symptom = str(payload.get("matched_korean_symptom_name") or payload.get("input_symptom") or "").strip()
+    if symptom:
+        return f"{symptom} 증상과 복용약의 관련 가능성을 확인하기 위한 문항을 준비했어요. 아래 문항에 답해주세요."
+    return "증상과 복용약의 관련 가능성을 확인하기 위한 문항을 준비했어요. 아래 문항에 답해주세요."
+
+
 def food_selection_chat_metadata(response: AgentResponse) -> dict:
     food_searches = response.structured_payload.get("food_searches")
     # 단일 검색 결과도 처리 (food_searches 없을 때 폴백)
@@ -102,6 +110,14 @@ def food_selection_chat_metadata(response: AgentResponse) -> dict:
             "confirmed_foods": [],
         }
     }
+
+
+def food_selection_chat_content(message_metadata: dict) -> str:
+    food_selection = message_metadata.get("food_selection") if isinstance(message_metadata.get("food_selection"), dict) else {}
+    queue = food_selection.get("foods_queue") if isinstance(food_selection.get("foods_queue"), list) else []
+    if queue:
+        return "음식 후보를 찾았습니다. 아래 카드에서 선택해주세요. 선택이 끝나면 다음 음식도 이어서 확인할게요."
+    return "음식 후보를 찾았습니다. 아래 카드에서 선택해주세요."
 
 
 def policy_deltas_from_response_payload(response: AgentResponse) -> list[NotificationPolicyDelta]:
@@ -169,11 +185,9 @@ def persist_agent_summary(
         if pattern_message and "ae_pro_ctcae" not in message_metadata:
             message_content = pattern_message
     if not message_content and "ae_pro_ctcae" in message_metadata:
-        message_content = "PRO-CTCAE 자기보고 문항을 준비했어요. 아래 문항에 답해주세요."
+        message_content = ae_pro_ctcae_chat_content(response)
     if not message_content and "food_selection" in message_metadata:
-        fs_candidates = message_metadata["food_selection"].get("candidates", [])
-        names = [str(c.get("food_name")) for c in fs_candidates[:3] if isinstance(c, dict) and c.get("food_name")]
-        message_content = f"음식 후보를 찾았습니다. 아래에서 선택해주세요: {', '.join(names)}" if names else "음식 후보를 찾았습니다. 아래에서 선택해주세요."
+        message_content = food_selection_chat_content(message_metadata)
     if conversation_notification is not None and category == "missed_dose":
         ensure_chat_message_for_conversation_alert(
             session,

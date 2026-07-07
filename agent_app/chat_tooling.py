@@ -141,14 +141,23 @@ def model_output_from_ai_message(message: AIMessage) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {"message": content}
 
 
-def patient_summary_from_ai_message(message: AIMessage, fallback: str) -> str:
+def patient_summary_with_source(message: AIMessage, fallback: str, *, fallback_source: str = "fallback") -> tuple[str, str]:
     output = model_output_from_ai_message(message)
     if output:
         summary = natural_chat_summary(output)
         if summary:
-            return summary
+            return summary, str(output.get("fallback") or "model_output")
     content = _content_text(message.content).strip()
-    return content or fallback
+    if content:
+        return content, "message_content"
+    if fallback:
+        return fallback, fallback_source
+    return "", "missing"
+
+
+def patient_summary_from_ai_message(message: AIMessage, fallback: str) -> str:
+    summary, _source = patient_summary_with_source(message, fallback)
+    return summary
 
 
 def langchain_tool_name(tool: dict[str, Any]) -> str:

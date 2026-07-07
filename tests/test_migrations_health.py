@@ -43,6 +43,8 @@ def test_run_migrations_tracks_agent_jobs_version():
         "20260622_0003_nutrition_patient_preference_triples",
         "20260622_0004_nutrition_ontology_indexes",
         "20260622_0005_nutrition_patient_preference_indexes",
+        "20260701_0001_nutrition_food_ref",
+        "20260701_0002_nutrition_food_ref_index",
     ]
     assert second_run == []
 
@@ -70,6 +72,8 @@ def test_run_migrations_tracks_agent_jobs_version():
             "20260622_0003_nutrition_patient_preference_triples",
             "20260622_0004_nutrition_ontology_indexes",
             "20260622_0005_nutrition_patient_preference_indexes",
+            "20260701_0001_nutrition_food_ref",
+            "20260701_0002_nutrition_food_ref_index",
         ]
 
 
@@ -94,10 +98,11 @@ def test_health_details_returns_operational_shape():
     assert "token_prices_configured" in payload["budgets"]["cost"]
 
 
-def test_rule_based_provider_does_not_require_bedrock_credentials():
+def test_rule_based_provider_is_not_runtime_supported():
     class DummySettings:
         llm_provider = "rule_based"
 
+    assert health_service._llm_provider_supported(DummySettings()) is False
     assert health_service._llm_credentials_required(DummySettings()) is False
 
 

@@ -58,6 +58,10 @@ def multiturn_chat_prompt() -> str:
         "or final tone; the system rules own those decisions. If lookup_side_effect_info finds a suspected side "
         "effect, the runtime will continue to AE_pro_ctcae. For side-effect or medication-causality questions with "
         "phr_patient_key available, first call lookup_side_effect_info; do not call AE_pro_ctcae before that lookup. "
+        "After tool results that create UI cards, keep the final user-facing message short. If AE_pro_ctcae questions "
+        "are returned, briefly say that the symptom may be related and that questions are ready below; do not repeat "
+        "the questions, response options, match type, or scoring details. If food candidates are returned, say that "
+        "candidates are ready below; do not list candidate names, nutrient values, or card fields in the text. "
         "Return JSON only, and do not return only an empty tool_calls list."
     )
 
@@ -68,6 +72,8 @@ def medication_agent_prompt() -> str:
         "Use mark_dose_taken only when the user clearly says a current dose was taken and a valid dose_event_id exists in context. "
         "For side-effect or medication-causality questions with phr_patient_key available, first call lookup_side_effect_info. "
         "Do not call AE_pro_ctcae before lookup_side_effect_info; the runtime may continue to AE_pro_ctcae after a positive lookup. "
+        "After AE_pro_ctcae tool results, briefly say that the symptom may be related and that questions are ready below; "
+        "do not repeat the questions, response options, match type, or scoring details. "
         "If more information is needed, ask one concise Korean question. Return JSON only."
     )
 
@@ -79,7 +85,9 @@ def nutrition_management_agent_prompt() -> str:
         "nutrient values are clear; otherwise search_food_nutrition or ask one concise clarification. "
         "If the user merely says they ate something and saving intent is not confirmed, ask whether to save it as a meal record. "
         "When explicit likes, dislikes, allergies, medical avoids, religious avoids, or diet preferences are stated, call "
-        "record_nutrition_preference with exact evidence text. Return JSON only."
+        "record_nutrition_preference with exact evidence text. After food search results that create candidate cards, keep "
+        "the final text to 1-2 short Korean sentences and do not repeat candidate names, nutrient values, or card fields. "
+        "Return JSON only."
     )
 
 

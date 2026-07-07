@@ -8,6 +8,8 @@ from shared.readiness_budget import CostBudget, LoadBudget
 from shared.redaction import redacted_clinical_text_label, safe_exception_summary
 from shared.settings import get_settings
 
+SUPPORTED_LLM_PROVIDERS = {"bedrock", "bedrock_anthropic", "anthropic_bedrock"}
+
 
 async def collect_system_health(session: Session) -> dict:
     settings = get_settings()
@@ -17,18 +19,20 @@ async def collect_system_health(session: Session) -> dict:
     agent_server = await _agent_server_health(settings.agent_base_url)
     agent_async = await _agent_async_health(settings.agent_base_url, settings.internal_api_token)
     model_tier = settings.llm_model_tier
+    llm_provider_supported = _llm_provider_supported(settings)
     llm_credentials_required = _llm_credentials_required(settings)
     credential_sources = _llm_credential_sources(settings)
-    llm_configured = bool(credential_sources) or not llm_credentials_required
+    llm_configured = llm_provider_supported and (bool(credential_sources) or not llm_credentials_required)
     llm = {
         "provider": settings.llm_provider,
+        "provider_supported": llm_provider_supported,
         "model_tier": model_tier,
         "model": settings.model_id_for_tier(model_tier),
-        "base_url": "local-rule-based" if not llm_credentials_required else "aws-bedrock",
+        "base_url": "aws-bedrock" if llm_provider_supported else "unsupported",
         "api_key_configured": llm_configured,
         "credentials_required": llm_credentials_required,
-        "status": "configured" if llm_configured else "missing_credentials",
-        "credential_sources": credential_sources or (["rule_based_local"] if not llm_credentials_required else []),
+        "status": "configured" if llm_configured else "unsupported_provider" if not llm_provider_supported else "missing_credentials",
+        "credential_sources": credential_sources,
     }
     if llm_credentials_required and not credential_sources:
         llm["credential_hint"] = "Configure AWS_BEARER_TOKEN_BEDROCK, AWS_PROFILE, or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY."
@@ -105,8 +109,12 @@ def _llm_credentials_configured(settings) -> bool:
     return bool(_llm_credential_sources(settings))
 
 
+def _llm_provider_supported(settings) -> bool:
+    return settings.llm_provider.strip().lower() in SUPPORTED_LLM_PROVIDERS
+
+
 def _llm_credentials_required(settings) -> bool:
-    return settings.llm_provider.strip().lower() not in {"rule_based", "rule-based", "local", "heuristic"}
+    return _llm_provider_supported(settings)
 
 
 def _llm_credential_sources(settings) -> list[str]:
@@ -132,7 +140,9 @@ def _health_warnings(agent_server: dict, agent_async: dict, llm: dict) -> list[s
         warnings.append("agent_async_pending_without_running_worker")
     if agent_async.get("dead_count", 0):
         warnings.append("agent_async_dead_tasks_present")
-    if not llm["api_key_configured"]:
+    if not llm.get("provider_supported", True):
+        warnings.append("llm_provider_unsupported")
+    elif not llm["api_key_configured"]:
         warnings.append("llm_credentials_missing")
     return warnings
 

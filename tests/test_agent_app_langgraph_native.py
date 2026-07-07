@@ -28,7 +28,7 @@ from agent_app.chat_tooling import (
 from agent_app.errors import AgentExecutionError
 from agent_app.graph import AgentLangGraphNativeOrchestrator
 from agent_app.output_validation import validate_llm_output
-from agent_app.providers import BaseLLMProvider, RuleBasedProvider
+from agent_app.providers import BaseLLMProvider, RuleBasedProvider, create_llm_provider
 from agent_app.response_builders import missed_dose_hybrid_payload, natural_chat_summary
 from agent_app.tool_calling import normalize_tool_calls
 from agent_app.tool_catalog import ToolCatalog
@@ -830,6 +830,8 @@ def test_agent_app_multiturn_mark_taken_tool_call(monkeypatch):
     assert payload["structured_payload"]["message_flow"] == ["HumanMessage", "AIMessage(tool_calls)", "ToolMessage", "AIMessage(final_answer)"]
     assert payload["structured_payload"]["routing_mode"] == "direct_tool"
     assert payload["structured_payload"]["executed_by"] == "system_event_agent"
+    assert payload["structured_payload"]["final_answer_source"] == "tool_result_summary"
+    assert payload["structured_payload"]["tool_result_summary_used"] is True
     assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "mark_dose_taken"
     assert tool_executor.calls[0]["name"] == "mark_dose_taken"
     assert {"mark_dose_taken", "recommend_diet"} <= set(provider.bound_tool_names)
@@ -937,11 +939,22 @@ def test_agent_app_multiturn_uses_provider_for_general_recent_chat_reply(monkeyp
     assert response.status_code == 200
     payload = response.json()
     assert payload["decision_type"] == "system_guidance"
+    assert payload["structured_payload"]["final_answer_source"] == "model_output"
     assert "요청을 확인했습니다" not in payload["human_summary"]
     assert "메스꺼" in payload["human_summary"]
     assert "1번 자주 있다" in payload["human_summary"]
     assert provider.seen_payloads[0]["context"]["recent_chat"][1]["content"] == "속이 메스꺼운데 약때문일까?"
     assert "answer ordinary follow-up" in provider.seen_prompts[0]
+
+
+def test_rule_based_provider_is_test_only_for_runtime_selection(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "rule_based")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="test-only"):
+            create_llm_provider()
+    finally:
+        get_settings.cache_clear()
 
 
 def test_ae_tool_call_from_lookup_normalizes_generic_phr_effect_to_pro_ctcae_symptom():

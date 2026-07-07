@@ -474,7 +474,10 @@ def test_async_chat_result_creates_ae_pro_ctcae_chat_prompt():
                     ],
                 }
             },
-            human_summary="PRO-CTCAE 자기보고 문항을 준비했어요.",
+            human_summary=(
+                "말씀하신 메스꺼움은 복용약과 관련 가능성이 있어 확인 문항을 준비했습니다. "
+                "아래 문항에 답해주세요."
+            ),
         )
         callback = AgentAsyncChatResultRequest(
             request_id="chat_continuation:notification:1",
@@ -490,8 +493,61 @@ def test_async_chat_result_creates_ae_pro_ctcae_chat_prompt():
         assert result["status"] == "ok"
         message = session.query(ChatMessage).filter(ChatMessage.category == "multiturn_chat", ChatMessage.role == "assistant").one()
         metadata = json.loads(message.metadata_json)
+        assert message.content == "말씀하신 메스꺼움은 복용약과 관련 가능성이 있어 확인 문항을 준비했습니다. 아래 문항에 답해주세요."
         assert metadata["ae_pro_ctcae"]["matched"] is True
         assert metadata["ae_pro_ctcae"]["questions"][0]["item_code"] == "PROCTCAE_NAUSEA"
+
+
+def test_async_chat_result_preserves_llm_food_selection_message():
+    with build_session() as session:
+        clock = ensure_clock(session)
+        notification = Notification(
+            notification_type="system_policy_request",
+            title="에이전트 대화 전송",
+            body="에이전트에게 메시지를 보냈습니다.",
+            visible_at=clock.current_time,
+            metadata_json=json.dumps({"request_message": "삶은 계란 먹었어", "status": "sent"}, ensure_ascii=False),
+        )
+        session.add(notification)
+        session.flush()
+        response = AgentResponse(
+            trace_id="trace-food-async",
+            agent_name="system_event_agent",
+            prompt_version_id="v1",
+            decision_type="tool_call",
+            structured_payload={
+                "food_searches": [
+                    {
+                        "query": "삶은 계란",
+                        "candidates": [
+                            {
+                                "food_ref_id": "egg-boiled",
+                                "food_name": "삶은 달걀",
+                                "serving_size": 50,
+                                "nutrients": {"calories": 70, "protein": 6},
+                            }
+                        ],
+                    }
+                ]
+            },
+            human_summary="음식 후보를 찾았습니다. 아래 카드에서 선택해주세요.",
+        )
+        callback = AgentAsyncChatResultRequest(
+            request_id="chat_continuation:notification:food",
+            notification_id=notification.id,
+            event_type="multiturn_chat",
+            message="삶은 계란 먹었어",
+            response=response,
+            idempotency_key="chat-food-result-once",
+        )
+
+        result = process_async_chat_result_callback(session, callback)
+
+        assert result["status"] == "ok"
+        message = session.query(ChatMessage).filter(ChatMessage.category == "multiturn_chat", ChatMessage.role == "assistant").one()
+        metadata = json.loads(message.metadata_json)
+        assert message.content == "음식 후보를 찾았습니다. 아래 카드에서 선택해주세요."
+        assert metadata["food_selection"]["candidates"][0]["food_name"] == "삶은 달걀"
 
 
 def test_async_chat_worker_executes_required_continuation_before_callback(monkeypatch):
