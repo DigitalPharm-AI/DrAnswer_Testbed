@@ -53,6 +53,29 @@ def _tool_result_log_payload(result: Any) -> dict[str, Any]:
     return payload
 
 
+def _routing_log_payload(routing_context: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(routing_context, dict):
+        return {}
+    payload: dict[str, Any] = {}
+    for key in (
+        "routing_mode",
+        "executed_by",
+        "supervisor_agent",
+        "specialist_agent",
+        "delegated_agent",
+        "delegated_by",
+        "delegation_reason",
+    ):
+        value = routing_context.get(key)
+        if value is not None:
+            payload[key] = str(value)
+    for key in ("supervisor_tool_names", "specialist_tool_names", "tool_names"):
+        value = routing_context.get(key)
+        if isinstance(value, list):
+            payload[key] = [str(item) for item in value]
+    return payload
+
+
 class ToolRuntime:
     def __init__(self, executor: AgentToolExecutorProtocol | None) -> None:
         self.executor = executor
@@ -65,16 +88,19 @@ class ToolRuntime:
         source_event_type: str,
         payload: dict[str, Any],
         force_ae_after_positive_lookup: bool = False,
+        routing_context: dict[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], list[Any]]:
         if self.executor is None or not tool_calls:
             return tool_calls, []
         executed_calls = list(tool_calls)
         results = []
         ae_already_requested = any(call.get("name") == "AE_pro_ctcae" for call in executed_calls)
+        routing = _routing_log_payload(routing_context)
         trace_logging.log_info(
             "agent_tool_plan_created",
             trace_id=trace_id,
             source_event_type=source_event_type,
+            routing=routing,
             tool_count=len(executed_calls),
             tool_names=[str(call.get("name") or "") for call in executed_calls],
             tool_calls=[_tool_call_log_payload(call) for call in executed_calls],
@@ -86,6 +112,7 @@ class ToolRuntime:
                 "agent_tool_call_started",
                 trace_id=trace_id,
                 source_event_type=source_event_type,
+                routing=routing,
                 tool_index=index,
                 **_tool_call_log_payload(tool_call),
             )
@@ -95,6 +122,7 @@ class ToolRuntime:
                 "agent_tool_call_completed",
                 trace_id=trace_id,
                 source_event_type=source_event_type,
+                routing=routing,
                 tool_index=index,
                 **_tool_result_log_payload(result),
             )
@@ -104,6 +132,7 @@ class ToolRuntime:
                     "agent_tool_call_forced",
                     trace_id=trace_id,
                     source_event_type=source_event_type,
+                    routing=routing,
                     reason="positive_side_effect_lookup",
                     source_tool=str(tool_call.get("name") or ""),
                     forced_tool="AE_pro_ctcae",

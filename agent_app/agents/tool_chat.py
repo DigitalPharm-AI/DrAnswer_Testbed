@@ -67,6 +67,10 @@ async def run_tool_chat_agent(
             prompt_version_id=PROMPT_VERSION_ID,
             decision_type="async_continuation_requested",
             structured_payload={
+                "routing_mode": "specialist_async_continuation",
+                "executed_by": agent_name,
+                "specialist_agent": agent_name,
+                "specialist_tool_calls": tool_calls,
                 "model_output": output,
                 "tool_calls": tool_calls,
                 "tool_results": [],
@@ -86,6 +90,13 @@ async def run_tool_chat_agent(
         source_event_type=source_event_type,
         payload=request_payload,
         force_ae_after_positive_lookup=force_ae_after_positive_lookup,
+        routing_context={
+            "routing_mode": "specialist_tool",
+            "executed_by": agent_name,
+            "specialist_agent": agent_name,
+            "specialist_tool_names": [str(call.get("name") or "") for call in tool_calls],
+            "tool_names": [str(call.get("name") or "") for call in tool_calls],
+        },
     )
     executed_ai_message = ai_message_from_tool_calls(executed_calls, content=str(ai_message.content or ""), model_output=output) if executed_calls else ai_message
     tool_messages = tool_messages_from_results(executed_ai_message, executed_calls, results)
@@ -94,6 +105,10 @@ async def run_tool_chat_agent(
 
     if executed_calls:
         structured_payload = {
+            "routing_mode": "specialist_tool",
+            "executed_by": agent_name,
+            "specialist_agent": agent_name,
+            "specialist_tool_calls": executed_calls,
             "model_output": output,
             **tool_calls_payload(executed_calls, results),
             "tool_messages": [
@@ -126,6 +141,10 @@ async def run_tool_chat_agent(
         prompt_version_id=PROMPT_VERSION_ID,
         decision_type=decision_type,
         structured_payload={
+            "routing_mode": "specialist_answer",
+            "executed_by": agent_name,
+            "specialist_agent": agent_name,
+            "specialist_tool_calls": [],
             "observations": string_list(output.get("observations")),
             "model_output": output,
             "tool_calls": [],

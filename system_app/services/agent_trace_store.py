@@ -73,6 +73,7 @@ def upsert_agent_run_trace(
                 "validation_passed": response.validation_passed,
                 "validation_errors": response.validation_errors,
                 "structured_payload_keys": sorted(str(key) for key in structured.keys()),
+                "routing": _routing_metadata(structured, response.agent_name),
                 "human_summary": response.human_summary,
                 "request_message": request_message,
                 "token_usage": token_usage,
@@ -235,6 +236,7 @@ def _replace_steps(session: Session, response: AgentResponse, *, source_event_ty
                         "decision_type": response.decision_type,
                         "prompt_version_id": response.prompt_version_id,
                         "token_usage": _token_usage(structured),
+                        "routing": _routing_metadata(structured, response.agent_name),
                     }
                 )
             ),
@@ -256,6 +258,8 @@ def _replace_steps(session: Session, response: AgentResponse, *, source_event_ty
                     redact_for_logging(
                         {
                             "tool_index": index,
+                            "routing": _routing_metadata(structured, response.agent_name),
+                            "executed_by": str(structured.get("executed_by") or response.agent_name),
                             "arguments": tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {},
                             "result_keys": sorted(str(key) for key in result.keys()),
                             "error": result.get("error", ""),
@@ -276,6 +280,7 @@ def _replace_steps(session: Session, response: AgentResponse, *, source_event_ty
                         "human_summary": response.human_summary,
                         "validation_passed": response.validation_passed,
                         "validation_errors": response.validation_errors,
+                        "routing": _routing_metadata(structured, response.agent_name),
                     }
                 )
             ),
@@ -303,6 +308,34 @@ def _matching_tool_result(tool_name: str, results: list[dict[str, Any]], index: 
         if not tool_name or str(candidate.get("tool_name") or "") in {"", tool_name}:
             return candidate
     return next((result for result in results if str(result.get("tool_name") or "") == tool_name), {})
+
+
+def _routing_metadata(structured: dict[str, Any], response_agent_name: str) -> dict[str, Any]:
+    return {
+        "routing_mode": str(structured.get("routing_mode") or "unknown"),
+        "executed_by": str(structured.get("executed_by") or response_agent_name or ""),
+        "supervisor_agent": str(structured.get("supervisor_agent") or ""),
+        "specialist_agent": str(structured.get("specialist_agent") or ""),
+        "delegated_agent": str(structured.get("delegated_agent") or ""),
+        "delegated_by": str(structured.get("delegated_by") or ""),
+        "delegation_reason": str(structured.get("delegation_reason") or ""),
+        "supervisor_tool_names": _tool_names(structured.get("supervisor_tool_calls")),
+        "specialist_tool_names": _tool_names(structured.get("specialist_tool_calls")),
+        "tool_names": _tool_names(structured.get("tool_calls")),
+    }
+
+
+def _tool_names(raw_calls: Any) -> list[str]:
+    if not isinstance(raw_calls, list):
+        return []
+    names: list[str] = []
+    for call in raw_calls:
+        if not isinstance(call, dict):
+            continue
+        name = str(call.get("name") or "").strip()
+        if name:
+            names.append(name)
+    return names
 
 
 def _token_usage(structured: dict[str, Any]) -> dict[str, int]:

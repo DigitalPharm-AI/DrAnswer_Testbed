@@ -829,6 +829,9 @@ def test_agent_app_multiturn_mark_taken_tool_call(monkeypatch):
     assert payload["structured_payload"]["tools_executed"] is True
     assert payload["structured_payload"]["tool_results"][0]["tool_name"] == "mark_dose_taken"
     assert payload["structured_payload"]["message_flow"] == ["HumanMessage", "AIMessage(tool_calls)", "ToolMessage", "AIMessage(final_answer)"]
+    assert payload["structured_payload"]["routing_mode"] == "direct_tool"
+    assert payload["structured_payload"]["executed_by"] == "system_event_agent"
+    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "mark_dose_taken"
     assert tool_executor.calls[0]["name"] == "mark_dose_taken"
     assert {"mark_dose_taken", "recommend_diet"} <= set(provider.bound_tool_names)
 
@@ -845,7 +848,14 @@ def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_perm
     payload = response.json()
     assert payload["agent_name"] == "medication_agent"
     assert payload["decision_type"] == "tool_call"
+    assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
     assert payload["structured_payload"]["delegated_agent"] == "medication_agent"
+    assert payload["structured_payload"]["delegated_by"] == "system_event_agent"
+    assert payload["structured_payload"]["supervisor_agent"] == "system_event_agent"
+    assert payload["structured_payload"]["specialist_agent"] == "medication_agent"
+    assert payload["structured_payload"]["executed_by"] == "medication_agent"
+    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "call_medication_agent"
+    assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "mark_dose_taken"
     assert payload["structured_payload"]["tool_call"]["name"] == "mark_dose_taken"
     assert payload["structured_payload"]["tool_results"][0]["tool_name"] == "mark_dose_taken"
     assert payload["structured_payload"]["tool_results"][0]["status"] == "success"

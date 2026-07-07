@@ -25,6 +25,14 @@ def test_agent_trace_store_persists_redacted_costed_steps(monkeypatch):
             decision_type="nutrition_meal_recorded",
             structured_payload={
                 "elapsed_ms": 123,
+                "routing_mode": "delegated_agent",
+                "executed_by": "nutrition_management_agent",
+                "supervisor_agent": "system_event_agent",
+                "specialist_agent": "nutrition_management_agent",
+                "delegated_agent": "nutrition_management_agent",
+                "delegated_by": "system_event_agent",
+                "supervisor_tool_calls": [{"name": "call_nutrition_management_agent", "arguments": {"task": "record meal"}}],
+                "specialist_tool_calls": [{"name": "record_meal", "arguments": {"meal_type": "lunch"}}],
                 "token_usage": {"input_tokens": 1000, "output_tokens": 250},
                 "tool_calls": [
                     {
@@ -70,6 +78,18 @@ def test_agent_trace_store_persists_redacted_costed_steps(monkeypatch):
         assert [step.step_type for step in steps] == ["model_call", "tool_call", "final_response"]
         assert steps[1].tool_name == "record_meal"
         assert steps[1].side_effect_level == "write"
+        trace_metadata = json.loads(stored_trace.metadata_json)
+        model_step_metadata = json.loads(steps[0].metadata_json)
+        tool_step_metadata = json.loads(steps[1].metadata_json)
+        final_step_metadata = json.loads(steps[2].metadata_json)
+        assert trace_metadata["routing"]["routing_mode"] == "delegated_agent"
+        assert trace_metadata["routing"]["executed_by"] == "nutrition_management_agent"
+        assert trace_metadata["routing"]["supervisor_tool_names"] == ["call_nutrition_management_agent"]
+        assert trace_metadata["routing"]["specialist_tool_names"] == ["record_meal"]
+        assert model_step_metadata["routing"]["specialist_agent"] == "nutrition_management_agent"
+        assert tool_step_metadata["executed_by"] == "nutrition_management_agent"
+        assert tool_step_metadata["routing"]["routing_mode"] == "delegated_agent"
+        assert final_step_metadata["routing"]["delegated_agent"] == "nutrition_management_agent"
 
         raw_trace_text = json.dumps(payload, ensure_ascii=False)
         assert "patient-a" not in raw_trace_text

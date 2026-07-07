@@ -73,7 +73,7 @@ class MultiturnChatAgent:
             delegated_call = next((call for call in tool_calls if is_delegation_tool_call(call)), None)
             if delegated_call is not None:
                 delegated_response = await self._run_delegation(trace_id, request_payload, delegated_call)
-                return self._delegated_response(delegated_response, reason=delegation_reason(delegated_call))
+                return self._delegated_response(delegated_response, delegated_call=delegated_call, reason=delegation_reason(delegated_call))
             continuation_type = async_continuation_type(tool_calls)
             if continuation_type and context.get("execute_async_continuation") is not True and not any(
                 str(call.get("name") or "") == "mark_dose_taken" for call in tool_calls
@@ -85,8 +85,12 @@ class MultiturnChatAgent:
                     prompt_version_id=PROMPT_VERSION_ID,
                     decision_type="async_continuation_requested",
                     structured_payload={
+                        "routing_mode": "direct_async_continuation",
+                        "supervisor_agent": agent_name,
+                        "executed_by": agent_name,
                         "model_output": output,
                         "tool_calls": tool_calls,
+                        "supervisor_tool_calls": tool_calls,
                         "tool_results": [],
                         "tools_executed": False,
                         "message_flow": ["HumanMessage", "AIMessage(tool_calls)"],
@@ -103,6 +107,13 @@ class MultiturnChatAgent:
                 source_event_type="multiturn_chat",
                 payload=request_payload,
                 force_ae_after_positive_lookup=True,
+                routing_context={
+                    "routing_mode": "direct_async_continuation" if context.get("execute_async_continuation") is True else "direct_tool",
+                    "executed_by": agent_name,
+                    "supervisor_agent": agent_name,
+                    "supervisor_tool_names": [str(call.get("name") or "") for call in tool_calls],
+                    "tool_names": [str(call.get("name") or "") for call in tool_calls],
+                },
             )
             executed_ai_message = ai_message_from_tool_calls(executed_calls, content=str(ai_message.content or ""), model_output=output) if executed_calls else ai_message
             tool_messages = tool_messages_from_results(executed_ai_message, executed_calls, results)
@@ -120,6 +131,10 @@ class MultiturnChatAgent:
         if executed_calls:
             decision_type = "side_effect_assessment" if any(call.get("name") in {"lookup_side_effect_info", "AE_pro_ctcae"} for call in executed_calls) else "tool_call"
             structured_payload = {
+                "routing_mode": "direct_tool",
+                "supervisor_agent": agent_name,
+                "executed_by": agent_name,
+                "supervisor_tool_calls": executed_calls,
                 "model_output": output,
                 **tool_calls_payload(executed_calls, results),
                 "tool_messages": [
@@ -153,6 +168,10 @@ class MultiturnChatAgent:
             prompt_version_id=PROMPT_VERSION_ID,
             decision_type="system_guidance",
             structured_payload={
+                "routing_mode": "direct_answer",
+                "supervisor_agent": agent_name,
+                "executed_by": agent_name,
+                "supervisor_tool_calls": [],
                 "observations": string_list(output.get("observations")),
                 "model_output": output,
                 "tool_calls": [],
@@ -175,11 +194,18 @@ class MultiturnChatAgent:
         raise ValueError(f"unsupported_delegation_target:{target or 'unknown'}")
 
     @staticmethod
-    def _delegated_response(delegated_response: AgentResponse, *, reason: str = "") -> AgentResponse:
+    def _delegated_response(delegated_response: AgentResponse, *, delegated_call: dict[str, Any], reason: str = "") -> AgentResponse:
         structured = dict(delegated_response.structured_payload)
+        specialist_tool_calls = structured.get("tool_calls") if isinstance(structured.get("tool_calls"), list) else []
+        structured["routing_mode"] = "delegated_agent"
+        structured["supervisor_agent"] = "system_event_agent"
+        structured["specialist_agent"] = delegated_response.agent_name
+        structured["executed_by"] = delegated_response.agent_name
         structured["delegated_agent"] = delegated_response.agent_name
         structured["delegation_reason"] = reason
         structured["delegated_by"] = "system_event_agent"
+        structured["supervisor_tool_calls"] = [delegated_call]
+        structured["specialist_tool_calls"] = specialist_tool_calls
         return AgentResponse(
             trace_id=delegated_response.trace_id,
             agent_name=delegated_response.agent_name,

@@ -119,6 +119,49 @@ def test_tool_runtime_delegates_permission_decisions_to_executor_boundary():
     assert results[0].status == "success"
 
 
+def test_tool_runtime_logs_routing_context(monkeypatch):
+    events: list[dict] = []
+
+    class CapturingExecutor:
+        async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
+            return ToolCallResult(
+                tool_name=str(tool_call.get("name") or "unknown"),
+                status="success",
+                response={"ok": True},
+                idempotency_key=f"{trace_id}:delegated",
+            )
+
+    def capture_log(event: str, **fields):
+        events.append({"event": event, **fields})
+
+    monkeypatch.setattr("agent_app.tool_runtime.trace_logging.log_info", capture_log)
+
+    runtime = ToolRuntime(CapturingExecutor())
+    asyncio.run(
+        runtime.execute(
+            [{"name": "mark_dose_taken", "arguments": {"dose_event_id": 12}}],
+            trace_id="routing-log-trace",
+            source_event_type="multiturn_chat",
+            payload={},
+            routing_context={
+                "routing_mode": "delegated_agent",
+                "executed_by": "medication_agent",
+                "supervisor_agent": "system_event_agent",
+                "specialist_agent": "medication_agent",
+                "supervisor_tool_names": ["call_medication_agent"],
+                "specialist_tool_names": ["mark_dose_taken"],
+            },
+        )
+    )
+
+    started = next(event for event in events if event["event"] == "agent_tool_call_started")
+
+    assert started["routing"]["routing_mode"] == "delegated_agent"
+    assert started["routing"]["executed_by"] == "medication_agent"
+    assert started["routing"]["supervisor_tool_names"] == ["call_medication_agent"]
+    assert started["routing"]["specialist_tool_names"] == ["mark_dose_taken"]
+
+
 def test_trace_retention_policy_is_single_source_for_logs_view():
     assert observability_view.TRACE_RETENTION_POLICY is trace_retention.TRACE_RETENTION_POLICY
     assert observability_view._trace_retention_dry_run_count.__module__ == "system_app.services.observability_view"
