@@ -71,7 +71,7 @@ def copy_for_agent_error(error_type: str, *, source_event_type: str = "") -> Fai
             title="AI 서버와 연결하지 못했습니다",
             body="AI가 대화를 처리하지 못했습니다. 복약과 식사 기록은 저장되어 있어요. 잠시 후 다시 시도해주세요.",
         )
-    if error_type in {"provider_request_failed", "agent_response_invalid", "payload_validation_failed"}:
+    if error_type in {"provider_request_failed", "agent_response_invalid", "payload_validation_failed", "llm_output_validation_failed"}:
         return FailureCopy(
             title="AI 답변 생성에 실패했습니다",
             body="AI가 대화를 처리하지 못했습니다. 안전한 기본 안내만 유지하고, 잠시 후 다시 시도해주세요.",

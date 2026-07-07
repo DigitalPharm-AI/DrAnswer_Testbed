@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
@@ -24,6 +25,7 @@ from agent_app.chat_tooling import (
     system_prompt_from_messages,
     tool_results_from_messages,
 )
+from agent_app.errors import AgentExecutionError
 from agent_app.graph import AgentLangGraphNativeOrchestrator
 from agent_app.output_validation import validate_llm_output
 from agent_app.providers import BaseLLMProvider, RuleBasedProvider
@@ -776,7 +778,7 @@ def test_agent_app_missed_dose_endpoint_is_system_compatible(monkeypatch):
     assert "45 characters or fewer" in provider.seen_prompts[0]
 
 
-def test_missed_dose_output_validator_falls_back_when_hybrid_required(monkeypatch):
+def test_missed_dose_output_validator_fails_when_hybrid_required(monkeypatch):
     provider = InvalidMissedDoseHybridProvider()
     orchestrator = AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=NativeFakeToolExecutor())
     payload = build_missed_payload().model_copy(
@@ -786,15 +788,12 @@ def test_missed_dose_output_validator_falls_back_when_hybrid_required(monkeypatc
         }
     )
 
-    response = asyncio.run(orchestrator.invoke("missed_dose", payload.model_dump(mode="json")))
+    with pytest.raises(AgentExecutionError) as exc_info:
+        asyncio.run(orchestrator.invoke("missed_dose", payload.model_dump(mode="json")))
 
-    structured = response.structured_payload
-    hybrid = structured["missed_dose_hybrid"]
-    assert hybrid["generated_message"] == "복약 루틴을 함께 맞춰봐요. 지금 확인해보세요."
-    assert hybrid["reason"] == "LLM 출력 검증 실패로 안전 기본 문구를 사용했습니다."
-    assert hybrid["pattern_code"] == "B"
-    assert hybrid["tone_key"] == "persuasion"
-    assert "validation_error" in structured["model_output"]
+    assert exc_info.value.error_type == "llm_output_validation_failed"
+    assert exc_info.value.agent_name == "missed_dose_coach"
+    assert exc_info.value.decision_type == "missed_dose_assessment"
 
 
 def test_missed_dose_tool_permission_blocks_mark_taken(monkeypatch):

@@ -32,7 +32,7 @@ def natural_chat_summary(output: dict[str, Any]) -> str:
         text = text_field(output.get(key))
         if text:
             return text
-    return "최근 대화 맥락을 확인했습니다. 어떤 부분을 다시 보고 싶은지 조금만 더 구체적으로 말씀해 주세요."
+    return ""
 
 
 def missed_dose_hybrid_payload(output: dict[str, Any]) -> dict[str, Any]:

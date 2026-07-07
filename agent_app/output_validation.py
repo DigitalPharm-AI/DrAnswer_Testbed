@@ -134,39 +134,6 @@ def validate_llm_output(decision_type: str, output: dict[str, Any], payload: dic
     return output
 
 
-def safe_fallback_output(decision_type: str, payload: dict[str, Any], validation_error: Exception) -> dict[str, Any]:
-    reason = f"{type(validation_error).__name__}: {validation_error}"
-    if decision_type == "pattern_analysis":
-        return {
-            "summary": "복약 패턴을 확인했습니다.",
-            "observations": ["llm_output_validation_fallback"],
-            "validation_error": reason,
-        }
-    if decision_type == "missed_dose_assessment":
-        tone_key = _tone_key(payload)
-        pattern_code = _pattern_code(payload)
-        return {
-            "patient_message": "복약 루틴을 함께 맞춰봐요. 지금 확인해보세요.",
-            "likely_reason": "unknown",
-            "side_effect_signal": False,
-            "follow_up_questions": ["현재 복용 가능하신 상태인가요?"],
-            "recommendation": "복용 가능 여부와 미복용 이유를 먼저 확인하세요.",
-            "missed_dose_hybrid": {
-                "reason": "LLM 출력 검증 실패로 안전 기본 문구를 사용했습니다.",
-                "generated_message": "복약 루틴을 함께 맞춰봐요. 지금 확인해보세요.",
-                "pattern_code": pattern_code,
-                "tone_key": tone_key,
-                "safety_notes": ["fallback", "no_medication_name", "no_diagnosis", "non_directive"],
-            },
-            "validation_error": reason,
-        }
-    return {
-        "message": "요청을 확인했습니다. 잠시 후 다시 안내할게요.",
-        "observations": ["llm_output_validation_fallback"],
-        "validation_error": reason,
-    }
-
-
 def _validate_missed_dose_contextual_requirements(output: dict[str, Any], payload: dict[str, Any]) -> None:
     if not (_has_context(payload, "tone_policy_context") or _has_context(payload, "adherence_pattern_context")):
         return
@@ -178,13 +145,3 @@ def _validate_missed_dose_contextual_requirements(output: dict[str, Any], payloa
 
 def _has_context(payload: dict[str, Any], key: str) -> bool:
     return isinstance(payload.get(key), dict) and bool(payload.get(key))
-
-
-def _tone_key(payload: dict[str, Any]) -> str:
-    context = payload.get("tone_policy_context") if isinstance(payload.get("tone_policy_context"), dict) else {}
-    return str(context.get("tone_key") or "")
-
-
-def _pattern_code(payload: dict[str, Any]) -> str:
-    context = payload.get("adherence_pattern_context") if isinstance(payload.get("adherence_pattern_context"), dict) else {}
-    return str(context.get("pattern_code") or "")
