@@ -224,6 +224,7 @@ def food_selection_view(metadata: dict, message_id: int) -> dict | None:
         "selected_food": payload.get("selected_food"),
         "portion_g": payload.get("portion_g"),
         "meal_type": payload.get("meal_type"),
+        "default_meal_type": payload.get("default_meal_type", ""),
         "foods_queue": foods_queue,
         "confirmed_foods": confirmed_foods,
         "total_foods": len(confirmed_foods) + len(foods_queue) + 1,

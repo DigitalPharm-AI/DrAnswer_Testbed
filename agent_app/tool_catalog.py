@@ -61,11 +61,16 @@ class ToolCatalog:
                 "title": "Search Food Nutrition",
                 "description": "음식명으로 샘플 음식 영양 후보를 검색합니다. 식사 기록 전에 음식명이 불명확하거나 후보 확인이 필요할 때 사용합니다.",
                 "required_arguments": ["query"],
-                "optional_arguments": ["limit"],
+                "optional_arguments": ["limit", "meal_type"],
                 "inputSchema": _object_schema(
                     {
                         "query": {"type": "string", "description": "검색할 음식명"},
-                        "limit": {"type": "integer", "description": "최대 후보 개수"},
+                        "limit": {"type": "integer", "description": "최대 후보 개수. 기본값은 6입니다."},
+                        "meal_type": {
+                            "type": "string",
+                            "enum": ["breakfast", "lunch", "dinner", "snack"],
+                            "description": "사용자 발화에 아침/점심/저녁/간식 식사 종류가 명확할 때 UI 기본 선택값으로 전달합니다.",
+                        },
                     },
                     ["query"],
                 ),

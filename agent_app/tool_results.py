@@ -15,7 +15,9 @@ def tool_calls_payload(tool_calls: list[dict[str, Any]], results: list[ToolCallR
     }
     if tool_calls:
         payload["tool_call"] = tool_calls[0]
+    tool_argument_queues = _tool_argument_queues(tool_calls)
     for result in results:
+        call_arguments = _next_tool_arguments(tool_argument_queues, result.tool_name)
         if result.tool_name == "AE_pro_ctcae" and result.status == "success":
             payload["ae_pro_ctcae"] = result.response
         elif result.tool_name == "lookup_side_effect_info":
@@ -38,9 +40,12 @@ def tool_calls_payload(tool_calls: list[dict[str, Any]], results: list[ToolCallR
         elif result.tool_name == "list_meals" and result.status == "success":
             payload["nutrition_meals"] = result.response.get("meals", [])
         elif result.tool_name == "search_food_nutrition" and result.status == "success":
+            meal_type = _valid_meal_type(result.response.get("meal_type") or call_arguments.get("meal_type"))
             search_entry = {
                 "query": result.response.get("query", ""),
                 "candidates": result.response.get("candidates", []),
+                "meal_type": meal_type,
+                "limit": result.response.get("limit") or call_arguments.get("limit") or 6,
             }
             if "food_searches" not in payload:
                 payload["food_searches"] = []
@@ -64,6 +69,31 @@ def tool_calls_payload(tool_calls: list[dict[str, Any]], results: list[ToolCallR
         elif result.tool_name == "apply_system_policy" and result.status == "success":
             payload["system_policy_apply_result"] = result.response
     return payload
+
+
+def _tool_argument_queues(tool_calls: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    queues: dict[str, list[dict[str, Any]]] = {}
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            continue
+        name = str(call.get("name") or call.get("tool_name") or "")
+        arguments = call.get("arguments") if isinstance(call.get("arguments"), dict) else call.get("args")
+        if not name or not isinstance(arguments, dict):
+            continue
+        queues.setdefault(name, []).append(arguments)
+    return queues
+
+
+def _next_tool_arguments(queues: dict[str, list[dict[str, Any]]], tool_name: str) -> dict[str, Any]:
+    queue = queues.get(tool_name)
+    if not queue:
+        return {}
+    return queue.pop(0)
+
+
+def _valid_meal_type(value: Any) -> str:
+    text = str(value or "")
+    return text if text in {"breakfast", "lunch", "dinner", "snack"} else ""
 
 
 def tool_result_summary(results: list[ToolCallResult], fallback: str) -> str:

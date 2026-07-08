@@ -270,6 +270,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
                 fs["candidates"] = next_search.get("candidates", [])
                 fs["selected_food"] = None
                 fs["portion_g"] = None
+                fs["default_meal_type"] = next_search.get("meal_type", "") or fs.get("default_meal_type", "")
                 fs["meal_type"] = None
             else:
                 # 모든 음식 처리 완료 → 한꺼번에 기록

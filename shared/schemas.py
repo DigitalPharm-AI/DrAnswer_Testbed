@@ -381,7 +381,8 @@ class NutritionFoodPayload(BaseModel):
 class NutritionFoodSearchRequest(BaseModel):
     query: str
     patient_id: str | None = None
-    limit: int = Field(default=10, ge=1, le=20)
+    limit: int = Field(default=6, ge=1, le=20)
+    meal_type: Literal["breakfast", "lunch", "dinner", "snack"] | None = None
 
 
 class NutritionMealRecordRequest(BaseModel):
@@ -487,6 +488,8 @@ class NutritionFoodSearchResult(BaseModel):
     source: str = "sample"
     error: str = ""
     query: str = ""
+    meal_type: str = ""
+    limit: int = 6
 
 
 class NutritionPreferenceFactRequest(BaseModel):

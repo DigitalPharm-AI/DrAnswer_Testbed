@@ -92,6 +92,8 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
         return "AE_pro_ctcae requires symptom_text or symptom_normalize"
     if tool_name == "search_food_nutrition" and not str(arguments.get("query") or "").strip():
         return "search_food_nutrition requires query"
+    if tool_name == "search_food_nutrition" and arguments.get("meal_type") not in {None, "", "breakfast", "lunch", "dinner", "snack"}:
+        return "search_food_nutrition requires supported meal_type"
     if tool_name == "record_meal":
         if arguments.get("meal_type") not in {"breakfast", "lunch", "dinner", "snack"}:
             return "record_meal requires meal_type"

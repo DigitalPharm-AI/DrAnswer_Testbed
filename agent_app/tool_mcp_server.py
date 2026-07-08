@@ -191,8 +191,9 @@ class AgentMcpToolServer:
     async def _search_food_nutrition(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
         request_payload = {
             "query": arguments.get("query", ""),
-            "limit": arguments.get("limit", 10),
+            "limit": arguments.get("limit", 6),
             "patient_id": arguments.get("patient_id") or payload.get("patient_id"),
+            "meal_type": arguments.get("meal_type"),
         }
         async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
             response = await client.post(

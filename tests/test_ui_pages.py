@@ -540,6 +540,51 @@ def test_chat_panel_renders_diet_recommendation_cards():
             session.commit()
 
 
+def test_food_grams_card_selects_default_meal_type_hint():
+    client = TestClient(app)
+
+    with SessionLocal() as session:
+        session.query(ChatMessage).delete()
+        ensure_base_data(session)
+        add_chat_message(
+            session,
+            role="assistant",
+            content="음식 후보를 찾았습니다.",
+            sender_type="assistant",
+            category="multiturn_chat",
+            metadata={
+                "food_selection": {
+                    "stage": "awaiting_grams",
+                    "query": "피자",
+                    "candidates": [],
+                    "selected_food": {
+                        "food_ref_id": "pizza-ref",
+                        "food_name": "피자",
+                        "serving_size": 120,
+                        "nutrients": {"energy": {"value": 300, "unit": "kcal"}},
+                    },
+                    "portion_g": None,
+                    "meal_type": None,
+                    "default_meal_type": "dinner",
+                    "foods_queue": [],
+                    "confirmed_foods": [],
+                }
+            },
+        )
+        session.commit()
+
+    try:
+        response = client.get("/partials/chat")
+
+        assert response.status_code == 200
+        assert 'option value="dinner" selected' in response.text
+        assert 'option value="lunch" selected' not in response.text
+    finally:
+        with SessionLocal() as session:
+            session.query(ChatMessage).delete()
+            session.commit()
+
+
 def test_chat_log_partial_keeps_latest_messages_after_history_limit():
     client = TestClient(app)
 

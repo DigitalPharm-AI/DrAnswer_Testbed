@@ -42,6 +42,8 @@ NUTRITION_WRITE_TOOL_NAMES = {
     "update_nutrition_food",
     "delete_nutrition_food",
 }
+FOOD_SELECTION_CANDIDATE_LIMIT = 6
+SUPPORTED_MEAL_TYPES = {"breakfast", "lunch", "dinner", "snack"}
 
 
 def ae_pro_ctcae_payload(response: AgentResponse) -> dict | None:
@@ -102,9 +104,15 @@ def food_selection_chat_metadata(response: AgentResponse) -> dict:
             return {}
         tool_call = response.structured_payload.get("tool_call")
         query = ""
+        meal_type = ""
         if isinstance(tool_call, dict) and tool_call.get("name") == "search_food_nutrition":
-            query = str(tool_call.get("input", {}).get("query", "") or tool_call.get("arguments", {}).get("query", ""))
-        food_searches = [{"query": query, "candidates": candidates}]
+            arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else tool_call.get("input", {})
+            query = str(arguments.get("query", "")) if isinstance(arguments, dict) else ""
+            meal_type = _valid_meal_type(arguments.get("meal_type")) if isinstance(arguments, dict) else ""
+        food_searches = [{"query": query, "candidates": candidates, "meal_type": meal_type}]
+    food_searches = [_food_search_entry(row) for row in food_searches if isinstance(row, dict)]
+    if not food_searches:
+        return {}
 
     first = food_searches[0]
     return {
@@ -115,10 +123,25 @@ def food_selection_chat_metadata(response: AgentResponse) -> dict:
             "selected_food": None,
             "portion_g": None,
             "meal_type": None,
+            "default_meal_type": first.get("meal_type", ""),
             "foods_queue": food_searches[1:],
             "confirmed_foods": [],
         }
     }
+
+
+def _food_search_entry(row: dict) -> dict:
+    candidates = row.get("candidates") if isinstance(row.get("candidates"), list) else []
+    return {
+        "query": row.get("query", ""),
+        "candidates": candidates[:FOOD_SELECTION_CANDIDATE_LIMIT],
+        "meal_type": _valid_meal_type(row.get("meal_type")),
+    }
+
+
+def _valid_meal_type(value) -> str:
+    text = str(value or "")
+    return text if text in SUPPORTED_MEAL_TYPES else ""
 
 
 def has_successful_nutrition_write(response: AgentResponse) -> bool:

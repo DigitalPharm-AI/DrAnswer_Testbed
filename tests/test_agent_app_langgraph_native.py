@@ -45,7 +45,7 @@ from agent_app.tool_protocol import (
     mcp_tools_list,
     tool_result_from_mcp_result,
 )
-from agent_app.tool_results import tool_result_summary
+from agent_app.tool_results import tool_calls_payload, tool_result_summary
 from agent_app.tool_side_effects import ae_tool_call_from_lookup
 from shared.schemas import AgentCallbackContext, DailyMedicationPattern, DosePatternEvent, MissedDoseEventPayload, MultiturnChatRequest, SlotAdherenceSummary, ToolCallResult
 from shared.settings import get_settings
@@ -927,6 +927,33 @@ def test_tool_call_validation_accepts_tool_name_alias():
             "arguments": {"query": "마라탕"},
         }
     ]
+
+
+def test_tool_calls_payload_keeps_food_search_meal_type_hint():
+    candidates = [
+        {"food_ref_id": f"food-{index}", "food_name": f"food {index}", "nutrients": {}}
+        for index in range(8)
+    ]
+
+    payload = tool_calls_payload(
+        [
+            {
+                "name": "search_food_nutrition",
+                "arguments": {"query": "pizza", "limit": 6, "meal_type": "dinner"},
+            }
+        ],
+        [
+            ToolCallResult(
+                tool_name="search_food_nutrition",
+                status="success",
+                response={"success": True, "query": "pizza", "candidates": candidates},
+            )
+        ],
+    )
+
+    assert payload["food_searches"][0]["query"] == "pizza"
+    assert payload["food_searches"][0]["meal_type"] == "dinner"
+    assert payload["food_searches"][0]["limit"] == 6
 
 
 def test_agent_app_mcp_direct_call_enforces_default_tool_allowlist():

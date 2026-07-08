@@ -167,11 +167,12 @@
                 <label>섭취량 (g)</label>
                 <input type="number" name="portion_g" min="1" max="2000" required value="{{ fs.selected_food.serving_size | int }}">
                 <label>식사 종류</label>
+                {% set selected_meal_type = fs.meal_type or fs.default_meal_type or "lunch" %}
                 <select name="meal_type" required>
-                  <option value="breakfast">아침</option>
-                  <option value="lunch">점심</option>
-                  <option value="dinner">저녁</option>
-                  <option value="snack">간식</option>
+                  <option value="breakfast" {% if selected_meal_type == "breakfast" %}selected{% endif %}>아침</option>
+                  <option value="lunch" {% if selected_meal_type == "lunch" %}selected{% endif %}>점심</option>
+                  <option value="dinner" {% if selected_meal_type == "dinner" %}selected{% endif %}>저녁</option>
+                  <option value="snack" {% if selected_meal_type == "snack" %}selected{% endif %}>간식</option>
                 </select>
                 <button type="submit">다음</button>
               </form>
