@@ -850,9 +850,17 @@ def test_styles_make_top_time_value_larger_and_lock_submitted_replies():
     assert "getChatComposerFromRequestEvent" in chat_scroll_script
     assert "getChatLogSignature" in chat_scroll_script
     assert "chatLogChanged" in chat_scroll_script
+    assert "restoreChatLogScrollAfterLayout" in chat_scroll_script
+    assert "setTimeout" in chat_scroll_script
     assert "form.reset()" in chat_scroll_script
     assert "lockSubmittedReplyForm" in script
     assert "showAgentProcessing" in script
+    assert "installChatComposerPendingIndicator()" in script
+    assert "data-local-pending-agent" in script
+    assert "htmx:afterSwap" in script
+    assert "chatLogNeedsPending" in script
+    assert "localChatPendingActive" in script
+    assert "syncLocalPending" in script
     assert "createPolicyConfirmationRenderer" in script
     assert "after_id=${state.lastSeenId}&_=${Date.now()}" in script
     assert "policyChoicePayload" in policy_script
@@ -873,9 +881,13 @@ def test_styles_make_top_time_value_larger_and_lock_submitted_replies():
     assert ".chat-page-shell" in styles
     assert "max-width: none" in styles
     assert ".chat-action-card" in agent_styles
+    assert "overflow-anchor: none" in agent_styles
     panel_refresher = open("system_app/static/notifications/panels.js", encoding="utf-8").read()
     assert "data-agent-processing" in panel_refresher
     assert "cacheBustedUrl" in panel_refresher
+    assert "dispatchLifecycleEvent" in panel_refresher
+    assert "htmx:beforeSwap" in panel_refresher
+    assert "htmx:afterSwap" in panel_refresher
     assert 'replacePanel("/partials/chat", "#chat-panel")' in panel_refresher
     assert 'replacePanel("/partials/chat-log", "#chat-log-region")' in panel_refresher
     assert "return Promise.all" in panel_refresher

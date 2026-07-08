@@ -62,6 +62,7 @@
   max-height: min(520px, 56vh);
   overflow-y: auto;
   overscroll-behavior: contain;
+  overflow-anchor: none;
   gap: 10px;
   padding: 12px 10px 14px;
   scrollbar-gutter: stable;

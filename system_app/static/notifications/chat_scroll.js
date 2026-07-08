@@ -60,6 +60,38 @@ function restoreChatLogScroll(state) {
   chatLog.scrollTop = Math.max(0, restoredTop || state.chatScroll.scrollTop);
 }
 
+function scrollChatLogToBottom() {
+  const chatLog = getChatLogElement();
+  if (!chatLog) {
+    return;
+  }
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function restoreChatLogScrollAfterLayout(state) {
+  const before = getChatLogElement();
+  const currentSignature = getChatLogSignature();
+  const shouldStickToBottom = Boolean(
+    state.chatScrollForceBottom ||
+      !state.chatScroll ||
+      (state.chatScroll.signature && currentSignature !== state.chatScroll.signature) ||
+      state.chatScroll.wasAtBottom ||
+      !state.chatScroll.hadOverflow,
+  );
+  restoreChatLogScroll(state);
+  window.requestAnimationFrame(() => {
+    if (shouldStickToBottom || state.chatScrollForceBottom) {
+      scrollChatLogToBottom();
+      state.chatScrollForceBottom = false;
+      return;
+    }
+    restoreChatLogScroll(state);
+  });
+  if (shouldStickToBottom || (before && before.isConnected === false)) {
+    window.setTimeout(scrollChatLogToBottom, 80);
+  }
+}
+
 function isChatComposerSubmitEvent(event) {
   return Boolean(event.target && event.target.classList && event.target.classList.contains("chat-composer"));
 }
@@ -122,9 +154,9 @@ export function installChatLogScrollPreserver(state) {
 
   document.body.addEventListener("htmx:afterSwap", (event) => {
     if (isChatLogRefreshEvent(event)) {
-      window.requestAnimationFrame(() => restoreChatLogScroll(state));
+      restoreChatLogScrollAfterLayout(state);
     }
   });
 
-  window.requestAnimationFrame(() => restoreChatLogScroll(state));
+  window.requestAnimationFrame(() => restoreChatLogScrollAfterLayout(state));
 }

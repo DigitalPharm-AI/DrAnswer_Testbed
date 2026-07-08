@@ -207,6 +207,120 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
     restoreDraft();
   }
 
+  function installChatComposerPendingIndicator() {
+    function isSystemChatForm(form) {
+      const action = form.getAttribute("action") || form.getAttribute("hx-post") || "";
+      return action.includes("/chat/system");
+    }
+
+    function removeLocalPending() {
+      for (const row of document.querySelectorAll("[data-local-pending-agent='true']")) {
+        row.remove();
+      }
+    }
+
+    function appendLocalPending(force = false) {
+      const chatLog = document.querySelector("[data-chat-scroll-region]");
+      if (!(chatLog instanceof HTMLElement) || (!force && !chatLogNeedsPending(chatLog))) {
+        return;
+      }
+      if (chatLog.querySelector("[data-local-pending-agent='true']")) {
+        return;
+      }
+      const article = document.createElement("article");
+      article.className = "chat-message assistant multiturn_chat from-ai multi-turn-bubble pending-response local-pending-response";
+      article.dataset.localPendingAgent = "true";
+      article.innerHTML = `
+        <div class="chat-role">
+          <span>AI</span>
+          <span class="chat-category">대화</span>
+        </div>
+        <div class="chat-content chat-pending-content" aria-live="polite">
+          <span class="progress-round" aria-hidden="true"></span>
+          <span>답변 생성 중</span>
+        </div>
+      `;
+      chatLog.appendChild(article);
+      state.chatScrollForceBottom = true;
+      chatLog.scrollTop = chatLog.scrollHeight;
+      window.requestAnimationFrame(() => {
+        chatLog.scrollTop = chatLog.scrollHeight;
+      });
+    }
+
+    function chatLogNeedsPending(chatLog) {
+      if (chatLog.querySelector(".pending-response:not([data-local-pending-agent='true'])")) {
+        return false;
+      }
+      const messages = chatLog.querySelectorAll(".chat-message:not([data-local-pending-agent='true'])");
+      const lastMessage = messages[messages.length - 1];
+      return lastMessage instanceof HTMLElement && !lastMessage.classList.contains("from-ai");
+    }
+
+    function hasAssistantAfterLatestUser(chatLog) {
+      const messages = Array.from(chatLog.querySelectorAll(".chat-message:not([data-local-pending-agent='true'])"));
+      let latestUserIndex = -1;
+      messages.forEach((message, index) => {
+        if (message.classList.contains("from-user")) {
+          latestUserIndex = index;
+        }
+      });
+      if (latestUserIndex < 0) {
+        return false;
+      }
+      return messages
+        .slice(latestUserIndex + 1)
+        .some((message) => message.classList.contains("from-ai") && !message.classList.contains("pending-response"));
+    }
+
+    function syncLocalPending() {
+      const chatLog = document.querySelector("[data-chat-scroll-region]");
+      if (!(chatLog instanceof HTMLElement)) {
+        return;
+      }
+      if (hasAssistantAfterLatestUser(chatLog)) {
+        state.localChatPendingActive = false;
+        removeLocalPending();
+        return;
+      }
+      if (chatLog.querySelector(".pending-response:not([data-local-pending-agent='true'])")) {
+        removeLocalPending();
+        state.chatScrollForceBottom = true;
+        return;
+      }
+      if (state.localChatPendingActive) {
+        appendLocalPending();
+      }
+    }
+
+    document.body.addEventListener("submit", (event) => {
+      const form = event.target;
+      if (form instanceof HTMLFormElement && form.classList.contains("chat-composer") && isSystemChatForm(form)) {
+        state.localChatPendingActive = true;
+        appendLocalPending(true);
+      }
+    });
+
+    document.body.addEventListener("htmx:beforeRequest", (event) => {
+      const form = event.detail && event.detail.elt;
+      if (form instanceof HTMLFormElement && form.classList.contains("chat-composer") && isSystemChatForm(form)) {
+        state.localChatPendingActive = true;
+        appendLocalPending(true);
+      }
+    });
+
+    document.body.addEventListener("htmx:afterSwap", (event) => {
+      syncLocalPending();
+    });
+
+    document.body.addEventListener("htmx:afterRequest", (event) => {
+      if (event.detail && event.detail.failed) {
+        state.localChatPendingActive = false;
+        removeLocalPending();
+      }
+    });
+  }
+
   function installNutritionScenarioRefresh() {
     document.body.addEventListener("htmx:afterRequest", (event) => {
       const source = event.detail && event.detail.elt;
@@ -646,6 +760,7 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
   installAppTabs();
   installChatComposerShortcuts();
   installChatDraftPersistence();
+  installChatComposerPendingIndicator();
   installNutritionScenarioRefresh();
   installChatLogScrollPreserver(state);
   installReplyFormSubmitLock();

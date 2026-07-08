@@ -5,6 +5,27 @@ function cacheBustedUrl(path) {
   return `${path}${separator}_=${Date.now()}`;
 }
 
+function htmxDetail(source, target, response, extra = {}) {
+  return {
+    elt: source,
+    target,
+    xhr: {
+      status: response.status,
+      getResponseHeader: (name) => response.headers.get(name),
+    },
+    failed: !response.ok,
+    successful: response.ok,
+    ...extra,
+  };
+}
+
+function dispatchLifecycleEvent(name, element, detail) {
+  if (!element) {
+    return true;
+  }
+  return element.dispatchEvent(new CustomEvent(name, { bubbles: true, cancelable: true, detail }));
+}
+
 export function createPanelRefresher({ stack, updatePopup }) {
   function chatComposerSnapshot(targetSelector) {
     if (targetSelector !== "#chat-panel") {
@@ -57,7 +78,18 @@ export function createPanelRefresher({ stack, updatePopup }) {
     }
     const html = await response.text();
     const composerSnapshot = chatComposerSnapshot(targetSelector);
+    const beforeDetail = htmxDetail(target, target, response, { serverResponse: html });
+    if (!dispatchLifecycleEvent("htmx:beforeSwap", target, beforeDetail)) {
+      restoreChatComposer(composerSnapshot);
+      return false;
+    }
     target.outerHTML = html;
+    const replacement = document.querySelector(targetSelector);
+    dispatchLifecycleEvent(
+      "htmx:afterSwap",
+      replacement || document.body,
+      htmxDetail(target, replacement || target, response, { serverResponse: html }),
+    );
     restoreChatComposer(composerSnapshot);
     return true;
   }
