@@ -6,6 +6,7 @@ from datetime import date, datetime
 from fastapi.testclient import TestClient
 
 import system_app.main as system_main
+import system_app.routes.notifications as notifications_routes
 from shared.schemas import AgentResponse, MissedDoseEventPayload, PhrPatientRegistrationResult, PhrRegisteredMedication
 from shared.settings import get_settings
 from system_app.db import SessionLocal
@@ -1601,8 +1602,15 @@ def test_policy_confirmation_decrease_prompt_shows_decrease_choice_in_chat():
     assert "늘리기" not in partial_response.text
 
 
-def test_agent_error_notification_can_retry_failed_job():
+def test_agent_error_notification_can_retry_failed_job(monkeypatch):
     client = TestClient(app)
+    retry_calls = []
+
+    async def fake_post_agent_task_action(request_id: str, action: str, reason: str = ""):
+        retry_calls.append((request_id, action, reason))
+        return {"success": True}
+
+    monkeypatch.setattr(notifications_routes, "post_agent_task_action", fake_post_agent_task_action)
 
     with SessionLocal() as session:
         ensure_base_data(session)
@@ -1626,7 +1634,7 @@ def test_agent_error_notification_can_retry_failed_job():
             title="AI 에이전트 오류",
             body="다시 시도할 수 있습니다.",
             visible_at=clock.current_time,
-            metadata={"agent_job_id": job.id},
+            metadata={"agent_job_id": job.id, "request_id": "missed_dose:conversation:retry-test"},
         )
         job_id = job.id
         notification_id = notification.id
@@ -1642,3 +1650,6 @@ def test_agent_error_notification_can_retry_failed_job():
         assert refreshed_job.status == PENDING
         assert refreshed_notification is not None
         assert refreshed_notification.acknowledged is True
+    assert retry_calls == [
+        ("missed_dose:conversation:retry-test", "retry", "retry from agent error notification")
+    ]

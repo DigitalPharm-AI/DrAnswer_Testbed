@@ -98,6 +98,10 @@ NOTIFICATION_TYPE_LABELS = {
     "agent_error": "AI 오류",
 }
 HIDDEN_DELIVERY_CHANNELS = {"chat_only", "internal_only"}
+CHAT_SORT_SOURCE_MESSAGE = 0
+CHAT_SORT_SOURCE_PROMPT = 1
+CHAT_SORT_SOURCE_PENDING = 2
+CHAT_SORT_SOURCE_HISTORY = 3
 
 
 def is_patient_visible_notification_metadata(metadata: dict) -> bool:
@@ -242,6 +246,8 @@ def chat_message_view(message) -> dict:
         "id": message.id,
         "sort_at": message.created_at,
         "sort_order": 0,
+        "sort_source": CHAT_SORT_SOURCE_MESSAGE,
+        "sort_sequence": message.id,
         "pending": False,
         "classes": " ".join(classes),
         "role_label": "User" if from_user else "AI" if from_ai else "알림",
@@ -296,6 +302,8 @@ def pending_agent_chat_views(session: Session, current_time: datetime) -> list[d
                 "id": f"pending-agent-{row.id}",
                 "sort_at": row.created_at,
                 "sort_order": 1,
+                "sort_source": CHAT_SORT_SOURCE_PENDING,
+                "sort_sequence": row.id,
                 "pending": True,
                 "classes": "assistant multiturn_chat from-ai multi-turn-bubble pending-response",
                 "role_label": "AI",
@@ -359,6 +367,8 @@ def missing_chat_prompt_views(session: Session, current_time: datetime) -> list[
                 "id": f"conversation-alert-{notification.id}",
                 "sort_at": notification.created_at,
                 "sort_order": 0,
+                "sort_source": CHAT_SORT_SOURCE_PROMPT,
+                "sort_sequence": notification.id,
                 "pending": False,
                 "classes": f"assistant {category} from-ai one-way-alert",
                 "role_label": "AI",
@@ -380,10 +390,19 @@ def missing_chat_prompt_views(session: Session, current_time: datetime) -> list[
     return views
 
 def sorted_chat_views(views: list[dict]) -> list[dict]:
-    views.sort(key=lambda row: (row["sort_at"], row["sort_order"], str(row["id"])))
+    views.sort(
+        key=lambda row: (
+            row["sort_at"],
+            row["sort_order"],
+            row.get("sort_source", CHAT_SORT_SOURCE_MESSAGE),
+            row.get("sort_sequence") or 0,
+        )
+    )
     for row in views:
         row.pop("sort_at", None)
         row.pop("sort_order", None)
+        row.pop("sort_source", None)
+        row.pop("sort_sequence", None)
     return views
 
 def agent_conversation_views(session: Session, current_time: datetime) -> list[dict]:
@@ -414,6 +433,8 @@ def notification_history_chat_views(session: Session, current_time: datetime) ->
                 "id": f"notification-history-{row.id}",
                 "sort_at": row.visible_at,
                 "sort_order": 2,
+                "sort_source": CHAT_SORT_SOURCE_HISTORY,
+                "sort_sequence": row.id,
                 "pending": False,
                 "classes": f"system notification_history {row.notification_type} from-system one-way-alert",
                 "role_label": "알림",

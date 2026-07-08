@@ -9,7 +9,7 @@ from system_app.db import SessionLocal
 from system_app.main import app
 from system_app.models import AgentDecisionAudit, AgentRunStep, AgentRunTrace, ChatMessage, DoseEvent, Notification
 from system_app.services.clock_service import ensure_clock
-from system_app.services.dashboard_view import chat_message_view
+from system_app.services.dashboard_view import chat_message_view, sorted_chat_views
 from system_app.services.notification_service import create_notification
 from system_app.services.patient_profile_service import ensure_base_data
 from system_app.services.timeline_service import add_chat_message
@@ -521,6 +521,23 @@ def test_chat_log_partial_keeps_latest_messages_after_history_limit():
         with SessionLocal() as session:
             session.query(ChatMessage).delete()
             session.commit()
+
+
+def test_sorted_chat_views_keeps_numeric_message_order_for_same_timestamp():
+    same_time = datetime(2026, 5, 13, 9, 0, 0)
+    views = [
+        {"id": 8, "sort_at": same_time, "sort_order": 0, "sort_source": 0, "sort_sequence": 8},
+        {"id": 9, "sort_at": same_time, "sort_order": 0, "sort_source": 0, "sort_sequence": 9},
+        {"id": 10, "sort_at": same_time, "sort_order": 0, "sort_source": 0, "sort_sequence": 10},
+        {"id": 11, "sort_at": same_time, "sort_order": 0, "sort_source": 0, "sort_sequence": 11},
+        {"id": 12, "sort_at": same_time, "sort_order": 0, "sort_source": 0, "sort_sequence": 12},
+    ]
+
+    sorted_views = sorted_chat_views(views)
+
+    assert [row["id"] for row in sorted_views] == [8, 9, 10, 11, 12]
+    assert all("sort_at" not in row for row in sorted_views)
+    assert all("sort_sequence" not in row for row in sorted_views)
 
 
 def test_chat_log_partial_shows_pending_agent_response_indicator():
