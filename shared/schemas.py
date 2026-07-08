@@ -600,6 +600,7 @@ class NutritionRecommendRequest(BaseModel):
     constraints: dict[str, str] = Field(default_factory=dict)
     meal_type: str | None = None
     limit: int = Field(default=5, ge=1, le=20)
+    randomize: bool = True
 
 
 class NutritionRecommendResult(BaseModel):
@@ -611,4 +612,5 @@ class NutritionRecommendResult(BaseModel):
     recommendations: list[dict[str, Any]] = Field(default_factory=list)
     blocked_count: int = 0
     total_candidates: int = 0
+    randomized: bool = False
     error: str = ""

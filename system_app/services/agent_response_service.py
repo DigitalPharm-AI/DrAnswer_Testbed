@@ -35,6 +35,13 @@ POLICY_DELTA_REQUIRED_FIELDS = {
     "reason",
     "source",
 }
+NUTRITION_WRITE_TOOL_NAMES = {
+    "record_meal",
+    "update_nutrition_meal",
+    "delete_nutrition_meal",
+    "update_nutrition_food",
+    "delete_nutrition_food",
+}
 
 
 def ae_pro_ctcae_payload(response: AgentResponse) -> dict | None:
@@ -85,6 +92,8 @@ def ae_pro_ctcae_chat_content(response: AgentResponse) -> str:
 
 
 def food_selection_chat_metadata(response: AgentResponse) -> dict:
+    if has_successful_nutrition_write(response):
+        return {}
     food_searches = response.structured_payload.get("food_searches")
     # 단일 검색 결과도 처리 (food_searches 없을 때 폴백)
     if not isinstance(food_searches, list) or not food_searches:
@@ -110,6 +119,27 @@ def food_selection_chat_metadata(response: AgentResponse) -> dict:
             "confirmed_foods": [],
         }
     }
+
+
+def has_successful_nutrition_write(response: AgentResponse) -> bool:
+    raw_results = response.structured_payload.get("tool_results")
+    if isinstance(raw_results, list):
+        for result in raw_results:
+            if not isinstance(result, dict):
+                continue
+            if result.get("tool_name") in NUTRITION_WRITE_TOOL_NAMES and result.get("status") == "success":
+                return True
+    for key in (
+        "nutrition_meal_result",
+        "nutrition_meal_update_result",
+        "nutrition_meal_delete_result",
+        "nutrition_food_update_result",
+        "nutrition_food_delete_result",
+    ):
+        payload = response.structured_payload.get(key)
+        if isinstance(payload, dict) and payload.get("success") is not False:
+            return True
+    return False
 
 
 def food_selection_chat_content(message_metadata: dict) -> str:

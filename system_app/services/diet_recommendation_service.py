@@ -21,6 +21,7 @@ def recommend_diet(
     constraints: dict[str, str],
     meal_type: str | None = None,
     limit: int = 5,
+    randomize: bool = True,
 ) -> dict[str, Any]:
     """영양 제약 조건에 맞는 음식 추천.
 
@@ -72,8 +73,9 @@ def recommend_diet(
     stmt = select(NutritionFoodRef)
     for f in filters:
         stmt = stmt.where(f)
-    stmt = stmt.limit(limit * 4)  # 선호도 필터링 여유분 확보
-
+    if randomize:
+        stmt = stmt.order_by(func.random())
+    stmt = stmt.limit(limit * 8)  # 선호도 필터링 여유분 확보
     rows = session.scalars(stmt).all()
 
     from system_app.services.nutrition_preference_service import annotate_food_candidate
@@ -101,6 +103,7 @@ def recommend_diet(
         "recommendations": recommendations,
         "blocked_count": blocked_count,
         "total_candidates": len(rows),
+        "randomized": randomize,
     }
 
 

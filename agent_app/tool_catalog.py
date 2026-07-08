@@ -372,7 +372,7 @@ class ToolCatalog:
                     "openWorldHint": False,
                 },
                 "required_arguments": ["constraints"],
-                "optional_arguments": ["patient_id", "meal_type", "limit"],
+                "optional_arguments": ["patient_id", "meal_type", "limit", "randomize"],
                 "inputSchema": _object_schema(
                     {
                         "patient_id": {"type": "string", "description": "대상 환자 ID, 생략하면 기본 환자"},
@@ -383,6 +383,10 @@ class ToolCatalog:
                                 "값: low(낮게 유지) 또는 moderate(적정 범위). "
                                 "예: {\"나트륨\": \"low\", \"단백질\": \"low\", \"칼로리\": \"moderate\"}"
                             ),
+                        },
+                        "randomize": {
+                            "type": "boolean",
+                            "description": "조건에 맞는 후보를 매번 같은 순서가 아닌 랜덤 순서로 추천합니다. 기본값 true.",
                         },
                         "meal_type": {
                             "type": "string",

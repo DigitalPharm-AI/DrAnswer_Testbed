@@ -230,6 +230,44 @@ def test_diet_recommendation_uses_serving_size_nutrients_and_reasons():
         assert "나트륨" in recommendation["recommendation_reasons"][0]
 
 
+def test_diet_recommendation_randomizes_candidate_query_by_default(monkeypatch):
+    with build_session() as session:
+        session.add_all(
+            [
+                NutritionFoodRef(
+                    food_ref_id=f"random-low-sodium-{index}",
+                    food_name=f"랜덤 저나트륨 음식 {index}",
+                    category="테스트",
+                    serving_size=100,
+                    energy=120 + index,
+                    protein=5,
+                    sodium=100,
+                    fat=2,
+                    carbohydrate=20,
+                )
+                for index in range(6)
+            ]
+        )
+        session.commit()
+
+        captured_statements: list[str] = []
+        original_scalars = session.scalars
+
+        def capture_scalars(statement, *args, **kwargs):
+            statement_text = str(statement)
+            if "nutrition_food_ref" in statement_text:
+                captured_statements.append(statement_text)
+            return original_scalars(statement, *args, **kwargs)
+
+        monkeypatch.setattr(session, "scalars", capture_scalars)
+
+        result = recommend_diet(session, patient_id="patient-random-recommend", constraints={"나트륨": "low"}, limit=3)
+
+        assert result["randomized"] is True
+        assert len(result["recommendations"]) == 3
+        assert any("order by random()" in statement.lower() for statement in captured_statements)
+
+
 def test_nutrition_scenario_route_returns_public_error_code():
     client = TestClient(app)
     raw_scenario_key = "pytest-private-peanut-allergy-scenario"

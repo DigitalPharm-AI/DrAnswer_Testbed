@@ -423,6 +423,7 @@ class AgentMcpToolServer:
             "constraints": arguments.get("constraints") or {},
             "meal_type": arguments.get("meal_type"),
             "limit": arguments.get("limit", 5),
+            "randomize": arguments.get("randomize", True),
         }
         async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
             response = await client.post(

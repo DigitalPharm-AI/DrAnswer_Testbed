@@ -280,6 +280,7 @@ def create_agent_api_router(get_runtime: Callable[[], SystemRuntime]) -> APIRout
                 constraints=payload.constraints,
                 meal_type=payload.meal_type,
                 limit=payload.limit,
+                randomize=payload.randomize,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=public_error_code(exc, allowed_codes={"constraints_required", "invalid_constraint_level"}, fallback="diet_recommend_invalid")) from exc

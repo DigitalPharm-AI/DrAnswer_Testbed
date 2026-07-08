@@ -549,6 +549,63 @@ def test_async_chat_result_preserves_llm_food_selection_message():
         assert message.content == "음식 후보를 찾았습니다. 아래 카드에서 선택해주세요."
         assert metadata["food_selection"]["candidates"][0]["food_name"] == "삶은 달걀"
 
+def test_async_chat_result_skips_food_selection_after_nutrition_write():
+    with build_session() as session:
+        clock = ensure_clock(session)
+        notification = Notification(
+            notification_type="system_policy_request",
+            title="에이전트 대화 전송",
+            body="에이전트에게 메시지를 보냈습니다.",
+            visible_at=clock.current_time,
+            metadata_json=json.dumps({"request_message": "마라탕을 영양돌솥밥으로 바꿔줘", "status": "sent"}, ensure_ascii=False),
+        )
+        session.add(notification)
+        session.flush()
+        response = AgentResponse(
+            trace_id="trace-food-update-async",
+            agent_name="system_event_agent",
+            prompt_version_id="v1",
+            decision_type="tool_call",
+            structured_payload={
+                "food_searches": [
+                    {
+                        "query": "영양돌솥밥",
+                        "candidates": [
+                            {
+                                "food_ref_id": "rice-pot",
+                                "food_name": "영양돌솥밥",
+                                "serving_size": 350,
+                                "nutrients": {"calories": 644, "protein": 12},
+                            }
+                        ],
+                    }
+                ],
+                "nutrition_food_update_result": {"success": True, "food": {"food_name": "영양돌솥밥"}},
+                "tool_results": [
+                    {"tool_name": "search_food_nutrition", "status": "success", "response": {"success": True}},
+                    {"tool_name": "update_nutrition_food", "status": "success", "response": {"success": True}},
+                ],
+                "tools_executed": True,
+            },
+            human_summary="점심 마라탕을 영양돌솥밥으로 교체했어요.",
+        )
+        callback = AgentAsyncChatResultRequest(
+            request_id="chat_continuation:notification:food-update",
+            notification_id=notification.id,
+            event_type="multiturn_chat",
+            message="마라탕을 영양돌솥밥으로 바꿔줘",
+            response=response,
+            idempotency_key="chat-food-update-result-once",
+        )
+
+        result = process_async_chat_result_callback(session, callback)
+
+        assert result["status"] == "ok"
+        message = session.query(ChatMessage).filter(ChatMessage.category == "multiturn_chat", ChatMessage.role == "assistant").one()
+        metadata = json.loads(message.metadata_json)
+        assert message.content == "점심 마라탕을 영양돌솥밥으로 교체했어요."
+        assert "food_selection" not in metadata
+
 
 def test_async_chat_result_preserves_diet_recommendation_cards():
     with build_session() as session:
