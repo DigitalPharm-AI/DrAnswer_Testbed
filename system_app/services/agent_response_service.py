@@ -160,6 +160,9 @@ def diet_recommendation_chat_metadata(response: AgentResponse) -> dict:
             "constraints_applied": response.structured_payload.get("constraints_applied", {}),
             "blocked_count": response.structured_payload.get("blocked_count", 0),
             "total_candidates": response.structured_payload.get("total_candidates", 0),
+            "meal_type_requested": response.structured_payload.get("meal_type_requested", ""),
+            "meal_candidate_count": response.structured_payload.get("meal_candidate_count", 0),
+            "non_meal_candidate_count": response.structured_payload.get("non_meal_candidate_count", 0),
         }
     }
 

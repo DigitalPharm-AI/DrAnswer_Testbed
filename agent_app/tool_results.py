@@ -56,6 +56,9 @@ def tool_calls_payload(tool_calls: list[dict[str, Any]], results: list[ToolCallR
             payload["constraints_applied"] = result.response.get("constraints_applied", {})
             payload["blocked_count"] = result.response.get("blocked_count", 0)
             payload["total_candidates"] = result.response.get("total_candidates", 0)
+            payload["meal_type_requested"] = result.response.get("meal_type_requested", "")
+            payload["meal_candidate_count"] = result.response.get("meal_candidate_count", 0)
+            payload["non_meal_candidate_count"] = result.response.get("non_meal_candidate_count", 0)
         elif result.tool_name == "apply_notification_policy" and result.status == "success":
             payload["policy_apply_result"] = result.response
         elif result.tool_name == "apply_system_policy" and result.status == "success":

@@ -26,6 +26,7 @@ from system_app.services.nutrition_preference_service import (
     seed_nutrition_ontology,
 )
 from system_app.services.system_request_service import build_multiturn_chat_request, create_system_event_request
+from system_app.services.timeline_service import add_chat_message
 from tests.helpers import build_session
 
 
@@ -266,6 +267,87 @@ def test_diet_recommendation_randomizes_candidate_query_by_default(monkeypatch):
         assert result["randomized"] is True
         assert len(result["recommendations"]) == 3
         assert any("order by random()" in statement.lower() for statement in captured_statements)
+
+
+def test_diet_recommendation_prioritizes_meal_like_candidates_for_meal_requests():
+    sodium_key = "\ub098\ud2b8\ub968"
+    with build_session() as session:
+        session.query(NutritionFoodRef).delete()
+        session.add_all(
+            [
+                NutritionFoodRef(
+                    food_ref_id="meal-rice-bowl",
+                    food_name="renal rice bowl",
+                    category="main meal",
+                    serving_size=100,
+                    energy=220,
+                    protein=8,
+                    sodium=80,
+                    fat=4,
+                    carbohydrate=34,
+                ),
+                NutritionFoodRef(
+                    food_ref_id="meal-stew",
+                    food_name="low sodium stew",
+                    category="main meal",
+                    serving_size=100,
+                    energy=180,
+                    protein=12,
+                    sodium=90,
+                    fat=5,
+                    carbohydrate=18,
+                ),
+                NutritionFoodRef(
+                    food_ref_id="meal-grilled-fish",
+                    food_name="grilled fish dish",
+                    category="main meal",
+                    serving_size=100,
+                    energy=190,
+                    protein=18,
+                    sodium=70,
+                    fat=6,
+                    carbohydrate=10,
+                ),
+                NutritionFoodRef(
+                    food_ref_id="drink-americano",
+                    food_name="iced americano",
+                    category="beverage",
+                    serving_size=100,
+                    energy=5,
+                    protein=0,
+                    sodium=5,
+                    fat=0,
+                    carbohydrate=1,
+                ),
+                NutritionFoodRef(
+                    food_ref_id="snack-cookie",
+                    food_name="low sodium cookie",
+                    category="snack",
+                    serving_size=100,
+                    energy=140,
+                    protein=2,
+                    sodium=20,
+                    fat=6,
+                    carbohydrate=20,
+                ),
+            ]
+        )
+        session.commit()
+
+        result = recommend_diet(
+            session,
+            patient_id="patient-meal-priority",
+            constraints={sodium_key: "low"},
+            meal_type="lunch",
+            limit=3,
+            randomize=False,
+        )
+
+        ids = {item["food_ref_id"] for item in result["recommendations"]}
+        assert ids == {"meal-rice-bowl", "meal-stew", "meal-grilled-fish"}
+        assert {item["recommendation_fit"] for item in result["recommendations"]} == {"meal"}
+        assert result["meal_candidate_count"] == 3
+        assert result["non_meal_candidate_count"] == 2
 
 
 def test_nutrition_scenario_route_returns_public_error_code():
@@ -749,6 +831,48 @@ def test_multiturn_chat_request_includes_nutrition_context():
         assert request.context["nutrition"]["today_summary"]["total_meals"] == 1
         assert request.context["nutrition"]["today_meals"][0]["meal_label"] == "아침"
         assert request.context["nutrition"]["preferences"]["soft_preferences"][0]["object_label"] == "한식"
+
+
+def test_multiturn_chat_request_includes_recent_diet_recommendation_context():
+    sodium_key = "\ub098\ud2b8\ub968"
+    with build_session() as session:
+        add_chat_message(
+            session,
+            role="assistant",
+            sender_type="assistant",
+            category="multiturn_chat",
+            content="recommendation candidates are ready below",
+            metadata={
+                "diet_recommendations": {
+                    "constraints_applied": {sodium_key: "low"},
+                    "meal_type_requested": "lunch",
+                    "recommendations": [
+                        {
+                            "food_ref_id": "rec-rice-bowl",
+                            "food_name": "renal rice bowl",
+                            "category": "main meal",
+                            "serving_size": 180,
+                            "nutrient_basis": "serving_size",
+                            "nutrients": {"sodium": {"value": 120, "unit": "mg"}},
+                            "recommendation_reasons": ["low sodium"],
+                            "recommendation_fit": "meal",
+                        }
+                    ],
+                }
+            },
+        )
+        request_notification = create_system_event_request(session, "multiturn_chat", "I'll eat the first one for lunch")
+        session.commit()
+
+        request = build_multiturn_chat_request(session, "multiturn_chat", "I'll eat the first one for lunch", request_notification.id)
+
+        groups = request.context["recent_diet_recommendations"]
+        assert len(groups) == 1
+        assert groups[0]["meal_type_requested"] == "lunch"
+        assert groups[0]["recommendations"][0]["index"] == 1
+        assert groups[0]["recommendations"][0]["food_ref_id"] == "rec-rice-bowl"
+        assert groups[0]["recommendations"][0]["food_name"] == "renal rice bowl"
+        assert groups[0]["recommendations"][0]["nutrients"]["sodium"]["value"] == 120
 
 
 def test_multiturn_chat_request_uses_persisted_unique_conversation_id():

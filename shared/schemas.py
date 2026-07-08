@@ -613,4 +613,7 @@ class NutritionRecommendResult(BaseModel):
     blocked_count: int = 0
     total_candidates: int = 0
     randomized: bool = False
+    meal_type_requested: str = ""
+    meal_candidate_count: int = 0
+    non_meal_candidate_count: int = 0
     error: str = ""

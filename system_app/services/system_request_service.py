@@ -27,7 +27,13 @@ from system_app.services.nutrition_service import build_nutrition_context
 from system_app.services.patient_profile_service import get_phr_patient_key
 from system_app.services.policy_confirmation import policy_deltas_from_tool_response
 from system_app.services.policy_service import daily_pattern_conversation_time_view, resolve_policy_boundary_for_slot, resolve_policy_for_slot
-from system_app.services.timeline_service import add_chat_message, get_notifications, get_recent_chat_turns, get_today_dose_events
+from system_app.services.timeline_service import (
+    add_chat_message,
+    get_notifications,
+    get_recent_chat_turns,
+    get_recent_diet_recommendation_groups,
+    get_today_dose_events,
+)
 
 settings = get_settings()
 POLICY_CONFIRMATION_CHAT_MESSAGE = "정책 변경 후보를 채팅에 표시했어요. 아래 선택지에서 결정해주시면 그때 반영할게요."
@@ -163,6 +169,7 @@ def build_multiturn_chat_request(
     request_notification = session.get(Notification, request_notification_id)
     request_metadata = parse_json_object(request_notification.metadata_json) if request_notification is not None else {}
     conversation_id = str(request_metadata.get("agent_conversation_id") or f"system-event-{request_notification_id}")
+    recent_diet_recommendations = get_recent_diet_recommendation_groups(session, patient_id=settings.patient_id)
     request = MultiturnChatRequest(
         patient_id=settings.patient_id,
         phr_patient_key=get_phr_patient_key(session),
@@ -182,6 +189,7 @@ def build_multiturn_chat_request(
             "system_policies": [daily_pattern_conversation_time_view(session)],
             "recent_notifications": [row.body for row in get_notifications(session, clock.current_time)[:5]],
             "nutrition": build_nutrition_context(session, patient_id=settings.patient_id),
+            "recent_diet_recommendations": recent_diet_recommendations,
             "recent_nutrition_alerts": [
                 row.body
                 for row in get_notifications(session, clock.current_time)
@@ -215,6 +223,7 @@ def build_multiturn_chat_request(
         phr_registered=bool(request.phr_patient_key),
         schedule_slots=schedule_slots,
         recent_chat_count=len(request.context.get("recent_chat", [])),
+        recent_diet_recommendation_group_count=len(recent_diet_recommendations),
         today_dose_event_count=len(request.context.get("today_dose_events", [])),
     )
     return request

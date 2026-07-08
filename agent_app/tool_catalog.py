@@ -391,7 +391,7 @@ class ToolCatalog:
                         "meal_type": {
                             "type": "string",
                             "enum": ["breakfast", "lunch", "dinner", "snack"],
-                            "description": "식사 유형 (참고용, 검색 필터 아님). 생략 가능.",
+                            "description": "Meal type. breakfast/lunch/dinner prioritizes meal-like foods over snacks or beverages; snack allows snack-like candidates. Optional.",
                         },
                         "limit": {"type": "integer", "description": "최대 추천 개수 (기본 5)"},
                     },

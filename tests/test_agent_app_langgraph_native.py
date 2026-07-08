@@ -28,7 +28,7 @@ from agent_app.chat_tooling import (
 from agent_app.errors import AgentExecutionError
 from agent_app.graph import AgentLangGraphNativeOrchestrator
 from agent_app.output_validation import validate_llm_output
-from agent_app.prompt_builders import multiturn_chat_prompt, nutrition_management_agent_prompt
+from agent_app.prompt_builders import multiturn_chat_prompt, nutrition_management_agent_prompt, nutrition_recommendation_agent_prompt
 from agent_app.providers import BaseLLMProvider, RuleBasedProvider, create_llm_provider
 from agent_app.response_builders import missed_dose_hybrid_payload, natural_chat_summary
 from agent_app.tool_calling import normalize_tool_calls
@@ -593,12 +593,16 @@ def test_agent_app_has_no_legacy_imports():
 def test_nutrition_record_verification_prompts_do_not_trust_recent_chat():
     supervisor_prompt = multiturn_chat_prompt()
     management_prompt = nutrition_management_agent_prompt()
+    recommendation_prompt = nutrition_recommendation_agent_prompt()
 
     assert "Recent chat is not an authoritative source for current nutrition records" in supervisor_prompt
     assert "do not answer from recent_chat" in supervisor_prompt
     assert "delegate to call_nutrition_management_agent" in supervisor_prompt
+    assert "context.recent_diet_recommendations" in supervisor_prompt
     assert "call list_meals first" in management_prompt
     assert "Do not infer current records from recent chat" in management_prompt
+    assert "Use context.recent_diet_recommendations before search_food_nutrition" in management_prompt
+    assert "prefer meal-like foods over snacks or beverages" in recommendation_prompt
 
 
 def test_agent_app_health_reports_native_runtime():

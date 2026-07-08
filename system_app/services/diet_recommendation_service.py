@@ -13,6 +13,97 @@ from system_app.services.diet_nutrient_config import (
 )
 from system_app.services.nutrition_service import ensure_nutrition_profile
 
+MEAL_REQUEST_TYPES = {None, "", "breakfast", "lunch", "dinner"}
+MEAL_LIKE_TERMS = (
+    "meal",
+    "rice",
+    "bowl",
+    "soup",
+    "stew",
+    "porridge",
+    "noodle",
+    "salad",
+    "grill",
+    "dish",
+    "\ubc25",
+    "\uad6d",
+    "\ucc0c\uac1c",
+    "\ud0d5",
+    "\uba74",
+    "\uc8fd",
+    "\ub36e\ubc25",
+    "\ube44\ube54\ubc25",
+    "\uad6d\ubc25",
+    "\uc815\uc2dd",
+    "\uad6c\uc774",
+    "\uc870\ub9bc",
+    "\ubcf6\uc74c",
+    "\ucc1c",
+    "\uc0d0\ub7ec\ub4dc",
+    "\ubc18\ucc2c",
+    "\uc694\ub9ac",
+    "\uc2dd\uc0ac",
+    "\ud55c\uc2dd",
+    "\uc911\uc2dd",
+    "\uc77c\uc2dd",
+    "\uc591\uc2dd",
+    "\ubd84\uc2dd",
+    "\ub098\ubb3c",
+    "\ub450\ubd80",
+    "\uace0\uae30",
+    "\uc0dd\uc120",
+    "\uacc4\ub780",
+    "\ub2ed",
+    "\uc18c\uace0\uae30",
+    "\ub3fc\uc9c0",
+    "\ub77c\uba74",
+    "\uc6b0\ub3d9",
+    "\ud30c\uc2a4\ud0c0",
+)
+SNACK_OR_BEVERAGE_TERMS = (
+    "beverage",
+    "drink",
+    "coffee",
+    "latte",
+    "americano",
+    "juice",
+    "smoothie",
+    "soda",
+    "dessert",
+    "snack",
+    "cookie",
+    "cake",
+    "\uc74c\ub8cc",
+    "\ucee4\ud53c",
+    "\ub77c\ub5bc",
+    "\uc544\uba54\ub9ac\uce74\ub178",
+    "\uc8fc\uc2a4",
+    "\uc2a4\ubb34\ub514",
+    "\ucf5c\ub77c",
+    "\uc0ac\uc774\ub2e4",
+    "\ud0c4\uc0b0",
+    "\uc6b0\uc720",
+    "\uc694\uad6c\ub974\ud2b8",
+    "\uc694\uac70\ud2b8",
+    "\uc220",
+    "\ub9e5\uc8fc",
+    "\uc18c\uc8fc",
+    "\uc640\uc778",
+    "\ub179\ucc28",
+    "\ud64d\ucc28",
+    "\uac04\uc2dd",
+    "\uacfc\uc790",
+    "\ub514\uc800\ud2b8",
+    "\ucfe0\ud0a4",
+    "\ucf00\uc774\ud06c",
+    "\ucd08\ucf5c\ub9bf",
+    "\uc824\ub9ac",
+    "\uc544\uc774\uc2a4\ud06c\ub9bc",
+    "\uc0ac\ud0d5",
+    "\ub3c4\ub11b",
+    "\ube75",
+)
+
 
 def recommend_diet(
     session: Session,
@@ -75,12 +166,16 @@ def recommend_diet(
         stmt = stmt.where(f)
     if randomize:
         stmt = stmt.order_by(func.random())
-    stmt = stmt.limit(limit * 8)  # 선호도 필터링 여유분 확보
+    else:
+        stmt = stmt.order_by(NutritionFoodRef.food_name.asc())
+    stmt = stmt.limit(max(limit * 20, 80))  # 선호도/식사형 후보 분류 여유분 확보
     rows = session.scalars(stmt).all()
 
     from system_app.services.nutrition_preference_service import annotate_food_candidate
 
-    recommendations: list[dict[str, Any]] = []
+    meal_candidates: list[dict[str, Any]] = []
+    neutral_candidates: list[dict[str, Any]] = []
+    snack_or_beverage_candidates: list[dict[str, Any]] = []
     blocked_count = 0
 
     for row in rows:
@@ -89,10 +184,20 @@ def recommend_diet(
         if annotated.get("preference_match", {}).get("status") == "blocked":
             blocked_count += 1
             continue
+        recommendation_fit = _recommendation_fit(annotated, meal_type)
+        annotated["recommendation_fit"] = recommendation_fit
         annotated["recommendation_reasons"] = _recommendation_reasons(annotated, constraints_applied, limits_used)
-        recommendations.append(annotated)
-        if len(recommendations) >= limit:
-            break
+        if recommendation_fit == "meal":
+            meal_candidates.append(annotated)
+        elif recommendation_fit == "snack_or_beverage":
+            snack_or_beverage_candidates.append(annotated)
+        else:
+            neutral_candidates.append(annotated)
+
+    if _prefers_meal_like_candidates(meal_type):
+        recommendations = (meal_candidates + neutral_candidates + snack_or_beverage_candidates)[:limit]
+    else:
+        recommendations = (snack_or_beverage_candidates + neutral_candidates + meal_candidates)[:limit]
 
     return {
         "success": True,
@@ -104,6 +209,9 @@ def recommend_diet(
         "blocked_count": blocked_count,
         "total_candidates": len(rows),
         "randomized": randomize,
+        "meal_type_requested": meal_type or "",
+        "meal_candidate_count": len(meal_candidates),
+        "non_meal_candidate_count": len(snack_or_beverage_candidates),
     }
 
 
@@ -136,6 +244,23 @@ def _serving_size(row: NutritionFoodRef) -> float:
 
 def _f(val: float | None, multiplier: float = 1.0) -> float:
     return round(float(val) * multiplier, 2) if val is not None else 0.0
+
+
+def _prefers_meal_like_candidates(meal_type: str | None) -> bool:
+    return meal_type in MEAL_REQUEST_TYPES
+
+
+def _recommendation_fit(candidate: dict[str, Any], meal_type: str | None) -> str:
+    text = f"{candidate.get('category') or ''} {candidate.get('food_name') or ''}".casefold()
+    has_meal_signal = any(term.casefold() in text for term in MEAL_LIKE_TERMS)
+    has_non_meal_signal = any(term.casefold() in text for term in SNACK_OR_BEVERAGE_TERMS)
+    if meal_type == "snack" and has_non_meal_signal:
+        return "snack_or_beverage"
+    if has_meal_signal:
+        return "meal"
+    if has_non_meal_signal:
+        return "snack_or_beverage"
+    return "neutral"
 
 
 def _recommendation_reasons(

@@ -137,6 +137,69 @@ def get_recent_chat_turns(session: Session, limit: int = 50) -> list[ChatTurn]:
     ).all()
     return [ChatTurn(role=row.role if row.role in {"user", "assistant", "system"} else "user", content=row.content, created_at=row.created_at) for row in reversed(rows)]
 
+
+def get_recent_diet_recommendation_groups(
+    session: Session,
+    *,
+    patient_id: str | None = None,
+    limit: int = 3,
+    message_scan_limit: int = 30,
+) -> list[dict]:
+    rows = session.scalars(
+        select(ChatMessage)
+        .where(
+            ChatMessage.patient_id == (patient_id or settings.patient_id),
+            ChatMessage.role == "assistant",
+            ChatMessage.content != REMOVED_WELCOME_MESSAGE,
+        )
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+        .limit(message_scan_limit)
+    ).all()
+    groups: list[dict] = []
+    for row in rows:
+        metadata = parse_metadata_json(row.metadata_json)
+        payload = metadata.get("diet_recommendations")
+        if not isinstance(payload, dict):
+            continue
+        recommendations = payload.get("recommendations")
+        if not isinstance(recommendations, list) or not recommendations:
+            continue
+        compact_recommendations = [
+            _compact_diet_recommendation(item, index)
+            for index, item in enumerate(recommendations[:10], start=1)
+            if isinstance(item, dict)
+        ]
+        compact_recommendations = [item for item in compact_recommendations if item.get("food_name") or item.get("food_ref_id")]
+        if not compact_recommendations:
+            continue
+        groups.append(
+            {
+                "chat_message_id": row.id,
+                "created_at": row.created_at.isoformat(),
+                "constraints_applied": payload.get("constraints_applied", {}),
+                "meal_type_requested": payload.get("meal_type_requested", ""),
+                "recommendations": compact_recommendations,
+            }
+        )
+        if len(groups) >= limit:
+            break
+    return groups
+
+
+def _compact_diet_recommendation(item: dict, index: int) -> dict:
+    return {
+        "index": index,
+        "food_ref_id": item.get("food_ref_id", ""),
+        "food_name": item.get("food_name", ""),
+        "category": item.get("category", ""),
+        "serving_size": item.get("serving_size", 0),
+        "nutrient_basis": item.get("nutrient_basis", ""),
+        "nutrients": item.get("nutrients", {}),
+        "recommendation_reasons": item.get("recommendation_reasons", []),
+        "recommendation_fit": item.get("recommendation_fit", ""),
+    }
+
+
 def get_recent_chat_turns_for_dose_event(session: Session, related_dose_event_id: int, limit: int = 10) -> list[ChatTurn]:
     rows = session.scalars(
         select(ChatMessage)
