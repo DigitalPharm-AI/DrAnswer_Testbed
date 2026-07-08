@@ -1,7 +1,7 @@
 import pytest
 from pathlib import Path
 
-from shared.settings import Settings, settings_env_files
+from shared.settings import Settings, normalize_model_tier, settings_env_files
 
 
 def test_settings_env_files_include_agent_app_override(monkeypatch, tmp_path):
@@ -36,6 +36,16 @@ def test_settings_env_files_allow_explicit_override(monkeypatch):
     monkeypatch.setenv("DA_DRUG_SERVICE", "agent_app")
 
     assert settings_env_files() == (".env.shared", ".env.local")
+
+
+def test_default_model_tier_is_sonnet(monkeypatch, tmp_path):
+    _chdir_without_parent_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("LLM_MODEL_TIER", raising=False)
+
+    settings = Settings()
+
+    assert normalize_model_tier(None) == "sonnet"
+    assert settings.llm_model_tier == "sonnet"
 
 
 def test_settings_env_files_use_parent_shared_env_when_local_env_is_absent(monkeypatch, tmp_path):

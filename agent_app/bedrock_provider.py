@@ -14,6 +14,8 @@ from agent_app.provider_config import get_runtime_model_tier
 from agent_app.provider_json import parse_json_object
 from shared.settings import get_settings
 
+NO_TEMPERATURE_MODEL_MARKERS = ("claude-sonnet-5",)
+
 
 class BedrockAnthropicProvider(BaseLLMProvider):
     def __init__(self) -> None:
@@ -29,14 +31,17 @@ class BedrockAnthropicProvider(BaseLLMProvider):
         if self.settings.aws_bearer_token_bedrock:
             os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self.settings.aws_bearer_token_bedrock
 
+        model_id = self.settings.model_id_for_tier(get_runtime_model_tier())
         session = boto3.Session(**self._session_kwargs())
         client = session.client("bedrock-runtime")
-        return ChatBedrockConverse(
-            client=client,
-            model=self.settings.model_id_for_tier(get_runtime_model_tier()),
-            max_tokens=self.settings.llm_max_tokens,
-            temperature=self.settings.llm_temperature,
-        )
+        kwargs = {
+            "client": client,
+            "model": model_id,
+            "max_tokens": self.settings.llm_max_tokens,
+        }
+        if model_supports_temperature(model_id):
+            kwargs["temperature"] = self.settings.llm_temperature
+        return ChatBedrockConverse(**kwargs)
 
     async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         model_id = self.settings.model_id_for_tier(get_runtime_model_tier())
@@ -80,7 +85,6 @@ class BedrockAnthropicProvider(BaseLLMProvider):
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": self.settings.llm_max_tokens,
-            "temperature": self.settings.llm_temperature,
             "system": system_prompt,
             "messages": [
                 {
@@ -89,6 +93,8 @@ class BedrockAnthropicProvider(BaseLLMProvider):
                 }
             ],
         }
+        if model_supports_temperature(model_id):
+            body["temperature"] = self.settings.llm_temperature
         response = client.invoke_model(
             modelId=model_id,
             body=json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -100,13 +106,13 @@ class BedrockAnthropicProvider(BaseLLMProvider):
     def _converse_with_bearer_token(self, model_id: str, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         encoded_model_id = quote(model_id, safe=":.-_")
         url = f"https://bedrock-runtime.{self.settings.aws_region}.amazonaws.com/model/{encoded_model_id}/converse"
+        inference_config = {"maxTokens": self.settings.llm_max_tokens}
+        if model_supports_temperature(model_id):
+            inference_config["temperature"] = self.settings.llm_temperature
         body = {
             "system": [{"text": system_prompt}],
             "messages": [{"role": "user", "content": [{"text": json.dumps(user_payload, ensure_ascii=False)}]}],
-            "inferenceConfig": {
-                "maxTokens": self.settings.llm_max_tokens,
-                # "temperature": self.settings.llm_temperature,  # deprecated in claude-sonnet-5+
-            },
+            "inferenceConfig": inference_config,
         }
         headers = {
             "Accept": "application/json",
@@ -129,3 +135,8 @@ class BedrockAnthropicProvider(BaseLLMProvider):
         if self.settings.aws_session_token:
             session_kwargs["aws_session_token"] = self.settings.aws_session_token
         return session_kwargs
+
+
+def model_supports_temperature(model_id: str) -> bool:
+    normalized = model_id.strip().lower()
+    return not any(marker in normalized for marker in NO_TEMPERATURE_MODEL_MARKERS)
