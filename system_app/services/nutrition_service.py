@@ -185,6 +185,23 @@ def ensure_nutrition_profile(session: Session, patient_id: str | None = None, *,
     return profile
 
 
+def _nutrition_food_from_payload(item: dict[str, Any], *, meal_id: int, created_at: datetime) -> NutritionFood:
+    normalized = normalize_food_payload(item)
+    nutrients = normalized["nutrients"]
+    return NutritionFood(
+        meal_id=meal_id,
+        food_ref_id=normalized.get("food_ref_id", ""),
+        food_name=normalized["food_name"],
+        portion=normalized.get("portion", "1인분"),
+        calories=nutrients["칼로리"]["value"],
+        protein=nutrients["단백질"]["value"],
+        sodium=nutrients["나트륨"]["value"],
+        fat=nutrients["지방"]["value"],
+        carbohydrates=nutrients["탄수화물"]["value"],
+        created_at=created_at,
+    )
+
+
 def profile_payload(profile: NutritionProfile) -> dict[str, Any]:
     return {
         "patient_id": profile.patient_id,
@@ -280,21 +297,7 @@ def record_meal(
         session.flush()
 
     for item in foods:
-        normalized = normalize_food_payload(item)
-        session.add(
-            NutritionFood(
-                meal_id=meal.id,
-                food_ref_id=normalized.get("food_ref_id", ""),
-                food_name=normalized["food_name"],
-                portion=normalized.get("portion", "1인분"),
-                calories=normalized["nutrients"]["칼로리"]["value"],
-                protein=normalized["nutrients"]["단백질"]["value"],
-                sodium=normalized["nutrients"]["나트륨"]["value"],
-                fat=normalized["nutrients"]["지방"]["value"],
-                carbohydrates=normalized["nutrients"]["탄수화물"]["value"],
-                created_at=clock.current_time,
-            )
-        )
+        session.add(_nutrition_food_from_payload(item, meal_id=meal.id, created_at=clock.current_time))
     session.flush()
     summary = recalculate_daily_nutrition(session, target_patient_id, target_date)
     summary["preferences"] = _nutrition_preference_summary(session, target_patient_id)
@@ -311,6 +314,110 @@ def record_meal(
     }
 
 
+def update_meal(
+    session: Session,
+    *,
+    meal_id: int,
+    patient_id: str | None = None,
+    foods: list[dict[str, Any]] | None = None,
+    meal_type: str | None = None,
+    meal_date: date | str | None = None,
+    meal_time: str | None = None,
+    scenario_key: str | None = None,
+    description: str | None = None,
+    reason: str = "",
+    create_alert: bool = True,
+) -> dict[str, Any]:
+    if meal_id <= 0:
+        raise ValueError("nutrition_meal_not_found")
+    if meal_type is not None and meal_type not in MEAL_TYPE_LABELS:
+        raise ValueError("unsupported_meal_type")
+    if foods is not None and not foods:
+        raise ValueError("foods_required")
+    if (
+        foods is None
+        and meal_type is None
+        and meal_date is None
+        and meal_time is None
+        and scenario_key is None
+        and description is None
+    ):
+        raise ValueError("nutrition_meal_update_empty")
+
+    profile = ensure_nutrition_profile(session, patient_id)
+    meal = _meal_for_patient(session, meal_id, profile.patient_id)
+    if meal is None:
+        raise ValueError("nutrition_meal_not_found")
+
+    clock = ensure_clock(session)
+    old_date = meal.meal_date
+    if meal_type is not None:
+        meal.meal_type = meal_type
+    if meal_date is not None:
+        meal.meal_date = _coerce_date(meal_date) or meal.meal_date
+    if meal_time is not None:
+        meal.meal_time = meal_time
+    if scenario_key is not None:
+        meal.scenario_key = scenario_key
+    if description is not None:
+        meal.description = description
+
+    session.flush()
+    if foods is not None:
+        session.execute(delete(NutritionFood).where(NutritionFood.meal_id == meal.id))
+        session.flush()
+        for item in foods:
+            session.add(_nutrition_food_from_payload(item, meal_id=meal.id, created_at=clock.current_time))
+        session.flush()
+
+    if old_date != meal.meal_date:
+        recalculate_daily_nutrition(session, meal.patient_id, old_date)
+    summary = recalculate_daily_nutrition(session, meal.patient_id, meal.meal_date)
+    summary["preferences"] = _nutrition_preference_summary(session, meal.patient_id)
+    alert = create_nutrition_alert(session, meal, summary) if create_alert else None
+    alert_reused = bool(alert is not None and getattr(alert, "_nutrition_alert_reused", False))
+    return {
+        "success": True,
+        "meal": meal_view(session, meal),
+        "daily_summary": summary,
+        "alert_created": alert is not None and not alert_reused,
+        "alert_id": alert.id if alert is not None else None,
+        "updated": True,
+        "reason": reason,
+        "alert_reused": alert_reused,
+    }
+
+
+def delete_meal(
+    session: Session,
+    *,
+    meal_id: int,
+    patient_id: str | None = None,
+    reason: str = "",
+) -> dict[str, Any]:
+    if meal_id <= 0:
+        raise ValueError("nutrition_meal_not_found")
+    profile = ensure_nutrition_profile(session, patient_id)
+    meal = _meal_for_patient(session, meal_id, profile.patient_id)
+    if meal is None:
+        raise ValueError("nutrition_meal_not_found")
+
+    deleted_view = meal_view(session, meal)
+    meal_date = meal.meal_date
+    target_patient_id = meal.patient_id
+    session.execute(delete(NutritionFood).where(NutritionFood.meal_id == meal.id))
+    session.delete(meal)
+    session.flush()
+    summary = recalculate_daily_nutrition(session, target_patient_id, meal_date)
+    summary["preferences"] = _nutrition_preference_summary(session, target_patient_id)
+    return {
+        "success": True,
+        "deleted_meal": deleted_view,
+        "daily_summary": summary,
+        "reason": reason,
+    }
+
+
 def existing_scenario_meal(session: Session, patient_id: str, target_date: date, scenario_key: str) -> NutritionMeal | None:
     return session.scalar(
         select(NutritionMeal)
@@ -320,6 +427,15 @@ def existing_scenario_meal(session: Session, patient_id: str, target_date: date,
             NutritionMeal.scenario_key == scenario_key,
         )
         .order_by(desc(NutritionMeal.id))
+    )
+
+
+def _meal_for_patient(session: Session, meal_id: int, patient_id: str) -> NutritionMeal | None:
+    return session.scalar(
+        select(NutritionMeal).where(
+            NutritionMeal.id == meal_id,
+            NutritionMeal.patient_id == patient_id,
+        )
     )
 
 

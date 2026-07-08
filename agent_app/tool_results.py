@@ -25,6 +25,10 @@ def tool_calls_payload(tool_calls: list[dict[str, Any]], results: list[ToolCallR
             payload["dose_taken_result"] = result.response
         elif result.tool_name == "record_meal" and result.status == "success":
             payload["nutrition_meal_result"] = result.response
+        elif result.tool_name == "update_nutrition_meal" and result.status == "success":
+            payload["nutrition_meal_update_result"] = result.response
+        elif result.tool_name == "delete_nutrition_meal" and result.status == "success":
+            payload["nutrition_meal_delete_result"] = result.response
         elif result.tool_name == "get_daily_nutrition_summary" and result.status == "success":
             payload["nutrition_daily_summary"] = result.response.get("daily_summary")
         elif result.tool_name == "list_meals" and result.status == "success":

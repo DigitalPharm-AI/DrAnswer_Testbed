@@ -12,6 +12,8 @@ ALLOWED_TOOL_NAMES = {
     "mark_dose_taken",
     "search_food_nutrition",
     "record_meal",
+    "update_nutrition_meal",
+    "delete_nutrition_meal",
     "list_meals",
     "get_daily_nutrition_summary",
     "record_nutrition_preference",

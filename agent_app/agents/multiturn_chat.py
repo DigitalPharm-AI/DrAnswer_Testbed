@@ -27,10 +27,13 @@ from agent_app.prompt_builders import multiturn_chat_prompt
 from agent_app.providers import BaseLLMProvider
 from agent_app.response_builders import natural_chat_summary, string_list
 from agent_app.tool_catalog import ToolCatalog
+from agent_app.tool_permissions import MEDICATION_CHAT_TOOLS, POLICY_TOOLS
 from agent_app.tool_policy import has_deferred_policy_tool_call, normalize_policy_tool_calls
 from agent_app.tool_results import tool_calls_payload, tool_result_summary
 from agent_app.tool_runtime import ToolRuntime
 from shared.schemas import AgentResponse, MultiturnChatRequest
+
+SUPERVISOR_DIRECT_TOOLS = tuple(sorted(MEDICATION_CHAT_TOOLS | POLICY_TOOLS))
 
 
 class MultiturnChatAgent:
@@ -48,7 +51,7 @@ class MultiturnChatAgent:
             request_payload = request.model_dump(mode="json")
             context = request.context if isinstance(request.context, dict) else {}
             async_tool_calls = context.get("async_tool_calls")
-            catalog_tools = [*ToolCatalog.available_tools_payload(), *delegation_tools_payload()]
+            catalog_tools = [*ToolCatalog.tools_for(*SUPERVISOR_DIRECT_TOOLS), *delegation_tools_payload()]
             bound_model = self.provider.chat_model().bind_tools(langchain_tools_from_catalog(catalog_tools))
             messages = build_chat_messages(
                 multiturn_chat_prompt(),

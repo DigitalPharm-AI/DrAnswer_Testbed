@@ -13,9 +13,13 @@ from shared.schemas import (
     NutritionDailySummaryResult,
     NutritionFoodSearchRequest,
     NutritionFoodSearchResult,
+    NutritionMealDeleteRequest,
+    NutritionMealDeleteResult,
     NutritionMealListResult,
     NutritionMealRecordRequest,
     NutritionMealRecordResult,
+    NutritionMealUpdateRequest,
+    NutritionMealUpdateResult,
     NutritionPreferenceFactRequest,
     NutritionPreferenceFactResult,
     NutritionPreferenceSummaryResult,
@@ -34,10 +38,12 @@ from system_app.services.agent_callback_service import (
 )
 from system_app.services.nutrition_service import (
     daily_nutrition_view,
+    delete_meal,
     meal_view,
     meals_for_date,
     record_meal,
     search_foods,
+    update_meal,
 )
 from system_app.services.nutrition_preference_service import nutrition_preference_summary, record_preference_fact
 from system_app.services.policy_service import reload_policy_workbook
@@ -48,6 +54,8 @@ AGENT_NUTRITION_ERROR_CODES = {
     "invalid_nutrient_value",
     "invalid_nutrition_date",
     "negative_nutrient_value",
+    "nutrition_meal_not_found",
+    "nutrition_meal_update_empty",
     "unsupported_meal_type",
 }
 
@@ -101,6 +109,52 @@ def create_agent_api_router(get_runtime: Callable[[], SystemRuntime]) -> APIRout
                 ) from exc
             session.commit()
             return NutritionMealRecordResult.model_validate(result)
+
+    @router.post("/api/agent/nutrition/meals/{meal_id}/update", response_model=NutritionMealUpdateResult)
+    async def agent_nutrition_update_meal(
+        meal_id: int,
+        payload: NutritionMealUpdateRequest,
+        session: Session = Depends(get_session),
+    ) -> NutritionMealUpdateResult:
+        with get_runtime().write_lock:
+            try:
+                result = update_meal(
+                    session,
+                    meal_id=meal_id,
+                    patient_id=payload.patient_id,
+                    foods=[food.model_dump(mode="json") for food in payload.foods] if payload.foods is not None else None,
+                    meal_type=payload.meal_type,
+                    meal_date=payload.meal_date,
+                    meal_time=payload.meal_time,
+                    scenario_key=payload.scenario_key,
+                    description=payload.description,
+                    reason=payload.reason,
+                )
+            except ValueError as exc:
+                code = public_error_code(exc, allowed_codes=AGENT_NUTRITION_ERROR_CODES, fallback="nutrition_meal_invalid")
+                raise HTTPException(status_code=404 if code == "nutrition_meal_not_found" else 422, detail=code) from exc
+            session.commit()
+            return NutritionMealUpdateResult.model_validate(result)
+
+    @router.post("/api/agent/nutrition/meals/{meal_id}/delete", response_model=NutritionMealDeleteResult)
+    async def agent_nutrition_delete_meal(
+        meal_id: int,
+        payload: NutritionMealDeleteRequest,
+        session: Session = Depends(get_session),
+    ) -> NutritionMealDeleteResult:
+        with get_runtime().write_lock:
+            try:
+                result = delete_meal(
+                    session,
+                    meal_id=meal_id,
+                    patient_id=payload.patient_id,
+                    reason=payload.reason,
+                )
+            except ValueError as exc:
+                code = public_error_code(exc, allowed_codes=AGENT_NUTRITION_ERROR_CODES, fallback="nutrition_meal_invalid")
+                raise HTTPException(status_code=404 if code == "nutrition_meal_not_found" else 422, detail=code) from exc
+            session.commit()
+            return NutritionMealDeleteResult.model_validate(result)
 
     @router.get("/api/agent/nutrition/meals", response_model=NutritionMealListResult)
     async def agent_nutrition_list_meals(

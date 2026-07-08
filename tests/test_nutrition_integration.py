@@ -208,6 +208,66 @@ def test_agent_nutrition_api_keeps_meal_queries_patient_scoped():
     assert summary_b.json()["daily_summary"]["total_meals"] == 1
 
 
+def test_agent_nutrition_api_updates_and_deletes_meal_records():
+    client = TestClient(app)
+    client.post("/simulation/reset")
+    meal_payload = {
+        "patient_id": "patient-crud",
+        "meal_type": "lunch",
+        "meal_date": "2026-04-20",
+        "meal_time": "12:00:00",
+        "foods": [
+            {
+                "food_name": "crud original meal",
+                "portion": "1 bowl",
+                "nutrients": {"calories": 100, "protein": 4, "sodium": 100, "fat": 2, "carbohydrates": 12},
+            }
+        ],
+    }
+
+    create_response = client.post("/api/agent/nutrition/meals", json=meal_payload)
+    meal_id = create_response.json()["meal"]["id"]
+    update_response = client.post(
+        f"/api/agent/nutrition/meals/{meal_id}/update",
+        json={
+            "patient_id": "patient-crud",
+            "meal_type": "dinner",
+            "description": "corrected meal",
+            "foods": [
+                {
+                    "food_name": "crud updated meal",
+                    "portion": "2 pieces",
+                    "nutrients": {"calories": 180, "protein": 10, "sodium": 150, "fat": 4, "carbohydrates": 20},
+                }
+            ],
+            "reason": "patient correction",
+        },
+    )
+    wrong_patient_delete = client.post(
+        f"/api/agent/nutrition/meals/{meal_id}/delete",
+        json={"patient_id": "other-patient", "reason": "wrong patient should not delete"},
+    )
+    delete_response = client.post(
+        f"/api/agent/nutrition/meals/{meal_id}/delete",
+        json={"patient_id": "patient-crud", "reason": "patient requested delete"},
+    )
+    list_response = client.get("/api/agent/nutrition/meals", params={"patient_id": "patient-crud", "meal_date": "2026-04-20"})
+
+    assert create_response.status_code == 200
+    assert update_response.status_code == 200
+    updated = update_response.json()["meal"]
+    assert updated["id"] == meal_id
+    assert updated["meal_type"] == "dinner"
+    assert updated["description"] == "corrected meal"
+    assert updated["foods"][0]["food_name"] == "crud updated meal"
+    assert wrong_patient_delete.status_code == 404
+    assert wrong_patient_delete.json()["detail"] == "nutrition_meal_not_found"
+    assert delete_response.status_code == 200
+    assert delete_response.json()["deleted_meal"]["id"] == meal_id
+    assert list_response.status_code == 200
+    assert list_response.json()["total"] == 0
+
+
 def test_agent_nutrition_record_meal_returns_public_error_for_invalid_nutrients():
     client = TestClient(app)
     raw_value = "pytest-private-peanut-allergy-nutrient"

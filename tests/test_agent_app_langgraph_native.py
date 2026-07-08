@@ -174,6 +174,68 @@ class NativeDelegatingMedicationProvider(NativeChatProvider):
         return {"advice": "확인했습니다."}
 
 
+class NativeDelegatingNutritionManagementProvider(NativeChatProvider):
+    def __init__(self) -> None:
+        self.seen_payloads: list[dict[str, Any]] = []
+        self.bound_tool_names: list[str] = []
+        self.bound_tool_history: list[list[str]] = []
+
+    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        self.seen_payloads.append(user_payload)
+        self.bound_tool_history.append(list(self.bound_tool_names))
+        if user_payload.get("response_mode") == "multiturn_chat":
+            return {
+                "message": "영양 관리 에이전트가 확인하겠습니다.",
+                "tool_call": {
+                    "name": "call_nutrition_management_agent",
+                    "arguments": {
+                        "task": "search food candidates before saving the meal",
+                        "reason": "patient reported eating a food item",
+                    },
+                },
+            }
+        if user_payload.get("response_mode") == "nutrition_management_chat":
+            return {
+                "message": "음식 후보를 확인하겠습니다.",
+                "tool_call": {
+                    "name": "search_food_nutrition",
+                    "arguments": {"query": "삶은 계란"},
+                },
+            }
+        return {"advice": "확인했습니다."}
+
+
+class NativeDelegatingNutritionRecommendationProvider(NativeChatProvider):
+    def __init__(self) -> None:
+        self.seen_payloads: list[dict[str, Any]] = []
+        self.bound_tool_names: list[str] = []
+        self.bound_tool_history: list[list[str]] = []
+
+    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        self.seen_payloads.append(user_payload)
+        self.bound_tool_history.append(list(self.bound_tool_names))
+        if user_payload.get("response_mode") == "multiturn_chat":
+            return {
+                "message": "영양 추천 에이전트가 확인하겠습니다.",
+                "tool_call": {
+                    "name": "call_nutrition_recommendation_agent",
+                    "arguments": {
+                        "task": "recommend a suitable dinner",
+                        "reason": "patient asked what to eat",
+                    },
+                },
+            }
+        if user_payload.get("response_mode") == "nutrition_recommendation_chat":
+            return {
+                "message": "오늘 섭취와 선호도를 반영해 추천하겠습니다.",
+                "tool_call": {
+                    "name": "recommend_diet",
+                    "arguments": {"constraints": {"sodium": "low"}, "meal_type": "dinner"},
+                },
+            }
+        return {"advice": "확인했습니다."}
+
+
 class NativeSideEffectLookupProvider(NativeChatProvider):
     async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         assert user_payload["response_mode"] == "multiturn_chat"
@@ -292,6 +354,49 @@ class NativeFakeToolExecutor:
                     "candidates": [],
                 },
                 idempotency_key=f"{trace_id}:AE_pro_ctcae",
+            )
+        if name == "search_food_nutrition":
+            return ToolCallResult(
+                tool_name=name,
+                status="success",
+                response={
+                    "success": True,
+                    "query": tool_call["arguments"].get("query", ""),
+                    "candidates": [
+                        {
+                            "food_ref_id": "egg-boiled",
+                            "food_name": "삶은 달걀",
+                            "serving_size": 50,
+                            "nutrients": {"calories": 70, "protein": 6},
+                        }
+                    ],
+                },
+                idempotency_key=f"{trace_id}:search_food_nutrition",
+            )
+        if name == "recommend_diet":
+            return ToolCallResult(
+                tool_name=name,
+                status="success",
+                response={
+                    "success": True,
+                    "recommendations": [{"food_name": "두부 샐러드", "score": 0.9}],
+                    "blocked_count": 0,
+                },
+                idempotency_key=f"{trace_id}:recommend_diet",
+            )
+        if name == "update_nutrition_meal":
+            return ToolCallResult(
+                tool_name=name,
+                status="success",
+                response={"success": True, "meal": {"id": tool_call["arguments"]["meal_id"], "meal_label": "점심"}, "daily_summary": {}},
+                idempotency_key=f"{trace_id}:update_nutrition_meal:{tool_call['arguments']['meal_id']}",
+            )
+        if name == "delete_nutrition_meal":
+            return ToolCallResult(
+                tool_name=name,
+                status="success",
+                response={"success": True, "deleted_meal": {"id": tool_call["arguments"]["meal_id"], "meal_label": "점심"}, "daily_summary": {}},
+                idempotency_key=f"{trace_id}:delete_nutrition_meal:{tool_call['arguments']['meal_id']}",
             )
         return ToolCallResult(tool_name=name, status="error", error="unexpected_tool")
 
@@ -711,6 +816,16 @@ def test_agent_app_mcp_allows_nutrition_tools():
     )
 
     assert preference_denial is None
+    assert validate_tool_permission(
+        {"name": "update_nutrition_meal", "arguments": {"meal_id": 1, "meal_type": "dinner"}},
+        source_event_type="mcp",
+        payload={},
+    ) is None
+    assert validate_tool_permission(
+        {"name": "delete_nutrition_meal", "arguments": {"meal_id": 1}},
+        source_event_type="mcp",
+        payload={},
+    ) is None
 
 
 def test_rule_based_provider_splits_explicit_nutrition_preferences_by_entity():
@@ -834,7 +949,10 @@ def test_agent_app_multiturn_mark_taken_tool_call(monkeypatch):
     assert payload["structured_payload"]["tool_result_summary_used"] is True
     assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "mark_dose_taken"
     assert tool_executor.calls[0]["name"] == "mark_dose_taken"
-    assert {"mark_dose_taken", "recommend_diet"} <= set(provider.bound_tool_names)
+    assert {"mark_dose_taken", "lookup_side_effect_info", "AE_pro_ctcae", "call_nutrition_management_agent", "call_nutrition_recommendation_agent"} <= set(provider.bound_tool_names)
+    assert "recommend_diet" not in provider.bound_tool_names
+    assert "record_meal" not in provider.bound_tool_names
+    assert "search_food_nutrition" not in provider.bound_tool_names
 
 
 def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_permission(monkeypatch):
@@ -865,6 +983,67 @@ def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_perm
     assert [seen["response_mode"] for seen in provider.seen_payloads] == ["multiturn_chat", "medication_chat"]
     assert {"mark_dose_taken", "lookup_side_effect_info", "AE_pro_ctcae"} <= set(provider.bound_tool_names)
     assert "recommend_diet" not in provider.bound_tool_names
+
+
+def test_agent_app_multiturn_delegates_nutrition_management_tools(monkeypatch):
+    provider = NativeDelegatingNutritionManagementProvider()
+    tool_executor = NativeFakeToolExecutor()
+    monkeypatch.setattr(native_agent_main, "orchestrator", AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=tool_executor))
+    client = TestClient(native_agent_main.app)
+    request = MultiturnChatRequest(
+        patient_id="demo-patient",
+        phr_patient_key="phr-demo",
+        event_type="multiturn_chat",
+        message="삶은 계란 먹었어",
+        current_time=datetime(2026, 4, 20, 9, 35),
+        context={"recent_chat": []},
+    )
+
+    response = client.post("/agent/multiturn-chat", json=request.model_dump(mode="json"), headers=internal_auth_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    supervisor_tools = set(provider.bound_tool_history[0])
+    specialist_tools = set(provider.bound_tool_history[1])
+    assert payload["agent_name"] == "nutrition_management_agent"
+    assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
+    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "call_nutrition_management_agent"
+    assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "search_food_nutrition"
+    assert tool_executor.calls[0]["name"] == "search_food_nutrition"
+    assert {"call_nutrition_management_agent", "call_nutrition_recommendation_agent"} <= supervisor_tools
+    assert not {"search_food_nutrition", "record_meal", "update_nutrition_meal", "delete_nutrition_meal", "recommend_diet"} & supervisor_tools
+    assert {"search_food_nutrition", "record_meal", "update_nutrition_meal", "delete_nutrition_meal", "get_daily_nutrition_summary"} <= specialist_tools
+    assert "recommend_diet" not in specialist_tools
+
+
+def test_agent_app_multiturn_delegates_nutrition_recommendation_tools(monkeypatch):
+    provider = NativeDelegatingNutritionRecommendationProvider()
+    tool_executor = NativeFakeToolExecutor()
+    monkeypatch.setattr(native_agent_main, "orchestrator", AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=tool_executor))
+    client = TestClient(native_agent_main.app)
+    request = MultiturnChatRequest(
+        patient_id="demo-patient",
+        phr_patient_key="phr-demo",
+        event_type="multiturn_chat",
+        message="저녁 뭐 먹을까?",
+        current_time=datetime(2026, 4, 20, 18, 30),
+        context={"recent_chat": []},
+    )
+
+    response = client.post("/agent/multiturn-chat", json=request.model_dump(mode="json"), headers=internal_auth_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    supervisor_tools = set(provider.bound_tool_history[0])
+    specialist_tools = set(provider.bound_tool_history[1])
+    assert payload["agent_name"] == "nutrition_recommendation_agent"
+    assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
+    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "call_nutrition_recommendation_agent"
+    assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "recommend_diet"
+    assert tool_executor.calls[0]["name"] == "recommend_diet"
+    assert not {"search_food_nutrition", "record_meal", "update_nutrition_meal", "delete_nutrition_meal", "recommend_diet"} & supervisor_tools
+    assert {"search_food_nutrition", "list_meals", "get_daily_nutrition_summary", "get_nutrition_preferences", "recommend_diet"} <= specialist_tools
+    assert not {"record_meal", "update_nutrition_meal", "delete_nutrition_meal", "record_nutrition_preference"} & specialist_tools
 
 
 def test_agent_app_multiturn_forces_ae_after_positive_side_effect_lookup(monkeypatch):

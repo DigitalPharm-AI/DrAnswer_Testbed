@@ -106,6 +106,88 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
+                "name": "update_nutrition_meal",
+                "title": "Update Nutrition Meal",
+                "description": (
+                    "Update an existing meal record while keeping the same meal_id. Use only when the target meal_id is clear. "
+                    "Provide one or more fields to update: meal_type, meal_date, meal_time, description, scenario_key, or foods. "
+                    "When foods is provided it replaces the meal food list."
+                ),
+                "annotations": {
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "idempotentHint": False,
+                    "openWorldHint": False,
+                },
+                "_meta": {
+                    "domain": "nutrition",
+                    "source_repo": "DrAnswer_Testbed",
+                    "source_path": "system_app/routes/agent_api.py",
+                    "source_tool_name": "agent_nutrition_update_meal",
+                    "mutability": "write",
+                    "risk_level": "medium",
+                },
+                "required_arguments": ["meal_id"],
+                "optional_arguments": ["patient_id", "meal_type", "meal_date", "meal_time", "scenario_key", "description", "foods", "reason"],
+                "inputSchema": _object_schema(
+                    {
+                        "meal_id": {"type": "integer", "description": "Existing meal id to update"},
+                        "patient_id": {"type": "string", "description": "Patient id used to scope the update"},
+                        "meal_type": {"type": "string", "enum": ["breakfast", "lunch", "dinner", "snack"]},
+                        "meal_date": {"type": "string", "description": "YYYY-MM-DD"},
+                        "meal_time": {"type": "string", "description": "HH:MM or HH:MM:SS"},
+                        "scenario_key": {"type": "string"},
+                        "description": {"type": "string"},
+                        "foods": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "food_name": {"type": "string"},
+                                    "portion": {"type": "string"},
+                                    "nutrients": {"type": "object"},
+                                },
+                                "required": ["food_name", "nutrients"],
+                                "additionalProperties": True,
+                            },
+                        },
+                        "reason": {"type": "string"},
+                    },
+                    ["meal_id"],
+                ),
+                "outputSchema": _tool_result_schema(),
+            },
+            {
+                "name": "delete_nutrition_meal",
+                "title": "Delete Nutrition Meal",
+                "description": "Delete an existing meal record by meal_id. Use only after the target meal is clear or confirmed.",
+                "annotations": {
+                    "readOnlyHint": False,
+                    "destructiveHint": True,
+                    "idempotentHint": False,
+                    "openWorldHint": False,
+                },
+                "_meta": {
+                    "domain": "nutrition",
+                    "source_repo": "DrAnswer_Testbed",
+                    "source_path": "system_app/routes/agent_api.py",
+                    "source_tool_name": "agent_nutrition_delete_meal",
+                    "mutability": "delete",
+                    "risk_level": "medium",
+                },
+                "required_arguments": ["meal_id"],
+                "optional_arguments": ["patient_id", "reason"],
+                "inputSchema": _object_schema(
+                    {
+                        "meal_id": {"type": "integer", "description": "Existing meal id to delete"},
+                        "patient_id": {"type": "string", "description": "Patient id used to scope the delete"},
+                        "reason": {"type": "string"},
+                    },
+                    ["meal_id"],
+                ),
+                "outputSchema": _tool_result_schema(),
+            },
+            {
                 "name": "list_meals",
                 "title": "List Nutrition Meals",
                 "description": "특정 날짜 또는 오늘 기록된 식사 목록을 조회합니다.",

@@ -9,6 +9,8 @@ POLICY_TOOLS = {"apply_notification_policy", "apply_system_policy"}
 NUTRITION_TOOLS = {
     "search_food_nutrition",
     "record_meal",
+    "update_nutrition_meal",
+    "delete_nutrition_meal",
     "list_meals",
     "get_daily_nutrition_summary",
     "record_nutrition_preference",
@@ -19,6 +21,8 @@ MEDICATION_CHAT_TOOLS = {"mark_dose_taken", *SIDE_EFFECT_TOOLS}
 NUTRITION_MANAGEMENT_TOOLS = {
     "search_food_nutrition",
     "record_meal",
+    "update_nutrition_meal",
+    "delete_nutrition_meal",
     "list_meals",
     "get_daily_nutrition_summary",
     "record_nutrition_preference",
@@ -89,6 +93,18 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
             return "record_meal requires meal_type"
         if not isinstance(arguments.get("foods"), list) or not arguments.get("foods"):
             return "record_meal requires foods"
+    if tool_name == "update_nutrition_meal":
+        if not isinstance(arguments.get("meal_id"), int):
+            return "update_nutrition_meal requires integer meal_id"
+        if "meal_type" in arguments and arguments.get("meal_type") not in {None, "breakfast", "lunch", "dinner", "snack"}:
+            return "update_nutrition_meal requires supported meal_type"
+        if "foods" in arguments and (not isinstance(arguments.get("foods"), list) or not arguments.get("foods")):
+            return "update_nutrition_meal requires non-empty foods when foods is provided"
+        if not any(key in arguments for key in ("meal_type", "meal_date", "meal_time", "scenario_key", "description", "foods")):
+            return "update_nutrition_meal requires at least one update field"
+    if tool_name == "delete_nutrition_meal":
+        if not isinstance(arguments.get("meal_id"), int):
+            return "delete_nutrition_meal requires integer meal_id"
     if tool_name == "recommend_diet":
         if not isinstance(arguments.get("constraints"), dict) or not arguments.get("constraints"):
             return "recommend_diet requires constraints"
