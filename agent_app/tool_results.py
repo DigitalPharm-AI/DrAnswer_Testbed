@@ -29,6 +29,10 @@ def tool_calls_payload(tool_calls: list[dict[str, Any]], results: list[ToolCallR
             payload["nutrition_meal_update_result"] = result.response
         elif result.tool_name == "delete_nutrition_meal" and result.status == "success":
             payload["nutrition_meal_delete_result"] = result.response
+        elif result.tool_name == "update_nutrition_food" and result.status == "success":
+            payload["nutrition_food_update_result"] = result.response
+        elif result.tool_name == "delete_nutrition_food" and result.status == "success":
+            payload["nutrition_food_delete_result"] = result.response
         elif result.tool_name == "get_daily_nutrition_summary" and result.status == "success":
             payload["nutrition_daily_summary"] = result.response.get("daily_summary")
         elif result.tool_name == "list_meals" and result.status == "success":
@@ -49,6 +53,9 @@ def tool_calls_payload(tool_calls: list[dict[str, Any]], results: list[ToolCallR
             payload["nutrition_preferences"] = result.response.get("preferences", {})
         elif result.tool_name == "recommend_diet" and result.status == "success":
             payload["diet_recommendations"] = result.response.get("recommendations", [])
+            payload["constraints_applied"] = result.response.get("constraints_applied", {})
+            payload["blocked_count"] = result.response.get("blocked_count", 0)
+            payload["total_candidates"] = result.response.get("total_candidates", 0)
         elif result.tool_name == "apply_notification_policy" and result.status == "success":
             payload["policy_apply_result"] = result.response
         elif result.tool_name == "apply_system_policy" and result.status == "success":

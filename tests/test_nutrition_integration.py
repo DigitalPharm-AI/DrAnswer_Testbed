@@ -8,12 +8,15 @@ from system_app.models import (
     DailyNutritionCheck,
     Notification,
     NutritionFood,
+    NutritionFoodRef,
     NutritionMeal,
     NutritionOntologyNode,
     NutritionOntologyTriple,
     NutritionPatientPreferenceTriple,
 )
 from system_app.services.medication_plan_service import reset_simulation_state
+from system_app.services.food_search_service import english_to_korean_nutrients, scale_nutrients
+from system_app.services.diet_recommendation_service import recommend_diet
 from system_app.services.nutrition_service import daily_nutrition_view, record_meal, run_nutrition_scenario, search_foods
 from system_app.services.nutrition_preference_service import (
     nutrition_preference_summary,
@@ -140,6 +143,93 @@ def test_nutrition_panel_and_scenario_route_render():
     assert "기록됨" in scenario_response.text
 
 
+def test_food_search_serving_size_nutrients_scale_before_meal_recording():
+    with build_session() as session:
+        session.add(
+            NutritionFoodRef(
+                food_ref_id="serving-scale-food",
+                food_name="기준량 테스트 음식",
+                category="테스트",
+                serving_size=200,
+                energy=100,
+                protein=5,
+                sodium=20,
+                fat=3,
+                carbohydrate=10,
+            )
+        )
+        session.commit()
+
+        result = search_foods("기준량 테스트", session=session, patient_id="patient-serving-scale")
+        candidate = result["candidates"][0]
+        assert candidate["serving_size"] == 200
+        assert candidate["nutrients"]["energy"]["value"] == 200
+        assert candidate["nutrients"]["protein"]["value"] == 10
+        assert candidate["nutrients"]["sodium"]["value"] == 40
+
+        scaled = scale_nutrients(candidate["nutrients"], 0.5)
+        record_meal(
+            session,
+            patient_id="patient-serving-scale",
+            meal_type="breakfast",
+            foods=[
+                {
+                    "food_ref_id": candidate["food_ref_id"],
+                    "food_name": candidate["food_name"],
+                    "portion": "100g",
+                    "nutrients": english_to_korean_nutrients(scaled),
+                }
+            ],
+            create_alert=False,
+        )
+        summary = daily_nutrition_view(session, patient_id="patient-serving-scale")
+
+        assert summary["nutrients"]["칼로리"]["intake"] == 100
+        assert summary["nutrients"]["단백질"]["intake"] == 5
+        assert summary["nutrients"]["나트륨"]["intake"] == 20
+
+
+def test_diet_recommendation_uses_serving_size_nutrients_and_reasons():
+    with build_session() as session:
+        session.add_all(
+            [
+                NutritionFoodRef(
+                    food_ref_id="low-sodium-serving",
+                    food_name="저나트륨 기준량 음식",
+                    category="테스트",
+                    serving_size=200,
+                    energy=150,
+                    protein=4,
+                    sodium=100,
+                    fat=2,
+                    carbohydrate=20,
+                ),
+                NutritionFoodRef(
+                    food_ref_id="high-serving-sodium",
+                    food_name="제공량 초과 나트륨 음식",
+                    category="테스트",
+                    serving_size=400,
+                    energy=100,
+                    protein=3,
+                    sodium=200,
+                    fat=1,
+                    carbohydrate=18,
+                ),
+            ]
+        )
+        session.commit()
+
+        result = recommend_diet(session, patient_id="patient-serving-recommend", constraints={"나트륨": "low"}, limit=5)
+        names = {item["food_name"] for item in result["recommendations"]}
+        recommendation = next(item for item in result["recommendations"] if item["food_name"] == "저나트륨 기준량 음식")
+
+        assert "저나트륨 기준량 음식" in names
+        assert "제공량 초과 나트륨 음식" not in names
+        assert recommendation["nutrients"]["sodium"]["value"] == 200
+        assert recommendation["recommendation_reasons"]
+        assert "나트륨" in recommendation["recommendation_reasons"][0]
+
+
 def test_nutrition_scenario_route_returns_public_error_code():
     client = TestClient(app)
     raw_scenario_key = "pytest-private-peanut-allergy-scenario"
@@ -264,6 +354,110 @@ def test_agent_nutrition_api_updates_and_deletes_meal_records():
     assert wrong_patient_delete.json()["detail"] == "nutrition_meal_not_found"
     assert delete_response.status_code == 200
     assert delete_response.json()["deleted_meal"]["id"] == meal_id
+    assert list_response.status_code == 200
+    assert list_response.json()["total"] == 0
+
+
+def test_agent_nutrition_api_updates_and_deletes_food_records():
+    client = TestClient(app)
+    client.post("/simulation/reset")
+    meal_payload = {
+        "patient_id": "patient-food-crud",
+        "meal_type": "lunch",
+        "meal_date": "2026-04-20",
+        "meal_time": "12:00:00",
+        "foods": [
+            {
+                "food_name": "탕수육",
+                "portion": "1 plate",
+                "nutrients": {"calories": 400, "protein": 15, "sodium": 500, "fat": 20, "carbohydrates": 40},
+            },
+            {
+                "food_name": "밥",
+                "portion": "1 bowl",
+                "nutrients": {"calories": 300, "protein": 6, "sodium": 10, "fat": 1, "carbohydrates": 65},
+            },
+        ],
+    }
+
+    create_response = client.post("/api/agent/nutrition/meals", json=meal_payload)
+    meal = create_response.json()["meal"]
+    meal_id = meal["id"]
+    first_food_id = meal["foods"][0]["id"]
+    second_food_id = meal["foods"][1]["id"]
+
+    update_response = client.post(
+        f"/api/agent/nutrition/meals/{meal_id}/foods/{first_food_id}/update",
+        json={
+            "patient_id": "patient-food-crud",
+            "food_ref_id": "guobaorou-ref",
+            "food_name": "꿔바로우",
+            "portion": "1 plate",
+            "nutrients": {"calories": 450, "protein": 16, "sodium": 550, "fat": 22, "carbohydrates": 44},
+            "reason": "patient corrected food",
+        },
+    )
+    wrong_patient_delete = client.post(
+        f"/api/agent/nutrition/meals/{meal_id}/foods/{second_food_id}/delete",
+        json={"patient_id": "other-patient", "reason": "wrong patient should not delete"},
+    )
+    delete_response = client.post(
+        f"/api/agent/nutrition/meals/{meal_id}/foods/{second_food_id}/delete",
+        json={"patient_id": "patient-food-crud", "reason": "patient removed rice"},
+    )
+    delete_last_response = client.post(
+        f"/api/agent/nutrition/meals/{meal_id}/foods/{first_food_id}/delete",
+        json={"patient_id": "patient-food-crud", "reason": "patient removed last food"},
+    )
+    list_response = client.get("/api/agent/nutrition/meals", params={"patient_id": "patient-food-crud", "meal_date": "2026-04-20"})
+
+    assert create_response.status_code == 200
+    assert update_response.status_code == 200
+    updated_payload = update_response.json()
+    assert updated_payload["food"]["id"] == first_food_id
+    assert updated_payload["food"]["food_name"] == "꿔바로우"
+    assert updated_payload["food"]["food_ref_id"] == "guobaorou-ref"
+    assert updated_payload["meal"]["foods"][0]["food_name"] == "꿔바로우"
+    assert wrong_patient_delete.status_code == 404
+    assert wrong_patient_delete.json()["detail"] == "nutrition_meal_not_found"
+    assert delete_response.status_code == 200
+    assert delete_response.json()["deleted_food"]["id"] == second_food_id
+    assert delete_response.json()["meal_deleted"] is False
+    assert len(delete_response.json()["meal"]["foods"]) == 1
+    assert delete_last_response.status_code == 200
+    assert delete_last_response.json()["meal_deleted"] is True
+    assert delete_last_response.json()["meal"] is None
+    assert list_response.status_code == 200
+    assert list_response.json()["total"] == 0
+
+
+def test_nutrition_panel_deletes_single_food_and_rerenders_partial():
+    client = TestClient(app)
+    client.post("/simulation/reset")
+    meal_payload = {
+        "patient_id": "patient-panel-food-delete",
+        "meal_type": "lunch",
+        "meal_date": "2026-04-20",
+        "meal_time": "12:00:00",
+        "foods": [
+            {
+                "food_name": "삭제 대상 음식",
+                "portion": "1 piece",
+                "nutrients": {"calories": 120, "protein": 3, "sodium": 20, "fat": 2, "carbohydrates": 24},
+            }
+        ],
+    }
+    create_response = client.post("/api/agent/nutrition/meals", json=meal_payload)
+    meal = create_response.json()["meal"]
+
+    response = client.post(
+        f"/nutrition/meals/{meal['id']}/foods/{meal['foods'][0]['id']}/delete",
+        data={"patient_id": "patient-panel-food-delete"},
+    )
+    list_response = client.get("/api/agent/nutrition/meals", params={"patient_id": "patient-panel-food-delete", "meal_date": "2026-04-20"})
+
+    assert response.status_code == 200
+    assert 'id="nutrition-panel"' in response.text
     assert list_response.status_code == 200
     assert list_response.json()["total"] == 0
 

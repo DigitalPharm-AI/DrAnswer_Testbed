@@ -17,7 +17,7 @@ def delegation_tools_payload() -> list[dict[str, Any]]:
         ),
         _delegation_tool(
             "call_nutrition_management_agent",
-            "Delegate confirmed meal logging, food search, meal history, nutrition summaries, and nutrition preference management.",
+            "Delegate confirmed meal logging, food search, current meal record checks, meal history, nutrition summaries, meal or food updates/deletes, post-delete verification, and nutrition preference management.",
         ),
         _delegation_tool(
             "call_nutrition_recommendation_agent",

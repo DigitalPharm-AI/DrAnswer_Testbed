@@ -1360,6 +1360,37 @@ button:disabled {
   color: var(--muted);
 }
 
+.nutrition-food-list {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.5rem;
+}
+
+.nutrition-food-row {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: space-between;
+}
+
+.nutrition-food-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.nutrition-food-row span,
+.nutrition-food-row small {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.nutrition-food-row small {
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
 .logs-shell {
   display: flex;
   flex-direction: column;

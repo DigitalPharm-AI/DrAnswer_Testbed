@@ -332,6 +332,29 @@
   color: var(--muted);
 }
 
+.food-candidate-card .food-nutrient-line {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.diet-recommendation-item {
+  cursor: default;
+}
+
+.diet-recommendation-item:hover {
+  background: #f8f9fa;
+  border-color: rgba(95, 102, 112, 0.22);
+}
+
+.diet-recommendation-reasons {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+  margin: 2px 0 0;
+  padding-left: 1rem;
+}
+
 .nutrient-preview {
   list-style: none;
   padding: 0;

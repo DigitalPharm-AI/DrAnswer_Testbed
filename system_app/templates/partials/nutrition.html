@@ -94,7 +94,35 @@
               <strong>{{ meal.meal_label }}</strong>
               <span class="tiny-badge">{{ meal.meal_time }}</span>
             </div>
-            <p>{{ meal.description or meal.foods | map(attribute='food_name') | join(', ') }}</p>
+            {% if meal.description %}
+              <p>{{ meal.description }}</p>
+            {% endif %}
+            <div class="nutrition-food-list">
+              {% for food in meal.foods %}
+                <div class="nutrition-food-row">
+                  {% set calories = food.nutrients.get('칼로리', {}) %}
+                  {% set protein = food.nutrients.get('단백질', {}) %}
+                  {% set sodium = food.nutrients.get('나트륨', {}) %}
+                  <div class="nutrition-food-main">
+                    <span>{{ food.food_name }} · {{ food.portion }}</span>
+                    <small>
+                      {{ calories.get('value', 0) | round | int }}{{ calories.get('unit', 'kcal') }}
+                      · 단백질 {{ '%g' % (protein.get('value', 0) | float) }}{{ protein.get('unit', 'g') }}
+                      · 나트륨 {{ sodium.get('value', 0) | round | int }}{{ sodium.get('unit', 'mg') }}
+                    </small>
+                  </div>
+                  <form
+                    action="/nutrition/meals/{{ meal.id }}/foods/{{ food.id }}/delete"
+                    method="post"
+                    hx-post="/nutrition/meals/{{ meal.id }}/foods/{{ food.id }}/delete"
+                    hx-target="#nutrition-panel"
+                    hx-swap="outerHTML">
+                    <input type="hidden" name="patient_id" value="{{ meal.patient_id }}">
+                    <button class="ghost compact-button" type="submit">삭제</button>
+                  </form>
+                </div>
+              {% endfor %}
+            </div>
           </article>
         {% endfor %}
       </div>

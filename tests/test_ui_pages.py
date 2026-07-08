@@ -485,6 +485,61 @@ def test_chat_panel_shows_ready_policy_confirmation_without_page_reload():
             session.commit()
 
 
+def test_chat_panel_renders_diet_recommendation_cards():
+    client = TestClient(app)
+
+    with SessionLocal() as session:
+        session.query(ChatMessage).delete()
+        ensure_base_data(session)
+        add_chat_message(
+            session,
+            role="assistant",
+            content="신장 건강을 위한 추천 후보를 아래에 준비했어요.",
+            sender_type="assistant",
+            category="multiturn_chat",
+            metadata={
+                "diet_recommendations": {
+                    "recommendations": [
+                        {
+                            "food_ref_id": "tofu-salad",
+                            "food_name": "두부 샐러드",
+                            "category": "샐러드",
+                            "serving_size": 180,
+                            "nutrients": {
+                                "energy": {"value": 210, "unit": "kcal"},
+                                "protein": {"value": 12, "unit": "g"},
+                                "sodium": {"value": 180, "unit": "mg"},
+                                "fat": {"value": 7, "unit": "g"},
+                                "carbohydrate": {"value": 18, "unit": "g"},
+                            },
+                            "recommendation_reasons": ["나트륨 180mg으로 목표(500mg 이하)에 맞아요."],
+                        }
+                    ],
+                    "constraints_applied": {"나트륨": "low"},
+                    "blocked_count": 1,
+                    "total_candidates": 8,
+                }
+            },
+        )
+        session.commit()
+
+    try:
+        response = client.get("/partials/chat")
+
+        assert response.status_code == 200
+        assert "신장 건강을 위한 추천 후보를 아래에 준비했어요." in response.text
+        assert "diet-recommendation-card" in response.text
+        assert "두부 샐러드" in response.text
+        assert "210kcal / 180g" in response.text
+        assert "단백질 12g" in response.text
+        assert "나트륨 180mg" in response.text
+        assert "목표(500mg 이하)에 맞아요" in response.text
+    finally:
+        with SessionLocal() as session:
+            session.query(ChatMessage).delete()
+            session.commit()
+
+
 def test_chat_log_partial_keeps_latest_messages_after_history_limit():
     client = TestClient(app)
 

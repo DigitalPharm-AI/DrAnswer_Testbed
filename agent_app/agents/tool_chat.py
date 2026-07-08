@@ -22,6 +22,8 @@ from agent_app.tool_results import tool_calls_payload, tool_result_summary
 from agent_app.tool_runtime import ToolRuntime
 from shared.schemas import AgentResponse
 
+MAX_TOOL_CHAT_ITERATIONS = 4
+
 
 async def run_tool_chat_agent(
     *,
@@ -56,75 +58,119 @@ async def run_tool_chat_agent(
     else:
         ai_message = await bound_model.ainvoke(messages)
         output = model_output_from_ai_message(ai_message)
-        tool_calls = normalize_policy_tool_calls(tool_calls_from_ai_message(ai_message), source_event_type=source_event_type)
-        ai_message = ai_message_from_tool_calls(tool_calls, content=str(ai_message.content or ""), model_output=output)
+    initial_model_output = dict(output)
+    all_executed_calls: list[dict[str, Any]] = []
+    all_results: list[Any] = []
+    all_tool_messages = []
+    message_history = list(messages)
+    final_ai_message = ai_message
+    final_model_output = output
+    iterations = 0
 
-    continuation_type = async_continuation_type(tool_calls)
-    if continuation_type and forced_tool_calls is None and not any(str(call.get("name") or "") == "mark_dose_taken" for call in tool_calls):
-        summary = async_continuation_summary(continuation_type)
-        return AgentResponse(
+    while True:
+        output = model_output_from_ai_message(ai_message)
+        tool_calls = normalize_policy_tool_calls(tool_calls_from_ai_message(ai_message), source_event_type=source_event_type)
+        if tool_calls:
+            ai_message = ai_message_from_tool_calls(tool_calls, content=str(ai_message.content or ""), model_output=output)
+
+        continuation_type = async_continuation_type(tool_calls)
+        if continuation_type and forced_tool_calls is None and not any(str(call.get("name") or "") == "mark_dose_taken" for call in tool_calls):
+            summary = async_continuation_summary(continuation_type)
+            return AgentResponse(
+                trace_id=trace_id,
+                agent_name=agent_name,
+                prompt_version_id=PROMPT_VERSION_ID,
+                decision_type="async_continuation_requested",
+                structured_payload={
+                    "routing_mode": "specialist_async_continuation",
+                    "executed_by": agent_name,
+                    "specialist_agent": agent_name,
+                    "specialist_tool_calls": [*all_executed_calls, *tool_calls],
+                    "model_output": initial_model_output,
+                    "final_model_output": output,
+                    "tool_calls": [*all_executed_calls, *tool_calls],
+                    "tool_results": [result.model_dump(mode="json") for result in all_results],
+                    "tools_executed": bool(all_executed_calls),
+                    "message_flow": _tool_chat_message_flow(len(all_results), pending_tool_call=True),
+                    "async_continuation_required": True,
+                    "async_continuation_type": continuation_type,
+                    "policy_confirmation_required": has_deferred_policy_tool_call(tool_calls),
+                },
+                human_summary=summary,
+                requires_conversation_alert=False,
+            )
+
+        if not tool_calls:
+            final_ai_message = ai_message
+            final_model_output = output
+            break
+
+        if iterations >= MAX_TOOL_CHAT_ITERATIONS:
+            summary = "도구 실행 횟수 제한에 도달해 작업을 완료하지 못했습니다. 요청을 다시 나누어 시도해 주세요."
+            return AgentResponse(
+                trace_id=trace_id,
+                agent_name=agent_name,
+                prompt_version_id=PROMPT_VERSION_ID,
+                decision_type=decision_type,
+                structured_payload={
+                    "routing_mode": "specialist_max_iterations",
+                    "executed_by": agent_name,
+                    "specialist_agent": agent_name,
+                    "specialist_tool_calls": all_executed_calls,
+                    "model_output": initial_model_output,
+                    "final_model_output": output,
+                    **tool_calls_payload(all_executed_calls, all_results),
+                    "message_flow": _tool_chat_message_flow(len(all_results), pending_tool_call=True),
+                    "policy_confirmation_required": has_deferred_policy_tool_call(all_executed_calls),
+                },
+                human_summary=summary,
+                requires_conversation_alert=False,
+            )
+
+        executed_calls, results = await tool_runtime.execute(
+            tool_calls,
             trace_id=trace_id,
-            agent_name=agent_name,
-            prompt_version_id=PROMPT_VERSION_ID,
-            decision_type="async_continuation_requested",
-            structured_payload={
-                "routing_mode": "specialist_async_continuation",
+            source_event_type=source_event_type,
+            payload=request_payload,
+            force_ae_after_positive_lookup=force_ae_after_positive_lookup,
+            routing_context={
+                "routing_mode": "specialist_tool",
                 "executed_by": agent_name,
                 "specialist_agent": agent_name,
-                "specialist_tool_calls": tool_calls,
-                "model_output": output,
-                "tool_calls": tool_calls,
-                "tool_results": [],
-                "tools_executed": False,
-                "message_flow": ["HumanMessage", "AIMessage(tool_calls)"],
-                "async_continuation_required": True,
-                "async_continuation_type": continuation_type,
-                "policy_confirmation_required": has_deferred_policy_tool_call(tool_calls),
+                "specialist_tool_names": [str(call.get("name") or "") for call in tool_calls],
+                "tool_names": [str(call.get("name") or "") for call in tool_calls],
             },
-            human_summary=summary,
-            requires_conversation_alert=False,
         )
+        executed_ai_message = ai_message_from_tool_calls(executed_calls, content=str(ai_message.content or ""), model_output=output) if executed_calls else ai_message
+        tool_messages = tool_messages_from_results(executed_ai_message, executed_calls, results)
+        all_executed_calls.extend(executed_calls)
+        all_results.extend(results)
+        all_tool_messages.extend(tool_messages)
+        message_history = [*message_history, executed_ai_message, *tool_messages]
+        iterations += 1
+        ai_message = await bound_model.ainvoke(message_history)
 
-    executed_calls, results = await tool_runtime.execute(
-        tool_calls,
-        trace_id=trace_id,
-        source_event_type=source_event_type,
-        payload=request_payload,
-        force_ae_after_positive_lookup=force_ae_after_positive_lookup,
-        routing_context={
-            "routing_mode": "specialist_tool",
-            "executed_by": agent_name,
-            "specialist_agent": agent_name,
-            "specialist_tool_names": [str(call.get("name") or "") for call in tool_calls],
-            "tool_names": [str(call.get("name") or "") for call in tool_calls],
-        },
-    )
-    executed_ai_message = ai_message_from_tool_calls(executed_calls, content=str(ai_message.content or ""), model_output=output) if executed_calls else ai_message
-    tool_messages = tool_messages_from_results(executed_ai_message, executed_calls, results)
-    final_ai_message = await bound_model.ainvoke([*messages, executed_ai_message, *tool_messages]) if executed_calls else ai_message
-    final_model_output = model_output_from_ai_message(final_ai_message)
-
-    if executed_calls:
+    if all_executed_calls:
         structured_payload = {
             "routing_mode": "specialist_tool",
             "executed_by": agent_name,
             "specialist_agent": agent_name,
-            "specialist_tool_calls": executed_calls,
-            "model_output": output,
-            **tool_calls_payload(executed_calls, results),
+            "specialist_tool_calls": all_executed_calls,
+            "model_output": initial_model_output,
+            **tool_calls_payload(all_executed_calls, all_results),
             "tool_messages": [
                 {
                     "name": message.name,
                     "tool_call_id": message.tool_call_id,
                     "content": message.content,
                 }
-                for message in tool_messages
+                for message in all_tool_messages
             ],
             "final_model_output": final_model_output,
-            "message_flow": ["HumanMessage", "AIMessage(tool_calls)", "ToolMessage", "AIMessage(final_answer)"],
-            "policy_confirmation_required": has_deferred_policy_tool_call(executed_calls),
+            "message_flow": _tool_chat_message_flow(len(all_results)),
+            "policy_confirmation_required": has_deferred_policy_tool_call(all_executed_calls),
         }
-        fallback_summary = tool_result_summary(results, natural_chat_summary(output) or "도구를 실행했습니다.")
+        fallback_summary = tool_result_summary(all_results, natural_chat_summary(initial_model_output) or "도구를 실행했습니다.")
         final_summary, final_answer_source = patient_summary_with_source(
             final_ai_message,
             fallback_summary,
@@ -139,7 +185,7 @@ async def run_tool_chat_agent(
                 agent_name=agent_name,
                 routing_mode=structured_payload["routing_mode"],
                 fallback_source=final_answer_source,
-                tool_names=[str(call.get("name") or "") for call in executed_calls],
+                tool_names=[str(call.get("name") or "") for call in all_executed_calls],
             )
         return AgentResponse(
             trace_id=trace_id,
@@ -173,3 +219,14 @@ async def run_tool_chat_agent(
         human_summary=human_summary,
         requires_conversation_alert=False,
     )
+
+
+def _tool_chat_message_flow(tool_result_count: int, *, pending_tool_call: bool = False) -> list[str]:
+    flow = ["HumanMessage"]
+    for _ in range(tool_result_count):
+        flow.extend(["AIMessage(tool_calls)", "ToolMessage"])
+    if pending_tool_call:
+        flow.append("AIMessage(tool_calls)")
+    else:
+        flow.append("AIMessage(final_answer)")
+    return flow

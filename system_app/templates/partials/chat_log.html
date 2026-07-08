@@ -147,6 +147,10 @@
                       <strong>{{ candidate.food_name }}</strong>
                       {% if candidate.category %}<span class="muted">{{ candidate.category }}</span>{% endif %}
                       <span>{{ (candidate.nutrients.energy.value | float) | round | int }}kcal / {{ candidate.serving_size | int }}g 기준</span>
+                      <span class="food-nutrient-line">
+                        단백질 {{ '%g' % (candidate.nutrients.protein.value | float) }}g ·
+                        나트륨 {{ candidate.nutrients.sodium.value | round | int }}mg
+                      </span>
                     </button>
                   </form>
                 {% else %}
@@ -194,6 +198,42 @@
               <p class="muted">식사 기록 완료.</p>
             </div>
           {% endif %}
+        {% endif %}
+        {% if message.diet_recommendations %}
+          {% set dr = message.diet_recommendations %}
+          <div class="chat-action-card diet-recommendation-card">
+            <div class="food-candidate-grid">
+              {% for item in dr.recommendations %}
+                <div class="food-candidate-card diet-recommendation-item">
+                  <strong>{{ item.food_name }}</strong>
+                  {% if item.category %}<span class="muted">{{ item.category }}</span>{% endif %}
+                  {% if item.nutrients and item.nutrients.energy %}
+                    <span>{{ (item.nutrients.energy.value | float) | round | int }}kcal / {{ item.serving_size | int }}g 기준</span>
+                  {% endif %}
+                  {% if item.nutrients %}
+                    <span class="food-nutrient-line">
+                      단백질 {{ '%g' % (item.nutrients.protein.value | float) }}g ·
+                      나트륨 {{ item.nutrients.sodium.value | round | int }}mg ·
+                      지방 {{ '%g' % (item.nutrients.fat.value | float) }}g ·
+                      탄수화물 {{ '%g' % (item.nutrients.carbohydrate.value | float) }}g
+                    </span>
+                  {% endif %}
+                  {% if item.recommendation_reasons %}
+                    <ul class="diet-recommendation-reasons">
+                      {% for reason in item.recommendation_reasons %}
+                        <li>{{ reason }}</li>
+                      {% endfor %}
+                    </ul>
+                  {% endif %}
+                  {% if item.preference_match and item.preference_match.status == "soft_match" %}
+                    <span class="muted">저장된 선호도를 반영했어요.</span>
+                  {% endif %}
+                </div>
+              {% else %}
+                <p class="muted">조건에 맞는 추천 후보가 없습니다.</p>
+              {% endfor %}
+            </div>
+          </div>
         {% endif %}
         <div class="chat-time">{{ message.time_label }}</div>
       </article>

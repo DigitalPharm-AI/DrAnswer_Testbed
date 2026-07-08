@@ -188,6 +188,80 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
+                "name": "update_nutrition_food",
+                "title": "Update Nutrition Food",
+                "description": (
+                    "Update or replace one food item inside an existing meal using meal_id and food_id. "
+                    "Use after list_meals identifies the target food. If replacing the food with another food, "
+                    "use search_food_nutrition first when the new food's nutrients are not already clear."
+                ),
+                "annotations": {
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "idempotentHint": False,
+                    "openWorldHint": False,
+                },
+                "_meta": {
+                    "domain": "nutrition",
+                    "source_repo": "DrAnswer_Testbed",
+                    "source_path": "system_app/routes/agent_api.py",
+                    "source_tool_name": "agent_nutrition_update_food",
+                    "mutability": "write",
+                    "risk_level": "medium",
+                },
+                "required_arguments": ["meal_id", "food_id"],
+                "optional_arguments": ["patient_id", "food_ref_id", "food_name", "portion", "nutrients", "reason"],
+                "inputSchema": _object_schema(
+                    {
+                        "meal_id": {"type": "integer", "description": "Existing meal id containing the food"},
+                        "food_id": {"type": "integer", "description": "Existing food row id to update"},
+                        "patient_id": {"type": "string", "description": "Patient id used to scope the update"},
+                        "food_ref_id": {"type": "string", "description": "Reference id for the replacement food when known"},
+                        "food_name": {"type": "string", "description": "Updated or replacement food name"},
+                        "portion": {"type": "string", "description": "Updated portion text"},
+                        "nutrients": {"type": "object", "description": "Updated nutrient object for the food"},
+                        "reason": {"type": "string"},
+                    },
+                    ["meal_id", "food_id"],
+                ),
+                "outputSchema": _tool_result_schema(),
+            },
+            {
+                "name": "delete_nutrition_food",
+                "title": "Delete Nutrition Food",
+                "description": (
+                    "Delete one food item from an existing meal using meal_id and food_id. "
+                    "Use after list_meals identifies the target food. If the meal becomes empty, the meal is deleted by default."
+                ),
+                "annotations": {
+                    "readOnlyHint": False,
+                    "destructiveHint": True,
+                    "idempotentHint": False,
+                    "openWorldHint": False,
+                },
+                "_meta": {
+                    "domain": "nutrition",
+                    "source_repo": "DrAnswer_Testbed",
+                    "source_path": "system_app/routes/agent_api.py",
+                    "source_tool_name": "agent_nutrition_delete_food",
+                    "mutability": "delete",
+                    "risk_level": "medium",
+                },
+                "required_arguments": ["meal_id", "food_id"],
+                "optional_arguments": ["patient_id", "reason", "delete_empty_meal"],
+                "inputSchema": _object_schema(
+                    {
+                        "meal_id": {"type": "integer", "description": "Existing meal id containing the food"},
+                        "food_id": {"type": "integer", "description": "Existing food row id to delete"},
+                        "patient_id": {"type": "string", "description": "Patient id used to scope the delete"},
+                        "reason": {"type": "string"},
+                        "delete_empty_meal": {"type": "boolean", "description": "Delete the meal when no foods remain"},
+                    },
+                    ["meal_id", "food_id"],
+                ),
+                "outputSchema": _tool_result_schema(),
+            },
+            {
                 "name": "list_meals",
                 "title": "List Nutrition Meals",
                 "description": "특정 날짜 또는 오늘 기록된 식사 목록을 조회합니다.",

@@ -550,6 +550,58 @@ def test_async_chat_result_preserves_llm_food_selection_message():
         assert metadata["food_selection"]["candidates"][0]["food_name"] == "삶은 달걀"
 
 
+def test_async_chat_result_preserves_diet_recommendation_cards():
+    with build_session() as session:
+        clock = ensure_clock(session)
+        notification = Notification(
+            notification_type="system_policy_request",
+            title="에이전트 대화 전송",
+            body="에이전트에게 메시지를 보냅니다.",
+            visible_at=clock.current_time,
+            metadata_json=json.dumps({"request_message": "신장 건강에 좋은 식사 추천해줘", "status": "sent"}, ensure_ascii=False),
+        )
+        session.add(notification)
+        session.flush()
+        response = AgentResponse(
+            trace_id="trace-diet-recommendation-async",
+            agent_name="system_event_agent",
+            prompt_version_id="v1",
+            decision_type="tool_call",
+            structured_payload={
+                "diet_recommendations": [
+                    {
+                        "food_ref_id": "tofu-salad",
+                        "food_name": "두부 샐러드",
+                        "category": "샐러드",
+                        "serving_size": 180,
+                        "nutrients": {"energy": {"value": 210, "unit": "kcal"}},
+                    }
+                ],
+                "constraints_applied": {"나트륨": "low"},
+                "blocked_count": 1,
+                "total_candidates": 8,
+            },
+            human_summary="신장 건강을 위한 추천 후보를 아래에 준비했어요.",
+        )
+        callback = AgentAsyncChatResultRequest(
+            request_id="chat_continuation:notification:diet",
+            notification_id=notification.id,
+            event_type="multiturn_chat",
+            message="신장 건강에 좋은 식사 추천해줘",
+            response=response,
+            idempotency_key="chat-diet-result-once",
+        )
+
+        result = process_async_chat_result_callback(session, callback)
+
+        assert result["status"] == "ok"
+        message = session.query(ChatMessage).filter(ChatMessage.category == "multiturn_chat", ChatMessage.role == "assistant").one()
+        metadata = json.loads(message.metadata_json)
+        assert message.content == "신장 건강을 위한 추천 후보를 아래에 준비했어요."
+        assert metadata["diet_recommendations"]["recommendations"][0]["food_name"] == "두부 샐러드"
+        assert metadata["diet_recommendations"]["constraints_applied"] == {"나트륨": "low"}
+
+
 def test_async_chat_worker_executes_required_continuation_before_callback(monkeypatch):
     class ContinuationOrchestrator:
         def __init__(self) -> None:

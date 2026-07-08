@@ -28,6 +28,7 @@ from agent_app.chat_tooling import (
 from agent_app.errors import AgentExecutionError
 from agent_app.graph import AgentLangGraphNativeOrchestrator
 from agent_app.output_validation import validate_llm_output
+from agent_app.prompt_builders import multiturn_chat_prompt, nutrition_management_agent_prompt
 from agent_app.providers import BaseLLMProvider, RuleBasedProvider, create_llm_provider
 from agent_app.response_builders import missed_dose_hybrid_payload, natural_chat_summary
 from agent_app.tool_calling import normalize_tool_calls
@@ -236,6 +237,92 @@ class NativeDelegatingNutritionRecommendationProvider(NativeChatProvider):
         return {"advice": "확인했습니다."}
 
 
+class NativeMultiStepNutritionFoodUpdateProvider(NativeChatProvider):
+    def __init__(self) -> None:
+        self.bound_tool_names: list[str] = []
+        self.bound_tool_history: list[list[str]] = []
+
+    def chat_model(self):
+        return NativeMultiStepNutritionFoodUpdateChatModel(provider=self)
+
+    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("NativeMultiStepNutritionFoodUpdateChatModel handles generation directly")
+
+
+class NativeMultiStepNutritionFoodUpdateChatModel(NativeProviderChatModel):
+    async def _agenerate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager=None, **kwargs: Any) -> ChatResult:
+        payload = human_payload_from_messages(messages)
+        tool_results = tool_results_from_messages(messages)
+        tool_result_names = [result.tool_name for result in tool_results]
+        self.provider.bound_tool_history.append([langchain_tool_name(tool) for tool in self.bound_tools])
+
+        if payload.get("response_mode") == "multiturn_chat" and not tool_result_names:
+            return _chat_result(
+                ai_message_from_tool_calls(
+                    [
+                        {
+                            "name": "call_nutrition_management_agent",
+                            "arguments": {
+                                "task": "change the recorded lunch food from 탕수육 to 꿔바로우",
+                                "reason": "patient corrected a previously recorded food item",
+                            },
+                        }
+                    ],
+                    content="영양 관리 에이전트가 식사 기록을 확인하겠습니다.",
+                    model_output={"message": "영양 관리 에이전트가 식사 기록을 확인하겠습니다."},
+                )
+            )
+
+        if payload.get("response_mode") == "nutrition_management_chat":
+            if not tool_result_names:
+                return _chat_result(
+                    ai_message_from_tool_calls(
+                        [{"name": "list_meals", "arguments": {"meal_date": "2026-04-20"}}],
+                        content="수정할 음식의 meal_id와 food_id를 확인하겠습니다.",
+                        model_output={"message": "수정할 음식의 meal_id와 food_id를 확인하겠습니다."},
+                    )
+                )
+            if tool_result_names[-1] == "list_meals":
+                return _chat_result(
+                    ai_message_from_tool_calls(
+                        [{"name": "search_food_nutrition", "arguments": {"query": "꿔바로우"}}],
+                        content="새 음식의 영양 정보를 확인하겠습니다.",
+                        model_output={"message": "새 음식의 영양 정보를 확인하겠습니다."},
+                    )
+                )
+            if tool_result_names[-1] == "search_food_nutrition":
+                return _chat_result(
+                    ai_message_from_tool_calls(
+                        [
+                            {
+                                "name": "update_nutrition_food",
+                                "arguments": {
+                                    "meal_id": 101,
+                                    "food_id": 202,
+                                    "food_ref_id": "guobaorou",
+                                    "food_name": "꿔바로우",
+                                    "portion": {"amount": 1, "unit": "serving"},
+                                    "nutrients": {"calories": 360, "protein": 18},
+                                    "reason": "patient_corrected_food",
+                                },
+                            }
+                        ],
+                        content="확인한 food_id로 음식 기록을 수정하겠습니다.",
+                        model_output={"message": "확인한 food_id로 음식 기록을 수정하겠습니다."},
+                    )
+                )
+            if tool_result_names[-1] == "update_nutrition_food":
+                summary = "전문 에이전트가 점심의 탕수육을 꿔바로우로 수정했습니다."
+                return _chat_result(AIMessage(content=summary, response_metadata={"model_output": {"message": summary}}))
+
+        if payload.get("response_mode") == "multiturn_chat" and tool_result_names[-1:] == ["call_nutrition_management_agent"]:
+            summary = "점심 식사 기록에서 탕수육을 꿔바로우로 수정했어요."
+            return _chat_result(AIMessage(content=summary, response_metadata={"model_output": {"message": summary}}))
+
+        summary = "확인했습니다."
+        return _chat_result(AIMessage(content=summary, response_metadata={"model_output": {"message": summary}}))
+
+
 class NativeSideEffectLookupProvider(NativeChatProvider):
     async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         assert user_payload["response_mode"] == "multiturn_chat"
@@ -373,6 +460,31 @@ class NativeFakeToolExecutor:
                 },
                 idempotency_key=f"{trace_id}:search_food_nutrition",
             )
+        if name == "list_meals":
+            return ToolCallResult(
+                tool_name=name,
+                status="success",
+                response={
+                    "success": True,
+                    "meals": [
+                        {
+                            "id": 101,
+                            "meal_type": "lunch",
+                            "meal_label": "점심",
+                            "foods": [
+                                {
+                                    "id": 202,
+                                    "food_ref_id": "tangsuyuk",
+                                    "food_name": "탕수육",
+                                    "portion": {"amount": 1, "unit": "serving"},
+                                    "nutrients": {"calories": 420, "protein": 16},
+                                }
+                            ],
+                        }
+                    ],
+                },
+                idempotency_key=f"{trace_id}:list_meals",
+            )
         if name == "recommend_diet":
             return ToolCallResult(
                 tool_name=name,
@@ -397,6 +509,32 @@ class NativeFakeToolExecutor:
                 status="success",
                 response={"success": True, "deleted_meal": {"id": tool_call["arguments"]["meal_id"], "meal_label": "점심"}, "daily_summary": {}},
                 idempotency_key=f"{trace_id}:delete_nutrition_meal:{tool_call['arguments']['meal_id']}",
+            )
+        if name == "update_nutrition_food":
+            return ToolCallResult(
+                tool_name=name,
+                status="success",
+                response={
+                    "success": True,
+                    "meal": {"id": tool_call["arguments"]["meal_id"], "meal_label": "점심"},
+                    "food": {"id": tool_call["arguments"]["food_id"], "food_name": tool_call["arguments"].get("food_name", "수정 음식")},
+                    "daily_summary": {},
+                },
+                idempotency_key=f"{trace_id}:update_nutrition_food:{tool_call['arguments']['meal_id']}:{tool_call['arguments']['food_id']}",
+            )
+        if name == "delete_nutrition_food":
+            return ToolCallResult(
+                tool_name=name,
+                status="success",
+                response={
+                    "success": True,
+                    "meal_id": tool_call["arguments"]["meal_id"],
+                    "food_id": tool_call["arguments"]["food_id"],
+                    "deleted_food": {"id": tool_call["arguments"]["food_id"], "food_name": "삭제 음식"},
+                    "daily_summary": {},
+                    "meal_deleted": False,
+                },
+                idempotency_key=f"{trace_id}:delete_nutrition_food:{tool_call['arguments']['meal_id']}:{tool_call['arguments']['food_id']}",
             )
         return ToolCallResult(tool_name=name, status="error", error="unexpected_tool")
 
@@ -450,6 +588,17 @@ def test_agent_app_has_no_legacy_imports():
                     violations.append(f"{path}:{node.lineno}: from {node.module} import ...")
 
     assert violations == []
+
+
+def test_nutrition_record_verification_prompts_do_not_trust_recent_chat():
+    supervisor_prompt = multiturn_chat_prompt()
+    management_prompt = nutrition_management_agent_prompt()
+
+    assert "Recent chat is not an authoritative source for current nutrition records" in supervisor_prompt
+    assert "do not answer from recent_chat" in supervisor_prompt
+    assert "delegate to call_nutrition_management_agent" in supervisor_prompt
+    assert "call list_meals first" in management_prompt
+    assert "Do not infer current records from recent chat" in management_prompt
 
 
 def test_agent_app_health_reports_native_runtime():
@@ -721,6 +870,10 @@ def test_agent_app_mcp_tools_list_endpoint_reports_context_allowed_catalog():
         "AE_pro_ctcae",
         "search_food_nutrition",
         "record_meal",
+        "update_nutrition_meal",
+        "delete_nutrition_meal",
+        "update_nutrition_food",
+        "delete_nutrition_food",
         "list_meals",
         "get_daily_nutrition_summary",
         "record_nutrition_preference",
@@ -823,6 +976,16 @@ def test_agent_app_mcp_allows_nutrition_tools():
     ) is None
     assert validate_tool_permission(
         {"name": "delete_nutrition_meal", "arguments": {"meal_id": 1}},
+        source_event_type="mcp",
+        payload={},
+    ) is None
+    assert validate_tool_permission(
+        {"name": "update_nutrition_food", "arguments": {"meal_id": 1, "food_id": 10, "portion": "half"}},
+        source_event_type="mcp",
+        payload={},
+    ) is None
+    assert validate_tool_permission(
+        {"name": "delete_nutrition_food", "arguments": {"meal_id": 1, "food_id": 10}},
         source_event_type="mcp",
         payload={},
     ) is None
@@ -965,14 +1128,14 @@ def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_perm
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["agent_name"] == "medication_agent"
+    assert payload["agent_name"] == "system_event_agent"
     assert payload["decision_type"] == "tool_call"
     assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
     assert payload["structured_payload"]["delegated_agent"] == "medication_agent"
     assert payload["structured_payload"]["delegated_by"] == "system_event_agent"
     assert payload["structured_payload"]["supervisor_agent"] == "system_event_agent"
     assert payload["structured_payload"]["specialist_agent"] == "medication_agent"
-    assert payload["structured_payload"]["executed_by"] == "medication_agent"
+    assert payload["structured_payload"]["executed_by"] == "system_event_agent"
     assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "call_medication_agent"
     assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "mark_dose_taken"
     assert payload["structured_payload"]["tool_call"]["name"] == "mark_dose_taken"
@@ -1005,15 +1168,70 @@ def test_agent_app_multiturn_delegates_nutrition_management_tools(monkeypatch):
     payload = response.json()
     supervisor_tools = set(provider.bound_tool_history[0])
     specialist_tools = set(provider.bound_tool_history[1])
-    assert payload["agent_name"] == "nutrition_management_agent"
+    assert payload["agent_name"] == "system_event_agent"
     assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
+    assert payload["structured_payload"]["specialist_agent"] == "nutrition_management_agent"
     assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "call_nutrition_management_agent"
     assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "search_food_nutrition"
     assert tool_executor.calls[0]["name"] == "search_food_nutrition"
     assert {"call_nutrition_management_agent", "call_nutrition_recommendation_agent"} <= supervisor_tools
-    assert not {"search_food_nutrition", "record_meal", "update_nutrition_meal", "delete_nutrition_meal", "recommend_diet"} & supervisor_tools
-    assert {"search_food_nutrition", "record_meal", "update_nutrition_meal", "delete_nutrition_meal", "get_daily_nutrition_summary"} <= specialist_tools
+    assert not {
+        "search_food_nutrition",
+        "record_meal",
+        "update_nutrition_meal",
+        "delete_nutrition_meal",
+        "update_nutrition_food",
+        "delete_nutrition_food",
+        "recommend_diet",
+    } & supervisor_tools
+    assert {
+        "search_food_nutrition",
+        "record_meal",
+        "update_nutrition_meal",
+        "delete_nutrition_meal",
+        "update_nutrition_food",
+        "delete_nutrition_food",
+        "get_daily_nutrition_summary",
+    } <= specialist_tools
     assert "recommend_diet" not in specialist_tools
+
+
+def test_agent_app_multiturn_delegated_nutrition_food_update_reaches_supervisor_final(monkeypatch):
+    provider = NativeMultiStepNutritionFoodUpdateProvider()
+    tool_executor = NativeFakeToolExecutor()
+    monkeypatch.setattr(native_agent_main, "orchestrator", AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=tool_executor))
+    client = TestClient(native_agent_main.app)
+    request = MultiturnChatRequest(
+        patient_id="demo-patient",
+        phr_patient_key="phr-demo",
+        event_type="multiturn_chat",
+        message="점심에 탕수육이 아니라 꿔바로우 먹었어. 바꿔줘",
+        current_time=datetime(2026, 4, 20, 13, 20),
+        context={"recent_chat": []},
+    )
+
+    response = client.post("/agent/multiturn-chat", json=request.model_dump(mode="json"), headers=internal_auth_headers())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["agent_name"] == "system_event_agent"
+    assert payload["human_summary"] == "점심 식사 기록에서 탕수육을 꿔바로우로 수정했어요."
+    assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
+    assert payload["structured_payload"]["specialist_agent"] == "nutrition_management_agent"
+    assert payload["structured_payload"]["final_answer_source"] == "model_output"
+    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "call_nutrition_management_agent"
+    assert [call["name"] for call in payload["structured_payload"]["specialist_tool_calls"]] == [
+        "list_meals",
+        "search_food_nutrition",
+        "update_nutrition_food",
+    ]
+    assert [call["name"] for call in tool_executor.calls] == [
+        "list_meals",
+        "search_food_nutrition",
+        "update_nutrition_food",
+    ]
+    assert provider.bound_tool_history[0] and "call_nutrition_management_agent" in provider.bound_tool_history[0]
+    assert provider.bound_tool_history[1:] and all("update_nutrition_food" in names for names in provider.bound_tool_history[1:4])
 
 
 def test_agent_app_multiturn_delegates_nutrition_recommendation_tools(monkeypatch):
@@ -1036,14 +1254,30 @@ def test_agent_app_multiturn_delegates_nutrition_recommendation_tools(monkeypatc
     payload = response.json()
     supervisor_tools = set(provider.bound_tool_history[0])
     specialist_tools = set(provider.bound_tool_history[1])
-    assert payload["agent_name"] == "nutrition_recommendation_agent"
+    assert payload["agent_name"] == "system_event_agent"
     assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
+    assert payload["structured_payload"]["specialist_agent"] == "nutrition_recommendation_agent"
     assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "call_nutrition_recommendation_agent"
     assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "recommend_diet"
     assert tool_executor.calls[0]["name"] == "recommend_diet"
-    assert not {"search_food_nutrition", "record_meal", "update_nutrition_meal", "delete_nutrition_meal", "recommend_diet"} & supervisor_tools
+    assert not {
+        "search_food_nutrition",
+        "record_meal",
+        "update_nutrition_meal",
+        "delete_nutrition_meal",
+        "update_nutrition_food",
+        "delete_nutrition_food",
+        "recommend_diet",
+    } & supervisor_tools
     assert {"search_food_nutrition", "list_meals", "get_daily_nutrition_summary", "get_nutrition_preferences", "recommend_diet"} <= specialist_tools
-    assert not {"record_meal", "update_nutrition_meal", "delete_nutrition_meal", "record_nutrition_preference"} & specialist_tools
+    assert not {
+        "record_meal",
+        "update_nutrition_meal",
+        "delete_nutrition_meal",
+        "update_nutrition_food",
+        "delete_nutrition_food",
+        "record_nutrition_preference",
+    } & specialist_tools
 
 
 def test_agent_app_multiturn_forces_ae_after_positive_side_effect_lookup(monkeypatch):

@@ -418,6 +418,103 @@ def delete_meal(
     }
 
 
+def update_food(
+    session: Session,
+    *,
+    meal_id: int,
+    food_id: int,
+    patient_id: str | None = None,
+    food_ref_id: str | None = None,
+    food_name: str | None = None,
+    portion: str | None = None,
+    nutrients: dict[str, Any] | None = None,
+    reason: str = "",
+) -> dict[str, Any]:
+    if meal_id <= 0:
+        raise ValueError("nutrition_meal_not_found")
+    if food_id <= 0:
+        raise ValueError("nutrition_food_not_found")
+    if food_ref_id is None and food_name is None and portion is None and nutrients is None:
+        raise ValueError("nutrition_food_update_empty")
+
+    profile = ensure_nutrition_profile(session, patient_id)
+    meal, food = _meal_food_for_patient(session, meal_id, food_id, profile.patient_id)
+
+    if food_ref_id is not None:
+        food.food_ref_id = str(food_ref_id)
+    if food_name is not None:
+        normalized_name = str(food_name).strip()
+        if not normalized_name:
+            raise ValueError("food_name_required")
+        food.food_name = normalized_name
+    if portion is not None:
+        food.portion = str(portion).strip() or "1인분"
+    if nutrients is not None:
+        normalized = normalize_nutrients(nutrients)
+        food.calories = normalized["칼로리"]["value"]
+        food.protein = normalized["단백질"]["value"]
+        food.sodium = normalized["나트륨"]["value"]
+        food.fat = normalized["지방"]["value"]
+        food.carbohydrates = normalized["탄수화물"]["value"]
+
+    session.flush()
+    summary = recalculate_daily_nutrition(session, meal.patient_id, meal.meal_date)
+    summary["preferences"] = _nutrition_preference_summary(session, meal.patient_id)
+    return {
+        "success": True,
+        "meal": meal_view(session, meal),
+        "food": food_view(food),
+        "daily_summary": summary,
+        "updated": True,
+        "reason": reason,
+    }
+
+
+def delete_food(
+    session: Session,
+    *,
+    meal_id: int,
+    food_id: int,
+    patient_id: str | None = None,
+    reason: str = "",
+    delete_empty_meal: bool = True,
+) -> dict[str, Any]:
+    if meal_id <= 0:
+        raise ValueError("nutrition_meal_not_found")
+    if food_id <= 0:
+        raise ValueError("nutrition_food_not_found")
+
+    profile = ensure_nutrition_profile(session, patient_id)
+    meal, food = _meal_food_for_patient(session, meal_id, food_id, profile.patient_id)
+    deleted_food = food_view(food)
+    meal_date = meal.meal_date
+    target_patient_id = meal.patient_id
+
+    session.delete(food)
+    session.flush()
+    remaining_foods = foods_for_meal(session, meal.id)
+    meal_deleted = delete_empty_meal and not remaining_foods
+    meal_payload: dict[str, Any] | None = None
+    if meal_deleted:
+        session.delete(meal)
+        session.flush()
+    else:
+        meal_payload = meal_view(session, meal)
+
+    summary = recalculate_daily_nutrition(session, target_patient_id, meal_date)
+    summary["preferences"] = _nutrition_preference_summary(session, target_patient_id)
+    return {
+        "success": True,
+        "meal_id": meal_id,
+        "food_id": food_id,
+        "deleted_food": deleted_food,
+        "meal": meal_payload,
+        "daily_summary": summary,
+        "meal_deleted": meal_deleted,
+        "reason": reason,
+    }
+
+
 def existing_scenario_meal(session: Session, patient_id: str, target_date: date, scenario_key: str) -> NutritionMeal | None:
     return session.scalar(
         select(NutritionMeal)
@@ -437,6 +534,16 @@ def _meal_for_patient(session: Session, meal_id: int, patient_id: str) -> Nutrit
             NutritionMeal.patient_id == patient_id,
         )
     )
+
+
+def _meal_food_for_patient(session: Session, meal_id: int, food_id: int, patient_id: str) -> tuple[NutritionMeal, NutritionFood]:
+    meal = _meal_for_patient(session, meal_id, patient_id)
+    if meal is None:
+        raise ValueError("nutrition_meal_not_found")
+    food = session.scalar(select(NutritionFood).where(NutritionFood.id == food_id, NutritionFood.meal_id == meal.id))
+    if food is None:
+        raise ValueError("nutrition_food_not_found")
+    return meal, food
 
 
 def normalize_food_payload(item: dict[str, Any]) -> dict[str, Any]:

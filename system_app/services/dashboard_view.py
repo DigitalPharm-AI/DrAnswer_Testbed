@@ -231,6 +231,21 @@ def food_selection_view(metadata: dict, message_id: int) -> dict | None:
     }
 
 
+def diet_recommendations_view(metadata: dict) -> dict | None:
+    payload = metadata.get("diet_recommendations")
+    if not isinstance(payload, dict):
+        return None
+    recommendations = payload.get("recommendations") if isinstance(payload.get("recommendations"), list) else []
+    if not recommendations:
+        return None
+    return {
+        "recommendations": recommendations,
+        "constraints_applied": payload.get("constraints_applied") if isinstance(payload.get("constraints_applied"), dict) else {},
+        "blocked_count": payload.get("blocked_count", 0),
+        "total_candidates": payload.get("total_candidates", 0),
+    }
+
+
 def chat_message_view(message) -> dict:
     metadata = parse_metadata_json(getattr(message, "metadata_json", "{}"))
     from_user = message.role == "user" or message.sender_type in {"patient", "user"}
@@ -259,6 +274,7 @@ def chat_message_view(message) -> dict:
         "side_effect_reminder_safety": side_effect_reminder_safety_view(metadata),
         "ae_pro_ctcae": ae_prompt_view(metadata, message.id),
         "food_selection": food_selection_view(metadata, message.id),
+        "diet_recommendations": diet_recommendations_view(metadata),
     }
 
 def is_hidden_policy_confirmation_reply(message) -> bool:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from system_app.models import NutritionFoodRef
@@ -55,16 +55,17 @@ def recommend_diet(
         col = getattr(NutritionFoodRef, col_name, None)
         if col is None:
             continue
+        serving_col = col * (func.coalesce(NutritionFoodRef.serving_size, 100.0) / 100.0)
 
         if level == "low" and "low" in nutrient_limits:
             filters.append(col.isnot(None))
-            filters.append(col <= nutrient_limits["low"])
+            filters.append(serving_col <= nutrient_limits["low"])
             constraints_applied[korean_name] = level
             limits_used[korean_name] = nutrient_limits
         elif level == "moderate" and "moderate_min" in nutrient_limits and "moderate_max" in nutrient_limits:
             filters.append(col.isnot(None))
-            filters.append(col >= nutrient_limits["moderate_min"])
-            filters.append(col <= nutrient_limits["moderate_max"])
+            filters.append(serving_col >= nutrient_limits["moderate_min"])
+            filters.append(serving_col <= nutrient_limits["moderate_max"])
             constraints_applied[korean_name] = level
             limits_used[korean_name] = nutrient_limits
 
@@ -86,6 +87,7 @@ def recommend_diet(
         if annotated.get("preference_match", {}).get("status") == "blocked":
             blocked_count += 1
             continue
+        annotated["recommendation_reasons"] = _recommendation_reasons(annotated, constraints_applied, limits_used)
         recommendations.append(annotated)
         if len(recommendations) >= limit:
             break
@@ -103,20 +105,58 @@ def recommend_diet(
 
 
 def _row_to_candidate(row: NutritionFoodRef) -> dict[str, Any]:
+    serving_size = _serving_size(row)
+    multiplier = serving_size / 100.0
     return {
         "food_ref_id": row.food_ref_id,
         "food_name": row.food_name,
         "category": row.category or "",
-        "serving_size": float(row.serving_size) if row.serving_size is not None else 100.0,
+        "serving_size": serving_size,
+        "nutrient_basis": "serving_size",
         "nutrients": {
-            "energy":       {"value": _f(row.energy),       "unit": "kcal"},
-            "protein":      {"value": _f(row.protein),      "unit": "g"},
-            "sodium":       {"value": _f(row.sodium),       "unit": "mg"},
-            "fat":          {"value": _f(row.fat),          "unit": "g"},
-            "carbohydrate": {"value": _f(row.carbohydrate), "unit": "g"},
+            "energy":       {"value": _f(row.energy, multiplier),       "unit": "kcal"},
+            "protein":      {"value": _f(row.protein, multiplier),      "unit": "g"},
+            "sodium":       {"value": _f(row.sodium, multiplier),       "unit": "mg"},
+            "fat":          {"value": _f(row.fat, multiplier),          "unit": "g"},
+            "carbohydrate": {"value": _f(row.carbohydrate, multiplier), "unit": "g"},
         },
     }
 
 
-def _f(val: float | None) -> float:
-    return round(float(val), 2) if val is not None else 0.0
+def _serving_size(row: NutritionFoodRef) -> float:
+    try:
+        value = float(row.serving_size) if row.serving_size is not None else 100.0
+    except (TypeError, ValueError):
+        return 100.0
+    return value if value > 0 else 100.0
+
+
+def _f(val: float | None, multiplier: float = 1.0) -> float:
+    return round(float(val) * multiplier, 2) if val is not None else 0.0
+
+
+def _recommendation_reasons(
+    candidate: dict[str, Any],
+    constraints_applied: dict[str, str],
+    limits_used: dict[str, Any],
+) -> list[str]:
+    nutrients = candidate.get("nutrients") if isinstance(candidate.get("nutrients"), dict) else {}
+    reasons: list[str] = []
+    for korean_name, level in constraints_applied.items():
+        nutrient_key = KOREAN_TO_FOOD_REF_COLUMN.get(korean_name)
+        nutrient = nutrients.get("energy" if nutrient_key == "energy" else nutrient_key) if nutrient_key else None
+        limits = limits_used.get(korean_name) if isinstance(limits_used.get(korean_name), dict) else {}
+        if not isinstance(nutrient, dict):
+            continue
+        value = round(float(nutrient.get("value") or 0), 1)
+        unit = str(nutrient.get("unit") or limits.get("unit") or "")
+        if level == "low" and "low" in limits:
+            reasons.append(f"{korean_name} {value:g}{unit}으로 목표({limits['low']}{unit} 이하)에 맞아요.")
+        elif level == "moderate" and "moderate_min" in limits and "moderate_max" in limits:
+            reasons.append(
+                f"{korean_name} {value:g}{unit}으로 목표 범위({limits['moderate_min']}-{limits['moderate_max']}{unit})에 맞아요."
+            )
+    preference_match = candidate.get("preference_match") if isinstance(candidate.get("preference_match"), dict) else {}
+    if preference_match.get("positive_count"):
+        reasons.append("저장된 선호도를 반영한 후보예요.")
+    return reasons[:3]

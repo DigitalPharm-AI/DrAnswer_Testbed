@@ -356,7 +356,17 @@ def _int_value(value: Any) -> int:
 
 
 def _side_effect_level(tool_name: str) -> str:
-    if tool_name in {"mark_dose_taken", "record_meal", "record_nutrition_preference", "apply_notification_policy", "apply_system_policy"}:
+    if tool_name in {
+        "mark_dose_taken",
+        "record_meal",
+        "update_nutrition_meal",
+        "delete_nutrition_meal",
+        "update_nutrition_food",
+        "delete_nutrition_food",
+        "record_nutrition_preference",
+        "apply_notification_policy",
+        "apply_system_policy",
+    }:
         return "write"
     if tool_name in {"lookup_side_effect_info", "get_daily_nutrition_summary", "list_meals", "search_food_nutrition", "get_nutrition_preferences", "AE_pro_ctcae"}:
         return "read"

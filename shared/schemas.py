@@ -410,6 +410,21 @@ class NutritionMealDeleteRequest(BaseModel):
     reason: str = ""
 
 
+class NutritionFoodUpdateRequest(BaseModel):
+    patient_id: str | None = None
+    food_ref_id: str | None = None
+    food_name: str | None = None
+    portion: str | None = None
+    nutrients: dict[str, Any] | None = None
+    reason: str = ""
+
+
+class NutritionFoodDeleteRequest(BaseModel):
+    patient_id: str | None = None
+    reason: str = ""
+    delete_empty_meal: bool = True
+
+
 class NutritionMealListResult(BaseModel):
     success: bool = True
     meals: list[dict[str, Any]] = Field(default_factory=list)
@@ -438,6 +453,26 @@ class NutritionMealDeleteResult(BaseModel):
     success: bool = True
     deleted_meal: dict[str, Any]
     daily_summary: dict[str, Any]
+    reason: str = ""
+
+
+class NutritionFoodUpdateResult(BaseModel):
+    success: bool = True
+    meal: dict[str, Any]
+    food: dict[str, Any]
+    daily_summary: dict[str, Any]
+    updated: bool = True
+    reason: str = ""
+
+
+class NutritionFoodDeleteResult(BaseModel):
+    success: bool = True
+    meal_id: int
+    food_id: int
+    deleted_food: dict[str, Any]
+    meal: dict[str, Any] | None = None
+    daily_summary: dict[str, Any]
+    meal_deleted: bool = False
     reason: str = ""
 
 

@@ -84,16 +84,28 @@ def _search_from_db(
 
 def _row_to_candidate(row: NutritionFoodRef) -> dict[str, Any]:
     nutrients: dict[str, dict[str, Any]] = {}
+    serving_size = _serving_size(row)
+    multiplier = serving_size / 100.0
     for key, unit in _NUTRIENT_UNITS.items():
         value = getattr(row, key, None)
-        nutrients[key] = {"value": round(float(value), 2) if value is not None else 0.0, "unit": unit}
+        amount = float(value) * multiplier if value is not None else 0.0
+        nutrients[key] = {"value": round(amount, 2), "unit": unit}
     return {
         "food_ref_id": row.food_ref_id,
         "food_name": row.food_name,
         "category": row.category or "",
-        "serving_size": float(row.serving_size) if row.serving_size is not None else 100.0,
+        "serving_size": serving_size,
+        "nutrient_basis": "serving_size",
         "nutrients": nutrients,
     }
+
+
+def _serving_size(row: NutritionFoodRef) -> float:
+    try:
+        value = float(row.serving_size) if row.serving_size is not None else 100.0
+    except (TypeError, ValueError):
+        return 100.0
+    return value if value > 0 else 100.0
 
 
 def _fallback_scenario_search(

@@ -1306,6 +1306,10 @@ def _tool_domain(name: str) -> str:
     if name in {
         "search_food_nutrition",
         "record_meal",
+        "update_nutrition_meal",
+        "delete_nutrition_meal",
+        "update_nutrition_food",
+        "delete_nutrition_food",
         "list_meals",
         "get_daily_nutrition_summary",
         "record_nutrition_preference",
@@ -1331,7 +1335,14 @@ def _tool_owner(domain: str) -> str:
 
 
 def _tool_side_effect(name: str) -> str:
-    if name in {"record_meal", "record_nutrition_preference"}:
+    if name in {
+        "record_meal",
+        "update_nutrition_meal",
+        "delete_nutrition_meal",
+        "update_nutrition_food",
+        "delete_nutrition_food",
+        "record_nutrition_preference",
+    }:
         return "record_write"
     if name in {"mark_dose_taken"}:
         return "state_write"

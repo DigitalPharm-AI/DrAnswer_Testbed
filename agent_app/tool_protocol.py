@@ -14,6 +14,8 @@ ALLOWED_TOOL_NAMES = {
     "record_meal",
     "update_nutrition_meal",
     "delete_nutrition_meal",
+    "update_nutrition_food",
+    "delete_nutrition_food",
     "list_meals",
     "get_daily_nutrition_summary",
     "record_nutrition_preference",

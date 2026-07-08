@@ -143,6 +143,10 @@ class AgentMcpToolServer:
             return await self._update_nutrition_meal(arguments, trace_id=trace_id, payload=payload)
         if tool_name == "delete_nutrition_meal":
             return await self._delete_nutrition_meal(arguments, trace_id=trace_id, payload=payload)
+        if tool_name == "update_nutrition_food":
+            return await self._update_nutrition_food(arguments, trace_id=trace_id, payload=payload)
+        if tool_name == "delete_nutrition_food":
+            return await self._delete_nutrition_food(arguments, trace_id=trace_id, payload=payload)
         if tool_name == "list_meals":
             return await self._list_meals(arguments, trace_id=trace_id, payload=payload)
         if tool_name == "get_daily_nutrition_summary":
@@ -271,6 +275,55 @@ class AgentMcpToolServer:
             response=result,
             error=safe_tool_error(result.get("error")),
             idempotency_key=f"{trace_id}:delete_nutrition_meal:{meal_id}",
+        )
+
+    async def _update_nutrition_food(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
+        meal_id = arguments.get("meal_id")
+        food_id = arguments.get("food_id")
+        request_payload = {
+            key: value
+            for key, value in arguments.items()
+            if key not in {"meal_id", "food_id"} and value is not None
+        }
+        request_payload["patient_id"] = arguments.get("patient_id") or payload.get("patient_id")
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
+            response = await client.post(
+                f"{self.system_base_url}/api/agent/nutrition/meals/{meal_id}/foods/{food_id}/update",
+                json=request_payload,
+                headers=self._internal_headers(),
+            )
+            response.raise_for_status()
+        result = response.json()
+        return ToolCallResult(
+            tool_name="update_nutrition_food",
+            status="success" if result.get("success") else "error",
+            response=result,
+            error=safe_tool_error(result.get("error")),
+            idempotency_key=f"{trace_id}:update_nutrition_food:{meal_id}:{food_id}",
+        )
+
+    async def _delete_nutrition_food(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
+        meal_id = arguments.get("meal_id")
+        food_id = arguments.get("food_id")
+        request_payload = {
+            "patient_id": arguments.get("patient_id") or payload.get("patient_id"),
+            "reason": arguments.get("reason", ""),
+            "delete_empty_meal": arguments.get("delete_empty_meal", True),
+        }
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
+            response = await client.post(
+                f"{self.system_base_url}/api/agent/nutrition/meals/{meal_id}/foods/{food_id}/delete",
+                json=request_payload,
+                headers=self._internal_headers(),
+            )
+            response.raise_for_status()
+        result = response.json()
+        return ToolCallResult(
+            tool_name="delete_nutrition_food",
+            status="success" if result.get("success") else "error",
+            response=result,
+            error=safe_tool_error(result.get("error")),
+            idempotency_key=f"{trace_id}:delete_nutrition_food:{meal_id}:{food_id}",
         )
 
     async def _list_meals(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:

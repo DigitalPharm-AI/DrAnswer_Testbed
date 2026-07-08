@@ -213,9 +213,14 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
       if (!(source instanceof HTMLFormElement)) {
         return;
       }
-      const action = source.getAttribute("action") || "";
-      if (!action.includes("/nutrition/scenarios/")) {
+      const action = source.getAttribute("action") || source.getAttribute("hx-post") || "";
+      const isNutritionScenario = action.includes("/nutrition/scenarios/");
+      const isFoodConfirm = action.includes("/chat/food-confirm");
+      if (!isNutritionScenario && !isFoodConfirm) {
         return;
+      }
+      if (isFoodConfirm) {
+        panelRefresher.refreshNutritionPanel();
       }
       panelRefresher.refreshNotificationsPanel();
       panelRefresher.refreshChatLogPanel();

@@ -120,6 +120,20 @@ def food_selection_chat_content(message_metadata: dict) -> str:
     return "음식 후보를 찾았습니다. 아래 카드에서 선택해주세요."
 
 
+def diet_recommendation_chat_metadata(response: AgentResponse) -> dict:
+    recommendations = response.structured_payload.get("diet_recommendations")
+    if not isinstance(recommendations, list) or not recommendations:
+        return {}
+    return {
+        "diet_recommendations": {
+            "recommendations": recommendations,
+            "constraints_applied": response.structured_payload.get("constraints_applied", {}),
+            "blocked_count": response.structured_payload.get("blocked_count", 0),
+            "total_candidates": response.structured_payload.get("total_candidates", 0),
+        }
+    }
+
+
 def policy_deltas_from_response_payload(response: AgentResponse) -> list[NotificationPolicyDelta]:
     raw_deltas = response.structured_payload.get("policy_deltas")
     if isinstance(raw_deltas, list):
@@ -141,6 +155,9 @@ def persist_agent_summary(
     food_metadata = food_selection_chat_metadata(response)
     if food_metadata:
         message_metadata.update(food_metadata)
+    diet_metadata = diet_recommendation_chat_metadata(response)
+    if diet_metadata:
+        message_metadata.update(diet_metadata)
     should_update_existing_missed_dose_alert = category == "missed_dose" and existing is not None
     if response.requires_conversation_alert or should_update_existing_missed_dose_alert:
         if existing is not None:

@@ -11,6 +11,8 @@ NUTRITION_TOOLS = {
     "record_meal",
     "update_nutrition_meal",
     "delete_nutrition_meal",
+    "update_nutrition_food",
+    "delete_nutrition_food",
     "list_meals",
     "get_daily_nutrition_summary",
     "record_nutrition_preference",
@@ -23,6 +25,8 @@ NUTRITION_MANAGEMENT_TOOLS = {
     "record_meal",
     "update_nutrition_meal",
     "delete_nutrition_meal",
+    "update_nutrition_food",
+    "delete_nutrition_food",
     "list_meals",
     "get_daily_nutrition_summary",
     "record_nutrition_preference",
@@ -105,6 +109,22 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
     if tool_name == "delete_nutrition_meal":
         if not isinstance(arguments.get("meal_id"), int):
             return "delete_nutrition_meal requires integer meal_id"
+    if tool_name == "update_nutrition_food":
+        if not isinstance(arguments.get("meal_id"), int):
+            return "update_nutrition_food requires integer meal_id"
+        if not isinstance(arguments.get("food_id"), int):
+            return "update_nutrition_food requires integer food_id"
+        if not any(key in arguments for key in ("food_ref_id", "food_name", "portion", "nutrients")):
+            return "update_nutrition_food requires at least one update field"
+        if "food_name" in arguments and not str(arguments.get("food_name") or "").strip():
+            return "update_nutrition_food requires non-empty food_name when food_name is provided"
+        if "nutrients" in arguments and not isinstance(arguments.get("nutrients"), dict):
+            return "update_nutrition_food requires nutrients object when nutrients is provided"
+    if tool_name == "delete_nutrition_food":
+        if not isinstance(arguments.get("meal_id"), int):
+            return "delete_nutrition_food requires integer meal_id"
+        if not isinstance(arguments.get("food_id"), int):
+            return "delete_nutrition_food requires integer food_id"
     if tool_name == "recommend_diet":
         if not isinstance(arguments.get("constraints"), dict) or not arguments.get("constraints"):
             return "recommend_diet requires constraints"
