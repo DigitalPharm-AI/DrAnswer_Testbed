@@ -17,6 +17,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import ConfigDict, Field
 
 import agent_app.main as native_agent_main
+from agent_app.agents.tool_chat import SPECIALIST_TOOL_LOOP_LIMIT, run_tool_chat_agent
 from agent_app.async_tasks import DEAD, enqueue_async_task
 from agent_app.chat_tooling import (
     ai_message_from_tool_calls,
@@ -45,6 +46,7 @@ from agent_app.tool_protocol import (
     mcp_tools_list,
     tool_result_from_mcp_result,
 )
+from agent_app.tool_runtime import ToolRuntime
 from agent_app.tool_results import tool_calls_payload, tool_result_summary
 from agent_app.tool_side_effects import ae_tool_call_from_lookup
 from shared.schemas import AgentCallbackContext, DailyMedicationPattern, DosePatternEvent, MissedDoseEventPayload, MultiturnChatRequest, SlotAdherenceSummary, ToolCallResult
@@ -336,6 +338,32 @@ class NativeSideEffectLookupProvider(NativeChatProvider):
                 },
             },
         }
+
+
+class NativeLoopLimitProvider(NativeChatProvider):
+    def __init__(self) -> None:
+        self.bound_tool_names: list[str] = []
+
+    def chat_model(self):
+        return NativeLoopLimitChatModel(provider=self)
+
+    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("NativeLoopLimitChatModel handles generation directly")
+
+
+class NativeLoopLimitChatModel(NativeProviderChatModel):
+    async def _agenerate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager=None, **kwargs: Any) -> ChatResult:
+        tool_call = {
+            "name": "search_food_nutrition",
+            "arguments": {"query": "계란"},
+        }
+        return _chat_result(
+            ai_message_from_tool_calls(
+                [tool_call],
+                content="음식 정보를 계속 확인합니다.",
+                model_output={"message": "음식 정보를 계속 확인합니다.", "tool_call": tool_call},
+            )
+        )
 
 
 class NativeRecentChatProvider(NativeChatProvider):
@@ -1162,6 +1190,7 @@ def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_perm
     assert payload["agent_name"] == "system_event_agent"
     assert payload["decision_type"] == "tool_call"
     assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
+    assert payload["structured_payload"]["tool_loop_mode"] == "langgraph_state_graph"
     assert payload["structured_payload"]["delegated_agent"] == "medication_agent"
     assert payload["structured_payload"]["delegated_by"] == "system_event_agent"
     assert payload["structured_payload"]["supervisor_agent"] == "system_event_agent"
@@ -1201,6 +1230,7 @@ def test_agent_app_multiturn_delegates_nutrition_management_tools(monkeypatch):
     specialist_tools = set(provider.bound_tool_history[1])
     assert payload["agent_name"] == "system_event_agent"
     assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
+    assert payload["structured_payload"]["tool_loop_mode"] == "langgraph_state_graph"
     assert payload["structured_payload"]["specialist_agent"] == "nutrition_management_agent"
     assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "call_nutrition_management_agent"
     assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "search_food_nutrition"
@@ -1248,6 +1278,7 @@ def test_agent_app_multiturn_delegated_nutrition_food_update_reaches_supervisor_
     assert payload["agent_name"] == "system_event_agent"
     assert payload["human_summary"] == "점심 식사 기록에서 탕수육을 꿔바로우로 수정했어요."
     assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
+    assert payload["structured_payload"]["tool_loop_mode"] == "langgraph_state_graph"
     assert payload["structured_payload"]["specialist_agent"] == "nutrition_management_agent"
     assert payload["structured_payload"]["final_answer_source"] == "model_output"
     assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "call_nutrition_management_agent"
@@ -1287,6 +1318,7 @@ def test_agent_app_multiturn_delegates_nutrition_recommendation_tools(monkeypatc
     specialist_tools = set(provider.bound_tool_history[1])
     assert payload["agent_name"] == "system_event_agent"
     assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
+    assert payload["structured_payload"]["tool_loop_mode"] == "langgraph_state_graph"
     assert payload["structured_payload"]["specialist_agent"] == "nutrition_recommendation_agent"
     assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "call_nutrition_recommendation_agent"
     assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "recommend_diet"
@@ -1309,6 +1341,39 @@ def test_agent_app_multiturn_delegates_nutrition_recommendation_tools(monkeypatc
         "delete_nutrition_food",
         "record_nutrition_preference",
     } & specialist_tools
+
+
+def test_specialist_state_graph_stops_at_common_tool_loop_limit():
+    provider = NativeLoopLimitProvider()
+    tool_executor = NativeFakeToolExecutor()
+
+    response = asyncio.run(
+        run_tool_chat_agent(
+            provider=provider,
+            tool_runtime=ToolRuntime(tool_executor),
+            trace_id="trace-specialist-loop-limit",
+            request_payload={
+                "patient_id": "demo-patient",
+                "phr_patient_key": "phr-demo",
+                "message": "계란 정보를 확인해줘",
+                "context": {},
+            },
+            agent_name="nutrition_management_agent",
+            prompt=nutrition_management_agent_prompt(),
+            response_mode="nutrition_management_chat",
+            decision_type="tool_call",
+            tool_names=("search_food_nutrition",),
+            source_event_type="multiturn_chat",
+        )
+    )
+
+    structured = response.structured_payload
+    assert structured["routing_mode"] == "specialist_max_iterations"
+    assert structured["tool_loop_mode"] == "langgraph_state_graph"
+    assert len(structured["tool_calls"]) == SPECIALIST_TOOL_LOOP_LIMIT
+    assert len(tool_executor.calls) == SPECIALIST_TOOL_LOOP_LIMIT
+    assert structured["pending_tool_calls"][0]["name"] == "search_food_nutrition"
+    assert "도구 실행 단계" in response.human_summary
 
 
 def test_agent_app_multiturn_forces_ae_after_positive_side_effect_lookup(monkeypatch):

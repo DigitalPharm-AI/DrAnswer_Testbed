@@ -148,6 +148,7 @@ def test_tool_runtime_logs_routing_context(monkeypatch):
                 "executed_by": "medication_agent",
                 "supervisor_agent": "system_event_agent",
                 "specialist_agent": "medication_agent",
+                "tool_loop_mode": "langgraph_state_graph",
                 "supervisor_tool_names": ["call_medication_agent"],
                 "specialist_tool_names": ["mark_dose_taken"],
             },
@@ -158,6 +159,7 @@ def test_tool_runtime_logs_routing_context(monkeypatch):
 
     assert started["routing"]["routing_mode"] == "delegated_agent"
     assert started["routing"]["executed_by"] == "medication_agent"
+    assert started["routing"]["tool_loop_mode"] == "langgraph_state_graph"
     assert started["routing"]["supervisor_tool_names"] == ["call_medication_agent"]
     assert started["routing"]["specialist_tool_names"] == ["mark_dose_taken"]
 

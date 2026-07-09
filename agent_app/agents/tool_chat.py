@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict
+
+from langgraph.graph import END, StateGraph
 
 from agent_app import trace_logging
 from agent_app.chat_tooling import (
@@ -22,7 +24,23 @@ from agent_app.tool_results import tool_calls_payload, tool_result_summary
 from agent_app.tool_runtime import ToolRuntime
 from shared.schemas import AgentResponse
 
-MAX_TOOL_CHAT_ITERATIONS = 4
+SPECIALIST_TOOL_LOOP_LIMIT = 6
+TOOL_LOOP_MODE = "langgraph_state_graph"
+
+
+class ToolChatGraphState(TypedDict, total=False):
+    messages: list[Any]
+    current_ai_message: Any
+    current_model_output: dict[str, Any]
+    initial_model_output: dict[str, Any]
+    pending_tool_calls: list[dict[str, Any]]
+    all_executed_calls: list[dict[str, Any]]
+    all_results: list[Any]
+    all_tool_messages: list[Any]
+    iterations: int
+    continuation_type: str
+    forced_tool_calls_seeded: bool
+    response: AgentResponse
 
 
 async def run_tool_chat_agent(
@@ -42,7 +60,7 @@ async def run_tool_chat_agent(
 ) -> AgentResponse:
     catalog_tools = ToolCatalog.tools_for(*tool_names)
     bound_model = provider.chat_model().bind_tools(langchain_tools_from_catalog(catalog_tools))
-    messages = build_chat_messages(
+    initial_messages = build_chat_messages(
         prompt,
         {
             **request_payload,
@@ -51,43 +69,106 @@ async def run_tool_chat_agent(
             "available_tools": catalog_tools,
         },
     )
-    if forced_tool_calls is not None:
-        output = {"message": request_payload.get("message"), "observations": ["forced_tool_calls"]}
-        tool_calls = normalize_policy_tool_calls(forced_tool_calls, source_event_type=source_event_type)
-        ai_message = ai_message_from_tool_calls(tool_calls, content=str(request_payload.get("message") or ""), model_output=output)
-    else:
-        ai_message = await bound_model.ainvoke(messages)
-        output = model_output_from_ai_message(ai_message)
-    initial_model_output = dict(output)
-    all_executed_calls: list[dict[str, Any]] = []
-    all_results: list[Any] = []
-    all_tool_messages = []
-    message_history = list(messages)
-    final_ai_message = ai_message
-    final_model_output = output
-    iterations = 0
 
-    while True:
-        output = model_output_from_ai_message(ai_message)
-        tool_calls = normalize_policy_tool_calls(tool_calls_from_ai_message(ai_message), source_event_type=source_event_type)
+    async def llm_call(state: ToolChatGraphState) -> dict[str, Any]:
+        if forced_tool_calls is not None and not state.get("forced_tool_calls_seeded", False):
+            output = {"message": request_payload.get("message"), "observations": ["forced_tool_calls"]}
+            tool_calls = normalize_policy_tool_calls(forced_tool_calls, source_event_type=source_event_type)
+            ai_message = ai_message_from_tool_calls(
+                tool_calls,
+                content=str(request_payload.get("message") or ""),
+                model_output=output,
+            )
+            forced_tool_calls_seeded = True
+        else:
+            ai_message = await bound_model.ainvoke(state["messages"])
+            output = model_output_from_ai_message(ai_message)
+            tool_calls = normalize_policy_tool_calls(tool_calls_from_ai_message(ai_message), source_event_type=source_event_type)
+            forced_tool_calls_seeded = state.get("forced_tool_calls_seeded", False)
+
         if tool_calls:
-            ai_message = ai_message_from_tool_calls(tool_calls, content=str(ai_message.content or ""), model_output=output)
+            ai_message = ai_message_from_tool_calls(
+                tool_calls,
+                content=str(ai_message.content or ""),
+                model_output=output,
+            )
 
-        continuation_type = async_continuation_type(tool_calls)
+        updates: dict[str, Any] = {
+            "current_ai_message": ai_message,
+            "current_model_output": output,
+            "pending_tool_calls": tool_calls,
+            "continuation_type": async_continuation_type(tool_calls),
+            "forced_tool_calls_seeded": forced_tool_calls_seeded,
+        }
+        if "initial_model_output" not in state:
+            updates["initial_model_output"] = dict(output)
+        return updates
+
+    def route_after_llm(state: ToolChatGraphState) -> str:
+        tool_calls = state.get("pending_tool_calls", [])
+        continuation_type = state.get("continuation_type", "")
         if continuation_type and forced_tool_calls is None and not any(str(call.get("name") or "") == "mark_dose_taken" for call in tool_calls):
-            summary = async_continuation_summary(continuation_type)
-            return AgentResponse(
+            return "async_continuation_response"
+        if not tool_calls:
+            return "final_response"
+        if state.get("iterations", 0) >= SPECIALIST_TOOL_LOOP_LIMIT:
+            return "max_iterations_response"
+        return "tool_node"
+
+    async def tool_node(state: ToolChatGraphState) -> dict[str, Any]:
+        tool_calls = state.get("pending_tool_calls", [])
+        output = state.get("current_model_output", {})
+        ai_message = state["current_ai_message"]
+        executed_calls, results = await tool_runtime.execute(
+            tool_calls,
+            trace_id=trace_id,
+            source_event_type=source_event_type,
+            payload=request_payload,
+            force_ae_after_positive_lookup=force_ae_after_positive_lookup,
+            routing_context={
+                "routing_mode": "specialist_tool",
+                "executed_by": agent_name,
+                "specialist_agent": agent_name,
+                "tool_loop_mode": TOOL_LOOP_MODE,
+                "specialist_tool_names": [str(call.get("name") or "") for call in tool_calls],
+                "tool_names": [str(call.get("name") or "") for call in tool_calls],
+            },
+        )
+        executed_ai_message = (
+            ai_message_from_tool_calls(executed_calls, content=str(ai_message.content or ""), model_output=output)
+            if executed_calls
+            else ai_message
+        )
+        tool_messages = tool_messages_from_results(executed_ai_message, executed_calls, results)
+        return {
+            "messages": [*state["messages"], executed_ai_message, *tool_messages],
+            "all_executed_calls": [*state.get("all_executed_calls", []), *executed_calls],
+            "all_results": [*state.get("all_results", []), *results],
+            "all_tool_messages": [*state.get("all_tool_messages", []), *tool_messages],
+            "iterations": state.get("iterations", 0) + 1,
+            "pending_tool_calls": [],
+        }
+
+    def async_continuation_response(state: ToolChatGraphState) -> dict[str, AgentResponse]:
+        continuation_type = state.get("continuation_type", "")
+        tool_calls = state.get("pending_tool_calls", [])
+        all_executed_calls = state.get("all_executed_calls", [])
+        all_results = state.get("all_results", [])
+        summary = async_continuation_summary(continuation_type)
+        return {
+            "response": AgentResponse(
                 trace_id=trace_id,
                 agent_name=agent_name,
                 prompt_version_id=PROMPT_VERSION_ID,
                 decision_type="async_continuation_requested",
                 structured_payload={
                     "routing_mode": "specialist_async_continuation",
+                    "tool_loop_mode": TOOL_LOOP_MODE,
                     "executed_by": agent_name,
                     "specialist_agent": agent_name,
                     "specialist_tool_calls": [*all_executed_calls, *tool_calls],
-                    "model_output": initial_model_output,
-                    "final_model_output": output,
+                    "model_output": state.get("initial_model_output", {}),
+                    "final_model_output": state.get("current_model_output", {}),
                     "tool_calls": [*all_executed_calls, *tool_calls],
                     "tool_results": [result.model_dump(mode="json") for result in all_results],
                     "tools_executed": bool(all_executed_calls),
@@ -99,26 +180,30 @@ async def run_tool_chat_agent(
                 human_summary=summary,
                 requires_conversation_alert=False,
             )
+        }
 
-        if not tool_calls:
-            final_ai_message = ai_message
-            final_model_output = output
-            break
-
-        if iterations >= MAX_TOOL_CHAT_ITERATIONS:
-            summary = "도구 실행 횟수 제한에 도달해 작업을 완료하지 못했습니다. 요청을 다시 나누어 시도해 주세요."
-            return AgentResponse(
+    def max_iterations_response(state: ToolChatGraphState) -> dict[str, AgentResponse]:
+        all_executed_calls = state.get("all_executed_calls", [])
+        all_results = state.get("all_results", [])
+        summary = (
+            f"전문 에이전트의 도구 실행 단계가 {SPECIALIST_TOOL_LOOP_LIMIT}회를 초과해 "
+            "요청을 완료하지 못했습니다. 요청을 조금 더 구체적으로 나누어 다시 시도해 주세요."
+        )
+        return {
+            "response": AgentResponse(
                 trace_id=trace_id,
                 agent_name=agent_name,
                 prompt_version_id=PROMPT_VERSION_ID,
                 decision_type=decision_type,
                 structured_payload={
                     "routing_mode": "specialist_max_iterations",
+                    "tool_loop_mode": TOOL_LOOP_MODE,
                     "executed_by": agent_name,
                     "specialist_agent": agent_name,
                     "specialist_tool_calls": all_executed_calls,
-                    "model_output": initial_model_output,
-                    "final_model_output": output,
+                    "pending_tool_calls": state.get("pending_tool_calls", []),
+                    "model_output": state.get("initial_model_output", {}),
+                    "final_model_output": state.get("current_model_output", {}),
                     **tool_calls_payload(all_executed_calls, all_results),
                     "message_flow": _tool_chat_message_flow(len(all_results), pending_tool_call=True),
                     "policy_confirmation_required": has_deferred_policy_tool_call(all_executed_calls),
@@ -126,33 +211,21 @@ async def run_tool_chat_agent(
                 human_summary=summary,
                 requires_conversation_alert=False,
             )
+        }
 
-        executed_calls, results = await tool_runtime.execute(
-            tool_calls,
-            trace_id=trace_id,
-            source_event_type=source_event_type,
-            payload=request_payload,
-            force_ae_after_positive_lookup=force_ae_after_positive_lookup,
-            routing_context={
-                "routing_mode": "specialist_tool",
-                "executed_by": agent_name,
-                "specialist_agent": agent_name,
-                "specialist_tool_names": [str(call.get("name") or "") for call in tool_calls],
-                "tool_names": [str(call.get("name") or "") for call in tool_calls],
-            },
-        )
-        executed_ai_message = ai_message_from_tool_calls(executed_calls, content=str(ai_message.content or ""), model_output=output) if executed_calls else ai_message
-        tool_messages = tool_messages_from_results(executed_ai_message, executed_calls, results)
-        all_executed_calls.extend(executed_calls)
-        all_results.extend(results)
-        all_tool_messages.extend(tool_messages)
-        message_history = [*message_history, executed_ai_message, *tool_messages]
-        iterations += 1
-        ai_message = await bound_model.ainvoke(message_history)
+    def final_response(state: ToolChatGraphState) -> dict[str, AgentResponse]:
+        all_executed_calls = state.get("all_executed_calls", [])
+        all_results = state.get("all_results", [])
+        all_tool_messages = state.get("all_tool_messages", [])
+        if not all_executed_calls:
+            return {"response": _specialist_answer_response(state)}
 
-    if all_executed_calls:
+        final_ai_message = state["current_ai_message"]
+        final_model_output = state.get("current_model_output", {})
+        initial_model_output = state.get("initial_model_output", {})
         structured_payload = {
             "routing_mode": "specialist_tool",
+            "tool_loop_mode": TOOL_LOOP_MODE,
             "executed_by": agent_name,
             "specialist_agent": agent_name,
             "specialist_tool_calls": all_executed_calls,
@@ -184,41 +257,82 @@ async def run_tool_chat_agent(
                 trace_id=trace_id,
                 agent_name=agent_name,
                 routing_mode=structured_payload["routing_mode"],
+                tool_loop_mode=structured_payload["tool_loop_mode"],
                 fallback_source=final_answer_source,
                 tool_names=[str(call.get("name") or "") for call in all_executed_calls],
             )
+        return {
+            "response": AgentResponse(
+                trace_id=trace_id,
+                agent_name=agent_name,
+                prompt_version_id=PROMPT_VERSION_ID,
+                decision_type=decision_type,
+                structured_payload=structured_payload,
+                human_summary=final_summary,
+                requires_conversation_alert=False,
+            )
+        }
+
+    def _specialist_answer_response(state: ToolChatGraphState) -> AgentResponse:
+        ai_message = state["current_ai_message"]
+        output = state.get("current_model_output", {})
+        human_summary, final_answer_source = patient_summary_with_source(ai_message, natural_chat_summary(output), fallback_source="model_output")
         return AgentResponse(
             trace_id=trace_id,
             agent_name=agent_name,
             prompt_version_id=PROMPT_VERSION_ID,
             decision_type=decision_type,
-            structured_payload=structured_payload,
-            human_summary=final_summary,
+            structured_payload={
+                "routing_mode": "specialist_answer",
+                "tool_loop_mode": TOOL_LOOP_MODE,
+                "executed_by": agent_name,
+                "specialist_agent": agent_name,
+                "specialist_tool_calls": [],
+                "observations": string_list(output.get("observations")),
+                "model_output": output,
+                "tool_calls": [],
+                "tool_results": [],
+                "tools_executed": False,
+                "final_answer_source": final_answer_source,
+                "message_flow": ["HumanMessage", "AIMessage(final_answer)"],
+            },
+            human_summary=human_summary,
             requires_conversation_alert=False,
         )
 
-    human_summary, final_answer_source = patient_summary_with_source(ai_message, natural_chat_summary(output), fallback_source="model_output")
-    return AgentResponse(
-        trace_id=trace_id,
-        agent_name=agent_name,
-        prompt_version_id=PROMPT_VERSION_ID,
-        decision_type=decision_type,
-        structured_payload={
-            "routing_mode": "specialist_answer",
-            "executed_by": agent_name,
-            "specialist_agent": agent_name,
-            "specialist_tool_calls": [],
-            "observations": string_list(output.get("observations")),
-            "model_output": output,
-            "tool_calls": [],
-            "tool_results": [],
-            "tools_executed": False,
-            "final_answer_source": final_answer_source,
-            "message_flow": ["HumanMessage", "AIMessage(final_answer)"],
+    graph = StateGraph(ToolChatGraphState)
+    graph.add_node("llm_call", llm_call)
+    graph.add_node("tool_node", tool_node)
+    graph.add_node("final_response", final_response)
+    graph.add_node("async_continuation_response", async_continuation_response)
+    graph.add_node("max_iterations_response", max_iterations_response)
+    graph.set_entry_point("llm_call")
+    graph.add_conditional_edges(
+        "llm_call",
+        route_after_llm,
+        {
+            "tool_node": "tool_node",
+            "final_response": "final_response",
+            "async_continuation_response": "async_continuation_response",
+            "max_iterations_response": "max_iterations_response",
         },
-        human_summary=human_summary,
-        requires_conversation_alert=False,
     )
+    graph.add_edge("tool_node", "llm_call")
+    graph.add_edge("final_response", END)
+    graph.add_edge("async_continuation_response", END)
+    graph.add_edge("max_iterations_response", END)
+
+    final_state = await graph.compile().ainvoke(
+        {
+            "messages": list(initial_messages),
+            "all_executed_calls": [],
+            "all_results": [],
+            "all_tool_messages": [],
+            "iterations": 0,
+            "forced_tool_calls_seeded": False,
+        }
+    )
+    return final_state["response"]
 
 
 def _tool_chat_message_flow(tool_result_count: int, *, pending_tool_call: bool = False) -> list[str]:
