@@ -102,6 +102,8 @@ CHAT_SORT_SOURCE_MESSAGE = 0
 CHAT_SORT_SOURCE_PROMPT = 1
 CHAT_SORT_SOURCE_PENDING = 2
 CHAT_SORT_SOURCE_HISTORY = 3
+ACTIVE_FOOD_SELECTION_STAGES = {"awaiting_food_choice", "awaiting_grams", "awaiting_confirm"}
+STALE_ACTION_CARD_REASON = "새 대화가 이어져 이전 선택지는 비활성화됐습니다."
 
 
 def is_patient_visible_notification_metadata(metadata: dict) -> bool:
@@ -168,6 +170,8 @@ def policy_confirmation_view(metadata: dict) -> dict | None:
         "policy_change": payload.get("policy_change") if isinstance(payload.get("policy_change"), dict) else {},
         "multiple_choice": multiple_choice,
         "options": policy_chat_options(multiple_choice),
+        "is_active": True,
+        "disabled_reason": "",
     }
 
 
@@ -193,6 +197,8 @@ def side_effect_reminder_safety_view(metadata: dict) -> dict | None:
     return {
         "notification_id": payload.get("notification_id"),
         "options": options,
+        "is_active": True,
+        "disabled_reason": "",
     }
 
 
@@ -229,6 +235,8 @@ def food_selection_view(metadata: dict, message_id: int) -> dict | None:
         "confirmed_foods": confirmed_foods,
         "total_foods": len(confirmed_foods) + len(foods_queue) + 1,
         "current_index": len(confirmed_foods) + 1,
+        "is_active": True,
+        "disabled_reason": "",
     }
 
 
@@ -346,6 +354,8 @@ def notification_policy_confirmation_view(notification: Notification, metadata: 
         "policy_change": policy_change,
         "multiple_choice": multiple_choice,
         "options": policy_chat_options(multiple_choice),
+        "is_active": True,
+        "disabled_reason": "",
     }
 
 
@@ -362,6 +372,8 @@ def notification_side_effect_reminder_safety_view(notification: Notification, me
             {"action": "keep", "label": "알림 유지하기"},
             {"action": "suppress", "label": "알림 모두 끄기"},
         ],
+        "is_active": True,
+        "disabled_reason": "",
     }
 
 
@@ -422,11 +434,36 @@ def sorted_chat_views(views: list[dict]) -> list[dict]:
         row.pop("sort_sequence", None)
     return views
 
+
+def action_card_payload(row: dict) -> dict | None:
+    food_selection = row.get("food_selection")
+    if isinstance(food_selection, dict) and food_selection.get("stage") in ACTIVE_FOOD_SELECTION_STAGES:
+        return food_selection
+    policy_confirmation = row.get("policy_confirmation")
+    if isinstance(policy_confirmation, dict):
+        return policy_confirmation
+    side_effect_safety = row.get("side_effect_reminder_safety")
+    if isinstance(side_effect_safety, dict):
+        return side_effect_safety
+    return None
+
+
+def mark_stale_action_cards(views: list[dict]) -> list[dict]:
+    has_newer_conversation = False
+    for row in reversed(views):
+        payload = action_card_payload(row)
+        if payload is not None:
+            payload["is_active"] = not has_newer_conversation
+            payload["disabled_reason"] = "" if not has_newer_conversation else STALE_ACTION_CARD_REASON
+        has_newer_conversation = True
+    return views
+
+
 def agent_conversation_views(session: Session, current_time: datetime) -> list[dict]:
     views = [chat_message_view(message) for message in get_chat_messages(session) if is_agent_conversation_message(message)]
     views.extend(missing_chat_prompt_views(session, current_time))
     views.extend(pending_agent_chat_views(session, current_time))
-    return sorted_chat_views(views)
+    return mark_stale_action_cards(sorted_chat_views(views))
 
 def notification_history_chat_views(session: Session, current_time: datetime) -> list[dict]:
     rows = session.scalars(

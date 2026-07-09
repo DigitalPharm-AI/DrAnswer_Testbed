@@ -1386,7 +1386,19 @@ button:disabled {
   font-size: 0.9rem;
 }
 
+.nutrition-meal-head strong,
+.nutrition-food-main > span {
+  color: #111827;
+  font-weight: 850;
+}
+
+.nutrition-meal-head .tiny-badge {
+  background: rgba(79, 143, 99, 0.14);
+  color: var(--success-ink);
+}
+
 .nutrition-food-row small {
+  color: #4b5563;
   font-size: 0.78rem;
   line-height: 1.35;
 }

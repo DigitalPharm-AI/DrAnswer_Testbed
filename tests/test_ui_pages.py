@@ -540,6 +540,111 @@ def test_chat_panel_renders_diet_recommendation_cards():
             session.commit()
 
 
+def _food_selection_metadata(food_ref_id: str, food_name: str) -> dict:
+    return {
+        "food_selection": {
+            "stage": "awaiting_food_choice",
+            "query": food_name,
+            "candidates": [
+                {
+                    "food_ref_id": food_ref_id,
+                    "food_name": food_name,
+                    "category": "test",
+                    "serving_size": 100,
+                    "nutrients": {
+                        "energy": {"value": 120, "unit": "kcal"},
+                        "protein": {"value": 4, "unit": "g"},
+                        "sodium": {"value": 80, "unit": "mg"},
+                    },
+                }
+            ],
+            "selected_food": None,
+            "portion_g": None,
+            "meal_type": None,
+            "foods_queue": [],
+            "confirmed_foods": [],
+        }
+    }
+
+
+def test_chat_log_disables_food_card_after_conversation_moves_on():
+    client = TestClient(app)
+
+    with SessionLocal() as session:
+        session.query(ChatMessage).delete()
+        ensure_base_data(session)
+        old_card = add_chat_message(
+            session,
+            role="assistant",
+            content="Choose old food",
+            sender_type="assistant",
+            category="multiturn_chat",
+            metadata=_food_selection_metadata("old-ref", "OLD_FOOD"),
+        )
+        old_card.created_at = datetime(2026, 5, 14, 9, 0, 0)
+        newer_message = add_chat_message(
+            session,
+            role="user",
+            content="new request",
+            sender_type="patient",
+            category="multiturn_chat",
+        )
+        newer_message.created_at = datetime(2026, 5, 14, 9, 1, 0)
+        session.commit()
+
+    try:
+        response = client.get("/partials/chat")
+
+        assert response.status_code == 200
+        assert "새 대화가 이어져 이전 선택지는 비활성화됐습니다." in response.text
+        old_ref_index = response.text.index('value="old-ref"')
+        assert "disabled" in response.text[old_ref_index : old_ref_index + 300]
+    finally:
+        with SessionLocal() as session:
+            session.query(ChatMessage).delete()
+            session.commit()
+
+
+def test_food_select_rejects_stale_card_submission_after_newer_message():
+    client = TestClient(app)
+
+    with SessionLocal() as session:
+        session.query(ChatMessage).delete()
+        ensure_base_data(session)
+        old_card = add_chat_message(
+            session,
+            role="assistant",
+            content="Choose old food",
+            sender_type="assistant",
+            category="multiturn_chat",
+            metadata=_food_selection_metadata("old-ref", "OLD_FOOD"),
+        )
+        old_card.created_at = datetime(2026, 5, 14, 9, 0, 0)
+        newer_message = add_chat_message(
+            session,
+            role="user",
+            content="new request",
+            sender_type="patient",
+            category="multiturn_chat",
+        )
+        newer_message.created_at = datetime(2026, 5, 14, 9, 1, 0)
+        session.commit()
+        old_card_id = old_card.id
+
+    try:
+        response = client.post(
+            "/chat/food-select",
+            data={"chat_message_id": old_card_id, "food_ref_id": "old-ref"},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "stale_food_selection"
+    finally:
+        with SessionLocal() as session:
+            session.query(ChatMessage).delete()
+            session.commit()
+
+
 def test_food_grams_card_selects_default_meal_type_hint():
     client = TestClient(app)
 

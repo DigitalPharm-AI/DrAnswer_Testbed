@@ -25,9 +25,13 @@
         {% endif %}
         {% if message.policy_confirmation %}
           {% set policy = message.policy_confirmation %}
+          {% set policy_disabled = not policy.is_active %}
           {% set policy_change = policy.policy_change %}
           {% set policy_candidates = policy_change.get('candidates') or [] %}
-          <div class="chat-action-card policy-confirmation-card">
+          <div class="chat-action-card policy-confirmation-card{% if policy_disabled %} is-disabled{% endif %}">
+            {% if policy_disabled and policy.disabled_reason %}
+              <p class="muted action-card-disabled-note">{{ policy.disabled_reason }}</p>
+            {% endif %}
             {% if policy_candidates %}
               <div class="policy-change-table-wrap">
                 <table class="policy-change-table">
@@ -58,7 +62,7 @@
                     type="hidden"
                     name="message"
                     value='{{ {"prompt_type": "policy_confirmation", "action": option.get("value"), "number": option.get("number"), "label": option.get("label")} | tojson }}'>
-                  <button class="policy-choice-button" type="submit">
+                  <button class="policy-choice-button" type="submit" {% if policy_disabled %}disabled{% endif %}>
                     <span class="policy-option-number">{{ option.get('number') }}</span>
                     <span class="policy-option-label">{{ option.get('label') }}</span>
                   </button>
@@ -69,13 +73,17 @@
         {% endif %}
         {% if message.side_effect_reminder_safety %}
           {% set safety = message.side_effect_reminder_safety %}
-          <div class="chat-action-card side-effect-reminder-safety-card">
+          {% set safety_disabled = not safety.is_active %}
+          <div class="chat-action-card side-effect-reminder-safety-card{% if safety_disabled %} is-disabled{% endif %}">
+            {% if safety_disabled and safety.disabled_reason %}
+              <p class="muted action-card-disabled-note">{{ safety.disabled_reason }}</p>
+            {% endif %}
             <div class="chat-action-row policy-choice-actions">
               {% for option in safety.options %}
                 <form action="/chat/side-effect-reminder-safety" method="post" hx-post="/chat/side-effect-reminder-safety" hx-target="#chat-panel" hx-swap="outerHTML">
                   <input type="hidden" name="notification_id" value="{{ safety.notification_id }}">
                   <input type="hidden" name="action" value="{{ option.get('action') }}">
-                  <button class="policy-choice-button" type="submit">
+                  <button class="policy-choice-button" type="submit" {% if safety_disabled %}disabled{% endif %}>
                     <span class="policy-option-label">{{ option.get('label') }}</span>
                   </button>
                 </form>
@@ -132,18 +140,22 @@
         {% endif %}
         {% if message.food_selection %}
           {% set fs = message.food_selection %}
+          {% set food_disabled = not fs.is_active %}
           {% if fs.total_foods > 1 %}
             <p class="muted food-progress-label">{{ fs.current_index }} / {{ fs.total_foods }}번째 음식</p>
           {% endif %}
           {% if fs.stage == "awaiting_food_choice" %}
-            <div class="chat-action-card food-search-card">
+            <div class="chat-action-card food-search-card{% if food_disabled %} is-disabled{% endif %}">
+              {% if food_disabled and fs.disabled_reason %}
+                <p class="muted action-card-disabled-note">{{ fs.disabled_reason }}</p>
+              {% endif %}
               {% if fs.query %}<p class="muted">검색어: {{ fs.query }}</p>{% endif %}
               <div class="food-candidate-grid">
                 {% for candidate in fs.candidates %}
                   <form hx-post="/chat/food-select" hx-target="#chat-panel" hx-swap="outerHTML">
                     <input type="hidden" name="chat_message_id" value="{{ fs.chat_message_id }}">
                     <input type="hidden" name="food_ref_id" value="{{ candidate.food_ref_id }}">
-                    <button class="food-candidate-card" type="submit">
+                    <button class="food-candidate-card" type="submit" {% if food_disabled %}disabled{% endif %}>
                       <strong>{{ candidate.food_name }}</strong>
                       {% if candidate.category %}<span class="muted">{{ candidate.category }}</span>{% endif %}
                       <span>{{ (candidate.nutrients.energy.value | float) | round | int }}kcal / {{ candidate.serving_size | int }}g 기준</span>
@@ -159,28 +171,34 @@
               </div>
             </div>
           {% elif fs.stage == "awaiting_grams" %}
-            <div class="chat-action-card food-grams-card">
+            <div class="chat-action-card food-grams-card{% if food_disabled %} is-disabled{% endif %}">
+              {% if food_disabled and fs.disabled_reason %}
+                <p class="muted action-card-disabled-note">{{ fs.disabled_reason }}</p>
+              {% endif %}
               <p><strong>{{ fs.selected_food.food_name }}</strong> 선택됨</p>
               <p class="muted">기준 1회 제공량: {{ fs.selected_food.serving_size | int }}g</p>
               <form class="stack-form inline-chat-reply-form" hx-post="/chat/food-grams" hx-target="#chat-panel" hx-swap="outerHTML">
                 <input type="hidden" name="chat_message_id" value="{{ fs.chat_message_id }}">
                 <label>섭취량 (g)</label>
-                <input type="number" name="portion_g" min="1" max="2000" required value="{{ fs.selected_food.serving_size | int }}">
+                <input type="number" name="portion_g" min="1" max="2000" required value="{{ fs.selected_food.serving_size | int }}" {% if food_disabled %}disabled{% endif %}>
                 <label>식사 종류</label>
                 {% set selected_meal_type = fs.meal_type or fs.default_meal_type or "lunch" %}
-                <select name="meal_type" required>
+                <select name="meal_type" required {% if food_disabled %}disabled{% endif %}>
                   <option value="breakfast" {% if selected_meal_type == "breakfast" %}selected{% endif %}>아침</option>
                   <option value="lunch" {% if selected_meal_type == "lunch" %}selected{% endif %}>점심</option>
                   <option value="dinner" {% if selected_meal_type == "dinner" %}selected{% endif %}>저녁</option>
                   <option value="snack" {% if selected_meal_type == "snack" %}selected{% endif %}>간식</option>
                 </select>
-                <button type="submit">다음</button>
+                <button type="submit" {% if food_disabled %}disabled{% endif %}>다음</button>
               </form>
             </div>
           {% elif fs.stage == "awaiting_confirm" %}
             {% set sf = fs.selected_food %}
             {% set meal_labels = {"breakfast": "아침", "lunch": "점심", "dinner": "저녁", "snack": "간식"} %}
-            <div class="chat-action-card food-confirm-card">
+            <div class="chat-action-card food-confirm-card{% if food_disabled %} is-disabled{% endif %}">
+              {% if food_disabled and fs.disabled_reason %}
+                <p class="muted action-card-disabled-note">{{ fs.disabled_reason }}</p>
+              {% endif %}
               <p><strong>{{ sf.food_name }}</strong> — {{ fs.portion_g | int }}g ({{ meal_labels.get(fs.meal_type, fs.meal_type) }})</p>
               {% if sf.scaled_nutrients %}
                 <ul class="nutrient-preview">
@@ -191,7 +209,7 @@
               {% endif %}
               <form hx-post="/chat/food-confirm" hx-target="#chat-panel" hx-swap="outerHTML">
                 <input type="hidden" name="chat_message_id" value="{{ fs.chat_message_id }}">
-                <button type="submit" class="ghost compact-button">기록하기</button>
+                <button type="submit" class="ghost compact-button" {% if food_disabled %}disabled{% endif %}>기록하기</button>
               </form>
             </div>
           {% elif fs.stage == "done" %}

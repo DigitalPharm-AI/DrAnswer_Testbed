@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from sqlalchemy import desc, select
+from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.orm import Session
 
 from shared.json_utils import dump_json, parse_json_object
@@ -27,6 +27,8 @@ from system_app.services.side_effect_reminder_safety import create_side_effect_r
 from system_app.services.system_request_service import create_system_event_request
 from system_app.services.timeline_service import add_chat_message, ensure_chat_message_for_conversation_alert
 
+STALE_FOOD_SELECTION_DETAIL = "stale_food_selection"
+
 
 def active_missed_dose_conversation_alert(session: Session):
     clock = ensure_clock(session)
@@ -49,6 +51,34 @@ def active_missed_dose_conversation_alert(session: Session):
         ):
             return notification
     return None
+
+
+def has_newer_chat_message(session: Session, message: ChatMessage) -> bool:
+    stmt = (
+        select(ChatMessage.id)
+        .where(
+            ChatMessage.patient_id == message.patient_id,
+            or_(
+                ChatMessage.created_at > message.created_at,
+                and_(ChatMessage.created_at == message.created_at, ChatMessage.id > message.id),
+            ),
+        )
+        .limit(1)
+    )
+    return session.scalar(stmt) is not None
+
+
+def food_selection_for_stage(session: Session, chat_message_id: int, expected_stage: str) -> tuple[ChatMessage, dict, dict]:
+    message = session.get(ChatMessage, chat_message_id)
+    if message is None:
+        raise HTTPException(status_code=404, detail="chat_message_not_found")
+    metadata = parse_json_object(message.metadata_json)
+    fs = metadata.get("food_selection")
+    if not isinstance(fs, dict):
+        raise HTTPException(status_code=400, detail="no_food_selection")
+    if fs.get("stage") != expected_stage or has_newer_chat_message(session, message):
+        raise HTTPException(status_code=409, detail=STALE_FOOD_SELECTION_DETAIL)
+    return message, metadata, fs
 
 
 def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
@@ -179,13 +209,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
     ):
         runtime = get_runtime()
         with runtime.write_lock:
-            message = session.get(ChatMessage, chat_message_id)
-            if message is None:
-                raise HTTPException(status_code=404, detail="chat_message_not_found")
-            metadata = parse_json_object(message.metadata_json)
-            fs = metadata.get("food_selection")
-            if not isinstance(fs, dict):
-                raise HTTPException(status_code=400, detail="no_food_selection")
+            message, metadata, fs = food_selection_for_stage(session, chat_message_id, "awaiting_food_choice")
             candidates = fs.get("candidates") if isinstance(fs.get("candidates"), list) else []
             selected = next((c for c in candidates if isinstance(c, dict) and c.get("food_ref_id") == food_ref_id), None)
             if selected is None:
@@ -207,12 +231,8 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
     ):
         runtime = get_runtime()
         with runtime.write_lock:
-            message = session.get(ChatMessage, chat_message_id)
-            if message is None:
-                raise HTTPException(status_code=404, detail="chat_message_not_found")
-            metadata = parse_json_object(message.metadata_json)
-            fs = metadata.get("food_selection")
-            if not isinstance(fs, dict) or not isinstance(fs.get("selected_food"), dict):
+            message, metadata, fs = food_selection_for_stage(session, chat_message_id, "awaiting_grams")
+            if not isinstance(fs.get("selected_food"), dict):
                 raise HTTPException(status_code=400, detail="no_food_selection")
             selected = fs["selected_food"]
             serving = float(selected.get("serving_size") or 100)
@@ -236,12 +256,8 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
     ):
         runtime = get_runtime()
         with runtime.write_lock:
-            message = session.get(ChatMessage, chat_message_id)
-            if message is None:
-                raise HTTPException(status_code=404, detail="chat_message_not_found")
-            metadata = parse_json_object(message.metadata_json)
-            fs = metadata.get("food_selection")
-            if not isinstance(fs, dict) or not isinstance(fs.get("selected_food"), dict):
+            message, metadata, fs = food_selection_for_stage(session, chat_message_id, "awaiting_confirm")
+            if not isinstance(fs.get("selected_food"), dict):
                 raise HTTPException(status_code=400, detail="no_food_selection")
             selected = fs["selected_food"]
             meal_type = str(fs.get("meal_type") or "lunch")

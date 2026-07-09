@@ -202,6 +202,16 @@
   background: rgba(255, 255, 255, 0.72);
 }
 
+.chat-action-card.is-disabled {
+  background: rgba(248, 249, 250, 0.72);
+  border-style: dashed;
+}
+
+.action-card-disabled-note {
+  margin: 0;
+  font-size: 0.82rem;
+}
+
 .chat-action-row {
   display: flex;
   flex-wrap: wrap;
@@ -304,6 +314,7 @@
   border: 1px solid rgba(95, 102, 112, 0.22);
   border-radius: 8px;
   background: #f8f9fa;
+  color: #111827;
   cursor: pointer;
   text-align: left;
   transition: background 0.15s, border-color 0.15s;
@@ -312,6 +323,13 @@
 .food-candidate-card:hover {
   background: #edf2f7;
   border-color: #4a9eff;
+}
+
+.food-candidate-card:disabled,
+.food-candidate-card:disabled:hover {
+  background: #f3f4f6;
+  border-color: rgba(95, 102, 112, 0.18);
+  cursor: not-allowed;
 }
 
 .food-candidate-card strong {
@@ -325,16 +343,21 @@
 }
 
 .food-candidate-card .muted {
+  color: #4b5563;
   font-size: 0.75rem;
+}
+
+.food-candidate-card span {
+  color: #374151;
 }
 
 .food-candidate-card span:last-child {
   font-size: 0.78rem;
-  color: var(--muted);
+  color: #4b5563;
 }
 
 .food-candidate-card .food-nutrient-line {
-  color: var(--muted);
+  color: #4b5563;
   font-size: 0.78rem;
   line-height: 1.35;
 }
