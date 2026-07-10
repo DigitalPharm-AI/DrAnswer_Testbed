@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date, datetime, time
+
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
@@ -39,6 +41,9 @@ def list_side_effect_history(
     limit: int = 20,
     suspected: bool | None = None,
     medication_name: str | None = None,
+    severity: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> list[SideEffectRecord]:
     stmt = select(SideEffectRecord)
     target_patient_id = patient_id or get_settings().patient_id
@@ -48,6 +53,12 @@ def list_side_effect_history(
         stmt = stmt.where(SideEffectRecord.suspected.is_(suspected))
     if medication_name:
         stmt = stmt.where(SideEffectRecord.medication_name == medication_name)
+    if severity:
+        stmt = stmt.where(SideEffectRecord.severity == severity)
+    if start_date:
+        stmt = stmt.where(SideEffectRecord.created_at >= datetime.combine(start_date, time.min))
+    if end_date:
+        stmt = stmt.where(SideEffectRecord.created_at <= datetime.combine(end_date, time.max))
     stmt = stmt.order_by(desc(SideEffectRecord.created_at), desc(SideEffectRecord.id)).limit(max(1, min(limit, 100)))
     return list(session.scalars(stmt).all())
 

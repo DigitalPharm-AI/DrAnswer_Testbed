@@ -46,7 +46,7 @@ class ToolCatalog:
             {
                 "name": "get_side_effect_history",
                 "title": "Get Side Effect History",
-                "description": "Read previously recorded side-effect assessment records for the current patient. Use when the user asks whether side effects were recorded before or wants recent side-effect history.",
+                "description": "Read previously recorded side-effect assessment records for the current patient. Use target_date for one day, or start_date and end_date for a date range.",
                 "annotations": {
                     "readOnlyHint": True,
                     "destructiveHint": False,
@@ -54,13 +54,17 @@ class ToolCatalog:
                     "openWorldHint": False,
                 },
                 "required_arguments": [],
-                "optional_arguments": ["patient_id", "limit", "suspected", "medication_name"],
+                "optional_arguments": ["patient_id", "target_date", "start_date", "end_date", "limit", "suspected", "medication_name", "severity"],
                 "inputSchema": _object_schema(
                     {
                         "patient_id": {"type": "string", "description": "Patient id. Omit to use the current patient."},
+                        "target_date": {"type": "string", "description": "YYYY-MM-DD single-day filter using record created_at."},
+                        "start_date": {"type": "string", "description": "YYYY-MM-DD range start using record created_at. Use with end_date."},
+                        "end_date": {"type": "string", "description": "YYYY-MM-DD range end using record created_at. Use with start_date."},
                         "limit": {"type": "integer", "description": "Maximum records to return. Default 20, maximum 100."},
                         "suspected": {"type": "boolean", "description": "When provided, filter by suspected side-effect status."},
                         "medication_name": {"type": "string", "description": "Optional exact medication name filter."},
+                        "severity": {"type": "string", "enum": ["none", "low", "moderate", "high"], "description": "Optional severity filter."},
                     },
                     [],
                 ),
@@ -69,7 +73,7 @@ class ToolCatalog:
             {
                 "name": "get_medication_dose_status",
                 "title": "Get Medication Dose Status",
-                "description": "Read scheduled/taken/missed dose events for a patient on a date. Use when the user asks what medication is scheduled, already taken, or still pending.",
+                "description": "Read scheduled/taken/missed dose events for a patient. Use target_date for one day, or start_date and end_date for a date range.",
                 "annotations": {
                     "readOnlyHint": True,
                     "destructiveHint": False,
@@ -77,11 +81,15 @@ class ToolCatalog:
                     "openWorldHint": False,
                 },
                 "required_arguments": [],
-                "optional_arguments": ["patient_id", "target_date"],
+                "optional_arguments": ["patient_id", "target_date", "start_date", "end_date", "status", "medication_name"],
                 "inputSchema": _object_schema(
                     {
                         "patient_id": {"type": "string", "description": "Patient id. Omit to use the current patient."},
                         "target_date": {"type": "string", "description": "YYYY-MM-DD. Omit to use the simulation clock date."},
+                        "start_date": {"type": "string", "description": "YYYY-MM-DD range start. Use with end_date."},
+                        "end_date": {"type": "string", "description": "YYYY-MM-DD range end. Use with start_date."},
+                        "status": {"type": "string", "enum": ["scheduled", "taken", "missed"], "description": "Optional dose status filter."},
+                        "medication_name": {"type": "string", "description": "Optional exact medication name filter."},
                     },
                     [],
                 ),

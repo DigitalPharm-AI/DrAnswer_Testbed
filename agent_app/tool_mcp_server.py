@@ -219,8 +219,9 @@ class AgentMcpToolServer:
         patient_id = arguments.get("patient_id") or payload.get("patient_id")
         if patient_id:
             params["patient_id"] = patient_id
-        if arguments.get("target_date"):
-            params["target_date"] = arguments["target_date"]
+        for key in ("target_date", "start_date", "end_date", "status", "medication_name"):
+            if arguments.get(key):
+                params[key] = arguments[key]
         async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
             response = await client.get(
                 f"{self.system_base_url}/api/agent/dose-events",
@@ -571,8 +572,9 @@ class AgentMcpToolServer:
             params["limit"] = arguments["limit"]
         if arguments.get("suspected") is not None:
             params["suspected"] = arguments["suspected"]
-        if arguments.get("medication_name"):
-            params["medication_name"] = arguments["medication_name"]
+        for key in ("target_date", "start_date", "end_date", "medication_name", "severity"):
+            if arguments.get(key):
+                params[key] = arguments[key]
         async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
             response = await client.get(
                 f"{self.system_base_url}/api/agent/side-effects/history",

@@ -60,15 +60,40 @@ def test_agent_side_effect_record_and_history_api():
         assert created["suspected"] is True
         assert created["matched_items"] == ["demo-med"]
 
+        second_response = client.post(
+            "/api/agent/side-effects/records",
+            headers=_internal_headers(),
+            json={
+                "patient_id": patient_id,
+                "phr_patient_key": "phr-tool-test",
+                "medication_name": "demo-med",
+                "symptom_text": "headache",
+                "suspected": False,
+                "severity": "none",
+                "source_trace_id": "trace-side-effect-tool-test-2",
+                "source_event_type": "multiturn_chat",
+            },
+        )
+        assert second_response.status_code == 200
+        second = second_response.json()["record"]
+        with SessionLocal() as session:
+            first_record = session.get(SideEffectRecord, created["id"])
+            second_record = session.get(SideEffectRecord, second["id"])
+            first_record.created_at = datetime(2026, 4, 20, 10, 0)
+            second_record.created_at = datetime(2026, 5, 2, 10, 0)
+            session.commit()
+
         history_response = client.get(
             "/api/agent/side-effects/history",
             headers=_internal_headers(),
-            params={"patient_id": patient_id, "suspected": True, "limit": 5},
+            params={"patient_id": patient_id, "start_date": "2026-04-19", "end_date": "2026-04-21", "suspected": True, "limit": 5},
         )
 
         assert history_response.status_code == 200
         payload = history_response.json()
         assert payload["total"] == 1
+        assert payload["start_date"] == "2026-04-19"
+        assert payload["end_date"] == "2026-04-21"
         assert payload["records"][0]["id"] == created["id"]
     finally:
         with SessionLocal() as session:
@@ -106,7 +131,18 @@ def test_agent_medication_dose_status_api_returns_patient_day_events():
                 slot_label=schedule.slot_label,
                 scheduled_for=datetime(2026, 4, 20, 9, 0),
                 taken_at=datetime(2026, 4, 20, 9, 5),
-                status="taken",
+            status="taken",
+            )
+        )
+        session.add(
+            DoseEvent(
+                patient_id=patient_id,
+                plan_id=plan.id,
+                schedule_id=schedule.id,
+                medication_name=plan.medication_name,
+                slot_label=schedule.slot_label,
+                scheduled_for=datetime(2026, 4, 21, 9, 0),
+                status="missed",
             )
         )
         session.commit()
@@ -122,9 +158,26 @@ def test_agent_medication_dose_status_api_returns_patient_day_events():
         payload = response.json()
         assert payload["patient_id"] == patient_id
         assert payload["target_date"] == "2026-04-20"
+        assert payload["start_date"] == "2026-04-20"
+        assert payload["end_date"] == "2026-04-20"
         assert payload["total"] == 1
         assert payload["dose_events"][0]["status"] == "taken"
         assert payload["dose_events"][0]["medication_name"] == "demo-med"
+
+        range_response = client.get(
+            "/api/agent/dose-events",
+            headers=_internal_headers(),
+            params={"patient_id": patient_id, "start_date": "2026-04-20", "end_date": "2026-04-21"},
+        )
+        assert range_response.status_code == 200
+        range_payload = range_response.json()
+        assert range_payload["target_date"] is None
+        assert range_payload["start_date"] == "2026-04-20"
+        assert range_payload["end_date"] == "2026-04-21"
+        assert range_payload["total"] == 2
+        assert range_payload["totals_by_status"]["taken"] == 1
+        assert range_payload["totals_by_status"]["missed"] == 1
+        assert [row["total"] for row in range_payload["summary_by_date"]] == [1, 1]
     finally:
         with SessionLocal() as session:
             _delete_patient_medication_rows(session, patient_id)

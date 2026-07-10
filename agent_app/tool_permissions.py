@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from agent_app.tool_names import (
@@ -78,8 +79,18 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
         return f"{GET_MEDICATION_SIDE_EFFECT_ASSESSMENT} requires symptom_text"
     if tool_name == GET_SIDE_EFFECT_HISTORY and "limit" in arguments and not _valid_positive_int(arguments.get("limit"), maximum=100):
         return f"{GET_SIDE_EFFECT_HISTORY} requires limit between 1 and 100"
-    if tool_name == GET_MEDICATION_DOSE_STATUS and "target_date" in arguments and not str(arguments.get("target_date") or "").strip():
-        return f"{GET_MEDICATION_DOSE_STATUS} requires non-empty target_date when target_date is provided"
+    if tool_name == GET_SIDE_EFFECT_HISTORY:
+        date_error = _validate_date_range_arguments(arguments, tool_name=GET_SIDE_EFFECT_HISTORY, max_days=366)
+        if date_error:
+            return date_error
+        if arguments.get("severity") not in {None, "", "none", "low", "moderate", "high"}:
+            return f"{GET_SIDE_EFFECT_HISTORY} requires supported severity"
+    if tool_name == GET_MEDICATION_DOSE_STATUS:
+        date_error = _validate_date_range_arguments(arguments, tool_name=GET_MEDICATION_DOSE_STATUS, max_days=31)
+        if date_error:
+            return date_error
+        if arguments.get("status") not in {None, "", "scheduled", "taken", "missed"}:
+            return f"{GET_MEDICATION_DOSE_STATUS} requires supported status"
     if tool_name == GET_PRO_CTCAE_QUESTIONNAIRE and not (
         str(arguments.get("symptom_text") or "").strip() or str(arguments.get("symptom_normalize") or "").strip()
     ):
@@ -142,6 +153,37 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
 
 def _valid_positive_int(value: Any, *, maximum: int) -> bool:
     return isinstance(value, int) and 1 <= value <= maximum
+
+
+def _validate_date_range_arguments(arguments: dict[str, Any], *, tool_name: str, max_days: int) -> str | None:
+    target_date = str(arguments.get("target_date") or "").strip()
+    start_date = str(arguments.get("start_date") or "").strip()
+    end_date = str(arguments.get("end_date") or "").strip()
+    if "target_date" in arguments and not target_date:
+        return f"{tool_name} requires non-empty target_date when target_date is provided"
+    if target_date and (start_date or end_date):
+        return f"{tool_name} requires either target_date or start_date/end_date, not both"
+    if bool(start_date) != bool(end_date):
+        return f"{tool_name} requires start_date and end_date together"
+    if target_date:
+        return None if _parse_iso_date(target_date) is not None else f"{tool_name} requires YYYY-MM-DD target_date"
+    if start_date and end_date:
+        parsed_start = _parse_iso_date(start_date)
+        parsed_end = _parse_iso_date(end_date)
+        if parsed_start is None or parsed_end is None:
+            return f"{tool_name} requires YYYY-MM-DD start_date and end_date"
+        if parsed_end < parsed_start:
+            return f"{tool_name} requires end_date on or after start_date"
+        if (parsed_end - parsed_start).days + 1 > max_days:
+            return f"{tool_name} date range is too large"
+    return None
+
+
+def _parse_iso_date(value: str) -> date | None:
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def requires_human_handoff(tool_name: str) -> bool:

@@ -156,8 +156,8 @@ def tool_result_summary(results: list[ToolCallResult], fallback: str) -> str:
             if isinstance(item, dict):
                 status = str(item.get("status") or "")
                 counts[status] = counts.get(status, 0) + 1
-        target_date = last.response.get("target_date") or "해당 날짜"
-        return f"{target_date} 복약 일정은 총 {len(events)}건이고, 완료 {counts.get('taken', 0)}건, 미복용 {counts.get('missed', 0)}건, 예정 {counts.get('scheduled', 0)}건입니다."
+        date_label = _date_range_label(last.response)
+        return f"{date_label} 복약 일정은 총 {len(events)}건이고, 완료 {counts.get('taken', 0)}건, 미복용 {counts.get('missed', 0)}건, 예정 {counts.get('scheduled', 0)}건입니다."
     if last.tool_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
         return str(last.response.get("message") or _safe_result_error(last.error) or fallback)
     if last.tool_name == CREATE_NUTRITION_MEAL_RECORD:
@@ -252,6 +252,16 @@ def _safe_result_error(error: str) -> str:
     if len(text) <= 80 and all(char.isascii() and (char.isalnum() or char in "_:-.") for char in text):
         return text
     return redacted_clinical_text_label(text, key="error")
+
+
+def _date_range_label(response: dict[str, Any]) -> str:
+    if response.get("target_date"):
+        return str(response["target_date"])
+    start_date = str(response.get("start_date") or "")
+    end_date = str(response.get("end_date") or "")
+    if start_date and end_date:
+        return start_date if start_date == end_date else f"{start_date}~{end_date}"
+    return "해당 기간"
 
 
 def _safe_tool_result_payload(result: ToolCallResult) -> dict[str, Any]:

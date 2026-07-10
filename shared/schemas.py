@@ -367,6 +367,9 @@ class SideEffectRecordResult(BaseModel):
 
 class SideEffectHistoryResult(BaseModel):
     success: bool = True
+    target_date: date | None = None
+    start_date: date | None = None
+    end_date: date | None = None
     records: list[SideEffectRecordView] = Field(default_factory=list)
     total: int = 0
 
@@ -432,9 +435,13 @@ class MedicationDoseEventView(BaseModel):
 class MedicationDoseStatusResult(BaseModel):
     success: bool = True
     patient_id: str
-    target_date: date
+    target_date: date | None = None
+    start_date: date
+    end_date: date
     dose_events: list[MedicationDoseEventView] = Field(default_factory=list)
     total: int = 0
+    summary_by_date: list[dict[str, Any]] = Field(default_factory=list)
+    totals_by_status: dict[str, int] = Field(default_factory=dict)
 
 
 class NutritionFoodPayload(BaseModel):
