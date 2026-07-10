@@ -21,6 +21,7 @@ from agent_app.provider_base import BaseLLMProvider
 from agent_app.response_builders import natural_chat_summary
 from agent_app.tool_calling import normalize_tool_calls
 from agent_app.tool_names import (
+    DELEGATE_TO_MEDICATION_AGENT,
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     PROPOSE_NOTIFICATION_POLICY,
     UPSERT_NUTRITION_PREFERENCE_FACT,
@@ -50,13 +51,33 @@ class RuleBasedProvider(BaseLLMProvider):
                 "follow_up_questions": ["현재 복용 가능하신 상태인가요?"],
                 "recommendation": "복용 가능 여부와 미복용 이유를 먼저 확인하세요.",
             }
-        if response_mode == "multiturn_chat":
+        if response_mode == "medication_chat":
             side_effect_tool_call = _rule_based_side_effect_tool_call(user_payload)
             if side_effect_tool_call:
                 return {
                     "advice": "말씀하신 증상을 확인해볼게요.",
                     "observations": ["부작용 가능성 확인을 위해 PHR 주의사항 조회가 필요합니다."],
                     "tool_calls": [side_effect_tool_call],
+                }
+            return {
+                "advice": "복약 관련 요청을 확인했습니다.",
+                "observations": ["추가 도구 실행은 필요하지 않습니다."],
+            }
+        if response_mode == "multiturn_chat":
+            side_effect_tool_call = _rule_based_side_effect_tool_call(user_payload)
+            if side_effect_tool_call:
+                return {
+                    "advice": "복약 담당 에이전트가 증상을 확인할게요.",
+                    "observations": ["부작용 평가는 MedicationAgent에 위임합니다."],
+                    "tool_calls": [
+                        {
+                            "name": DELEGATE_TO_MEDICATION_AGENT,
+                            "arguments": {
+                                "task": "assess a possible medication side effect and prepare PRO-CTCAE questions when indicated",
+                                "reason": "patient reported a possible medication-related symptom",
+                            },
+                        }
+                    ],
                 }
             preference_tool_calls = _rule_based_preference_tool_calls(user_payload)
             if preference_tool_calls:

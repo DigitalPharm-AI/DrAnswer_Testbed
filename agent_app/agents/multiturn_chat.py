@@ -27,18 +27,14 @@ from agent_app.prompt_builders import multiturn_chat_prompt
 from agent_app.providers import BaseLLMProvider
 from agent_app.response_builders import natural_chat_summary, string_list
 from agent_app.tool_catalog import ToolCatalog
-from agent_app.tool_permissions import MEDICATION_CHAT_TOOLS, POLICY_TOOLS
-from agent_app.tool_names import (
-    GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
-    GET_PRO_CTCAE_QUESTIONNAIRE,
-    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
-)
+from agent_app.tool_permissions import POLICY_TOOLS
+from agent_app.tool_names import DELEGATE_TO_MEDICATION_AGENT, SIDE_EFFECT_TOOLS
 from agent_app.tool_policy import has_deferred_policy_tool_call, normalize_policy_tool_calls
 from agent_app.tool_results import tool_calls_payload, tool_result_summary
 from agent_app.tool_runtime import ToolRuntime
 from shared.schemas import AgentResponse, MultiturnChatRequest, ToolCallResult
 
-SUPERVISOR_DIRECT_TOOLS = tuple(sorted(MEDICATION_CHAT_TOOLS | POLICY_TOOLS))
+SUPERVISOR_DIRECT_TOOLS = tuple(sorted(POLICY_TOOLS))
 
 
 class MultiturnChatAgent:
@@ -74,6 +70,33 @@ class MultiturnChatAgent:
                     source_event_type="multiturn_chat",
                 )
                 ai_message = ai_message_from_tool_calls(tool_calls, content=request.message, model_output=output)
+                if any(str(call.get("name") or "") in SIDE_EFFECT_TOOLS for call in tool_calls):
+                    delegated_call = {
+                        "name": DELEGATE_TO_MEDICATION_AGENT,
+                        "arguments": {
+                            "task": "Continue the deferred medication side-effect assessment.",
+                            "reason": "async_medication_continuation",
+                        },
+                    }
+                    delegated_ai_message = ai_message_from_tool_calls(
+                        [delegated_call],
+                        content=request.message,
+                        model_output=output,
+                    )
+                    delegated_response = await self.medication_agent.run(
+                        trace_id,
+                        request_payload,
+                        forced_tool_calls=tool_calls,
+                    )
+                    return await self._delegated_response(
+                        bound_model,
+                        messages,
+                        delegated_ai_message,
+                        output,
+                        delegated_response,
+                        delegated_call=delegated_call,
+                        reason="async_medication_continuation",
+                    )
             else:
                 ai_message = await bound_model.ainvoke(messages)
                 output = model_output_from_ai_message(ai_message)
@@ -92,9 +115,7 @@ class MultiturnChatAgent:
                     reason=delegation_reason(delegated_call),
                 )
             continuation_type = async_continuation_type(tool_calls)
-            if continuation_type and context.get("execute_async_continuation") is not True and not any(
-                str(call.get("name") or "") == UPDATE_MEDICATION_DOSE_EVENT_STATUS for call in tool_calls
-            ):
+            if continuation_type == "policy_change_request" and context.get("execute_async_continuation") is not True:
                 summary = async_continuation_summary(continuation_type)
                 return AgentResponse(
                     trace_id=trace_id,
@@ -123,7 +144,6 @@ class MultiturnChatAgent:
                 trace_id=trace_id,
                 source_event_type="multiturn_chat",
                 payload=request_payload,
-                force_ae_after_positive_lookup=True,
                 routing_context={
                     "routing_mode": "direct_async_continuation" if context.get("execute_async_continuation") is True else "direct_tool",
                     "executed_by": agent_name,
@@ -146,11 +166,7 @@ class MultiturnChatAgent:
             raise agent_error(trace_id, agent_name, "system_guidance", exc) from exc
 
         if executed_calls:
-            decision_type = (
-                "side_effect_assessment"
-                if any(call.get("name") in {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE} for call in executed_calls)
-                else "tool_call"
-            )
+            decision_type = "tool_call"
             structured_payload = {
                 "routing_mode": "direct_tool",
                 "supervisor_agent": agent_name,
@@ -189,7 +205,7 @@ class MultiturnChatAgent:
                 )
             return AgentResponse(
                 trace_id=trace_id,
-                agent_name="side_effect_triage_agent" if decision_type == "side_effect_assessment" else agent_name,
+                agent_name=agent_name,
                 prompt_version_id=PROMPT_VERSION_ID,
                 decision_type=decision_type,
                 structured_payload=structured_payload,
@@ -267,6 +283,11 @@ class MultiturnChatAgent:
         )
         structured = dict(delegated_response.structured_payload)
         specialist_tool_calls = structured.get("tool_calls") if isinstance(structured.get("tool_calls"), list) else []
+        response_decision_type = delegated_response.decision_type
+        if response_decision_type != "async_continuation_requested" and any(
+            str(call.get("name") or "") in SIDE_EFFECT_TOOLS for call in specialist_tool_calls
+        ):
+            response_decision_type = "side_effect_assessment"
         structured["routing_mode"] = "delegated_agent"
         structured["supervisor_agent"] = "system_event_agent"
         structured["specialist_agent"] = delegated_response.agent_name
@@ -290,7 +311,7 @@ class MultiturnChatAgent:
             trace_id=delegated_response.trace_id,
             agent_name="system_event_agent",
             prompt_version_id=delegated_response.prompt_version_id,
-            decision_type=delegated_response.decision_type,
+            decision_type=response_decision_type,
             structured_payload=structured,
             human_summary=final_summary,
             requires_conversation_alert=delegated_response.requires_conversation_alert,

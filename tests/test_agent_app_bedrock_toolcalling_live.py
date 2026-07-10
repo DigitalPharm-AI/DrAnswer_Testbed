@@ -26,7 +26,7 @@ class RecordingToolExecutor:
         self.calls: list[dict[str, Any]] = []
 
     async def execute_tool_call(self, tool_call: dict[str, Any], *, trace_id: str, source_event_type: str, payload: dict[str, Any]) -> ToolCallResult:
-        self.calls.append(tool_call)
+        self.calls.append({**tool_call, "_source_event_type": source_event_type})
         tool_name = str(tool_call.get("name") or "")
         arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
         if tool_name == "update_medication_dose_event_status":
@@ -87,7 +87,7 @@ def _build_orchestrator() -> tuple[AgentLangGraphNativeOrchestrator, RecordingTo
 
 
 @pytest.mark.asyncio
-async def test_bedrock_multiturn_update_medication_dose_event_status_executes_tool() -> None:
+async def test_bedrock_multiturn_delegates_dose_update_to_medication_agent() -> None:
     orchestrator, executor = _build_orchestrator()
     request = MultiturnChatRequest(
         patient_id="demo-patient",
@@ -111,8 +111,11 @@ async def test_bedrock_multiturn_update_medication_dose_event_status_executes_to
     response = await orchestrator.invoke("multiturn_chat", request.model_dump(mode="json"))
 
     assert response.decision_type == "tool_call"
+    assert response.structured_payload["routing_mode"] == "delegated_agent"
+    assert response.structured_payload["supervisor_tool_calls"][0]["name"] == "delegate_to_medication_agent"
     assert response.structured_payload["tools_executed"] is True
     assert [call["name"] for call in executor.calls] == ["update_medication_dose_event_status"]
+    assert executor.calls[0]["_source_event_type"] == "medication_agent"
     assert response.structured_payload["tool_results"][0]["tool_name"] == "update_medication_dose_event_status"
     assert response.structured_payload["tool_results"][0]["response"]["status"] == "taken"
 
@@ -137,6 +140,8 @@ async def test_bedrock_multiturn_side_effect_lookup_forces_ae_pro_ctcae() -> Non
     response = await orchestrator.invoke("multiturn_chat", request.model_dump(mode="json"))
 
     assert response.decision_type == "async_continuation_requested"
+    assert response.structured_payload["routing_mode"] == "delegated_agent"
+    assert response.structured_payload["supervisor_tool_calls"][0]["name"] == "delegate_to_medication_agent"
     assert response.structured_payload["async_continuation_required"] is True
     assert response.structured_payload["async_continuation_type"] == "side_effect_assessment"
     assert [call["name"] for call in response.structured_payload["tool_calls"]] == ["get_medication_side_effect_assessment"]
@@ -151,8 +156,11 @@ async def test_bedrock_multiturn_side_effect_lookup_forces_ae_pro_ctcae() -> Non
     response = await orchestrator.invoke("multiturn_chat", continuation.model_dump(mode="json"))
 
     assert response.decision_type == "side_effect_assessment"
+    assert response.structured_payload["routing_mode"] == "delegated_agent"
+    assert response.structured_payload["supervisor_tool_calls"][0]["name"] == "delegate_to_medication_agent"
     assert response.structured_payload["tools_executed"] is True
     assert [call["name"] for call in executor.calls] == ["get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"]
+    assert all(call["_source_event_type"] == "medication_agent" for call in executor.calls)
     assert [result["tool_name"] for result in response.structured_payload["tool_results"]] == ["get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"]
     assert response.structured_payload["side_effect_status"] == "suspected"
     assert response.structured_payload["ae_pro_ctcae"]["matched"] is True

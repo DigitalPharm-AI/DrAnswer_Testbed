@@ -162,9 +162,11 @@ class NativeDelegatingMedicationProvider(NativeChatProvider):
     def __init__(self) -> None:
         self.seen_payloads: list[dict[str, Any]] = []
         self.bound_tool_names: list[str] = []
+        self.bound_tool_history: list[list[str]] = []
 
     async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         self.seen_payloads.append(user_payload)
+        self.bound_tool_history.append(list(self.bound_tool_names))
         if user_payload.get("response_mode") == "multiturn_chat":
             return {
                 "message": "복약 담당 에이전트가 확인하겠습니다.",
@@ -339,19 +341,37 @@ class NativeMultiStepNutritionFoodUpdateChatModel(NativeProviderChatModel):
 
 
 class NativeSideEffectLookupProvider(NativeChatProvider):
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
-        assert user_payload["response_mode"] == "multiturn_chat"
-        return {
-            "message": "복용약 주의사항을 먼저 확인하겠습니다.",
-            "tool_call": {
-                "name": "get_medication_side_effect_assessment",
-                "arguments": {
-                    "symptom_text": "속이 메스꺼워요.",
-                    "medication_name": "항암제",
-                },
-            },
-        }
+    def __init__(self) -> None:
+        self.seen_payloads: list[dict[str, Any]] = []
+        self.bound_tool_names: list[str] = []
+        self.bound_tool_history: list[list[str]] = []
 
+    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        self.seen_payloads.append(user_payload)
+        self.bound_tool_history.append(list(self.bound_tool_names))
+        if user_payload.get("response_mode") == "multiturn_chat":
+            return {
+                "message": "The medication specialist will assess the symptom.",
+                "tool_call": {
+                    "name": "delegate_to_medication_agent",
+                    "arguments": {
+                        "task": "assess a possible medication side effect and prepare PRO-CTCAE questions when indicated",
+                        "reason": "patient reported a possible medication-related symptom",
+                    },
+                },
+            }
+        if user_payload.get("response_mode") == "medication_chat":
+            return {
+                "message": "Checking the medication side-effect information first.",
+                "tool_call": {
+                    "name": "get_medication_side_effect_assessment",
+                    "arguments": {
+                        "symptom_text": "nausea",
+                        "medication_name": "anticancer drug",
+                    },
+                },
+            }
+        return {"advice": "The symptom assessment is complete."}
 
 class NativeLoopLimitProvider(NativeChatProvider):
     def __init__(self) -> None:
@@ -967,7 +987,10 @@ def test_agent_app_mcp_tools_list_endpoint_reports_context_allowed_catalog():
     context_payload = context_response.json()
     assert context_payload["result"]["source_event_type"] == "multiturn_chat"
     context_tools = {tool["name"]: tool for tool in context_payload["result"]["tools"]}
-    assert {"update_medication_dose_event_status", "get_medication_side_effect_assessment", "propose_notification_policy", "propose_system_policy"} <= set(context_tools)
+    assert {"propose_notification_policy", "propose_system_policy"} <= set(context_tools)
+    assert "update_medication_dose_event_status" not in context_tools
+    assert "get_medication_side_effect_assessment" not in context_tools
+    assert "get_pro_ctcae_questionnaire" not in context_tools
     policy_meta = context_tools["propose_notification_policy"]["_meta"]
     assert policy_meta["execution_mode"] == "deferred_confirmation"
     assert policy_meta["requires_human_handoff"] is True
@@ -1068,7 +1091,10 @@ def test_specialist_source_event_types_enforce_tool_boundaries():
     dose_call = {"name": UPDATE_MEDICATION_DOSE_EVENT_STATUS, "arguments": {"dose_event_id": 12}}
     dose_payload = {"context": {"today_dose_events": [{"dose_event_id": 12}]}}
 
-    assert validate_tool_permission(dose_call, source_event_type=SOURCE_MULTITURN_CHAT, payload=dose_payload) is None
+    assert (
+        validate_tool_permission(dose_call, source_event_type=SOURCE_MULTITURN_CHAT, payload=dose_payload)
+        == f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} is not allowed for {SOURCE_MULTITURN_CHAT}"
+    )
     assert validate_tool_permission(dose_call, source_event_type=SOURCE_MEDICATION_AGENT, payload=dose_payload) is None
     assert (
         validate_tool_permission(dose_call, source_event_type=SOURCE_NUTRITION_MANAGEMENT_AGENT, payload=dose_payload)
@@ -1222,7 +1248,7 @@ def test_missed_dose_tool_permission_blocks_mark_taken(monkeypatch):
     assert tool_executor.calls == []
 
 
-def test_agent_app_multiturn_mark_taken_tool_call(monkeypatch):
+def test_agent_app_multiturn_blocks_direct_medication_tool_call(monkeypatch):
     provider = NativeFakeProvider()
     tool_executor = NativeFakeToolExecutor()
     monkeypatch.setattr(native_agent_main, "orchestrator", AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=tool_executor))
@@ -1232,23 +1258,20 @@ def test_agent_app_multiturn_mark_taken_tool_call(monkeypatch):
 
     assert response.status_code == 200
     payload = response.json()
+    structured = payload["structured_payload"]
     assert payload["decision_type"] == "tool_call"
-    assert payload["structured_payload"]["tool_call"]["name"] == "update_medication_dose_event_status"
-    assert payload["structured_payload"]["tool_call"]["arguments"]["dose_event_id"] == 12
-    assert payload["structured_payload"]["tools_executed"] is True
-    assert payload["structured_payload"]["tool_results"][0]["tool_name"] == "update_medication_dose_event_status"
-    assert payload["structured_payload"]["message_flow"] == ["HumanMessage", "AIMessage(tool_calls)", "ToolMessage", "AIMessage(final_answer)"]
-    assert payload["structured_payload"]["routing_mode"] == "direct_tool"
-    assert payload["structured_payload"]["executed_by"] == "system_event_agent"
-    assert payload["structured_payload"]["final_answer_source"] == "tool_result_summary"
-    assert payload["structured_payload"]["tool_result_summary_used"] is True
-    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "update_medication_dose_event_status"
-    assert tool_executor.calls[0]["name"] == "update_medication_dose_event_status"
-    assert {"update_medication_dose_event_status", "get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire", "delegate_to_nutrition_management_agent", "delegate_to_nutrition_recommendation_agent"} <= set(provider.bound_tool_names)
-    assert "get_nutrition_recommendation_candidates" not in provider.bound_tool_names
-    assert "create_nutrition_meal_record" not in provider.bound_tool_names
-    assert "search_nutrition_food_candidates" not in provider.bound_tool_names
-
+    assert structured["routing_mode"] == "direct_tool"
+    assert structured["tool_call"]["name"] == "update_medication_dose_event_status"
+    assert structured["tool_results"][0]["status"] == "error"
+    assert structured["tool_results"][0]["error"] == "tool_permission_denied"
+    assert structured["tool_results"][0]["response"]["source_event_type"] == SOURCE_MULTITURN_CHAT
+    assert tool_executor.calls == []
+    assert "delegate_to_medication_agent" in provider.bound_tool_names
+    assert {
+        "update_medication_dose_event_status",
+        "get_medication_side_effect_assessment",
+        "get_pro_ctcae_questionnaire",
+    }.isdisjoint(provider.bound_tool_names)
 
 def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_permission(monkeypatch):
     provider = NativeDelegatingMedicationProvider()
@@ -1278,8 +1301,21 @@ def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_perm
     assert tool_executor.calls[0]["name"] == "update_medication_dose_event_status"
     assert tool_executor.calls[0]["_source_event_type"] == SOURCE_MEDICATION_AGENT
     assert [seen["response_mode"] for seen in provider.seen_payloads] == ["multiturn_chat", "medication_chat"]
-    assert {"update_medication_dose_event_status", "get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"} <= set(provider.bound_tool_names)
-    assert "get_nutrition_recommendation_candidates" not in provider.bound_tool_names
+    supervisor_tools = set(provider.bound_tool_history[0])
+    specialist_tools = set(provider.bound_tool_history[1])
+    assert "delegate_to_medication_agent" in supervisor_tools
+    assert {"propose_notification_policy", "propose_system_policy"} <= supervisor_tools
+    assert {
+        "update_medication_dose_event_status",
+        "get_medication_side_effect_assessment",
+        "get_pro_ctcae_questionnaire",
+    }.isdisjoint(supervisor_tools)
+    assert {
+        "update_medication_dose_event_status",
+        "get_medication_side_effect_assessment",
+        "get_pro_ctcae_questionnaire",
+    } <= specialist_tools
+    assert "get_nutrition_recommendation_candidates" not in specialist_tools
 
 
 def test_agent_app_multiturn_delegates_nutrition_management_tools(monkeypatch):
@@ -1452,16 +1488,17 @@ def test_specialist_state_graph_stops_at_common_tool_loop_limit():
     assert "도구 실행 단계" in response.human_summary
 
 
-def test_agent_app_multiturn_forces_ae_after_positive_side_effect_lookup(monkeypatch):
+def test_agent_app_multiturn_delegates_side_effect_continuation_to_medication_agent(monkeypatch):
+    provider = NativeSideEffectLookupProvider()
     tool_executor = NativeFakeToolExecutor()
-    monkeypatch.setattr(native_agent_main, "orchestrator", AgentLangGraphNativeOrchestrator(provider=NativeSideEffectLookupProvider(), tool_executor=tool_executor))
+    monkeypatch.setattr(native_agent_main, "orchestrator", AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=tool_executor))
     client = TestClient(native_agent_main.app)
 
     request = MultiturnChatRequest(
         patient_id="demo-patient",
         phr_patient_key="phr-demo",
         event_type="multiturn_chat",
-        message="속이 메스꺼운데 약 때문일까?",
+        message="I feel nauseous. Could it be the medication?",
         current_time=datetime(2026, 4, 20, 9, 35),
         context={"recent_chat": []},
     )
@@ -1469,29 +1506,46 @@ def test_agent_app_multiturn_forces_ae_after_positive_side_effect_lookup(monkeyp
 
     assert response.status_code == 200
     payload = response.json()
+    structured = payload["structured_payload"]
     assert payload["decision_type"] == "async_continuation_requested"
-    assert payload["structured_payload"]["async_continuation_type"] == "side_effect_assessment"
-    assert [call["name"] for call in payload["structured_payload"]["tool_calls"]] == ["get_medication_side_effect_assessment"]
+    assert structured["routing_mode"] == "delegated_agent"
+    assert structured["async_continuation_type"] == "side_effect_assessment"
+    assert structured["supervisor_tool_calls"][0]["name"] == "delegate_to_medication_agent"
+    assert [call["name"] for call in structured["specialist_tool_calls"]] == ["get_medication_side_effect_assessment"]
     assert tool_executor.calls == []
+    supervisor_tools = set(provider.bound_tool_history[0])
+    specialist_tools = set(provider.bound_tool_history[1])
+    assert "delegate_to_medication_agent" in supervisor_tools
+    assert {"get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"}.isdisjoint(supervisor_tools)
+    assert {"get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"} <= specialist_tools
 
     continuation = request.model_copy(deep=True)
     continuation.context = {
         "execute_async_continuation": True,
-        "async_tool_calls": payload["structured_payload"]["tool_calls"],
+        "async_tool_calls": structured["tool_calls"],
     }
     continuation_response = client.post("/agent/multiturn-chat", json=continuation.model_dump(mode="json"), headers=internal_auth_headers())
 
     assert continuation_response.status_code == 200
     continuation_payload = continuation_response.json()
+    continuation_structured = continuation_payload["structured_payload"]
     assert continuation_payload["decision_type"] == "side_effect_assessment"
-    assert [call["name"] for call in continuation_payload["structured_payload"]["tool_calls"]] == ["get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"]
-    assert [result["tool_name"] for result in continuation_payload["structured_payload"]["tool_results"]] == ["get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"]
-    assert [call["name"] for call in tool_executor.calls] == ["get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"]
-    assert tool_executor.calls[1]["arguments"]["symptom_normalize"] == "메스꺼움"
-    assert "항암제 주의사항" in continuation_payload["human_summary"]
-    assert "메스꺼움 관련 가능성" in continuation_payload["human_summary"]
-    assert "PRO-CTCAE 자기보고 문항" in continuation_payload["human_summary"]
-
+    assert continuation_structured["routing_mode"] == "delegated_agent"
+    assert continuation_structured["delegation_reason"] == "async_medication_continuation"
+    assert continuation_structured["supervisor_tool_calls"][0]["name"] == "delegate_to_medication_agent"
+    assert [call["name"] for call in continuation_structured["specialist_tool_calls"]] == [
+        "get_medication_side_effect_assessment",
+        "get_pro_ctcae_questionnaire",
+    ]
+    assert [result["tool_name"] for result in continuation_structured["tool_results"]] == [
+        "get_medication_side_effect_assessment",
+        "get_pro_ctcae_questionnaire",
+    ]
+    assert [call["name"] for call in tool_executor.calls] == [
+        "get_medication_side_effect_assessment",
+        "get_pro_ctcae_questionnaire",
+    ]
+    assert all(call["_source_event_type"] == SOURCE_MEDICATION_AGENT for call in tool_executor.calls)
 
 def test_agent_app_multiturn_uses_provider_for_general_recent_chat_reply(monkeypatch):
     provider = NativeRecentChatProvider()

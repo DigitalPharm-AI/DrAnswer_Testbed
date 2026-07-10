@@ -41,7 +41,7 @@ TOOL_ALLOWLIST: dict[str, set[str]] = {
     SOURCE_DAILY_PATTERN: {PROPOSE_NOTIFICATION_POLICY},
     SOURCE_MANUAL_DAILY_PATTERN: {PROPOSE_NOTIFICATION_POLICY},
     SOURCE_MISSED_DOSE: SIDE_EFFECT_TOOLS,
-    SOURCE_MULTITURN_CHAT: {UPDATE_MEDICATION_DOSE_EVENT_STATUS, *SIDE_EFFECT_TOOLS, *POLICY_TOOLS},
+    SOURCE_MULTITURN_CHAT: set(POLICY_TOOLS),
     SOURCE_MEDICATION_AGENT: MEDICATION_CHAT_TOOLS,
     SOURCE_NUTRITION_MANAGEMENT_AGENT: NUTRITION_MANAGEMENT_TOOLS,
     SOURCE_NUTRITION_RECOMMENDATION_AGENT: NUTRITION_RECOMMENDATION_TOOLS,
@@ -150,8 +150,8 @@ def requires_human_handoff(tool_name: str) -> bool:
 
 
 def _validate_mark_dose_taken(arguments: dict[str, Any], *, source_event_type: str, payload: dict[str, Any]) -> str | None:
-    if source_event_type not in {SOURCE_MULTITURN_CHAT, SOURCE_MEDICATION_AGENT}:
-        return f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} is only allowed in multiturn_chat or medication_agent"
+    if source_event_type != SOURCE_MEDICATION_AGENT:
+        return f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} is only allowed in medication_agent"
     dose_event_id = arguments.get("dose_event_id")
     if not isinstance(dose_event_id, int):
         return f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} requires integer dose_event_id"

@@ -371,7 +371,10 @@ def test_multiturn_side_effect_request_returns_async_continuation_ack():
     response = asyncio.run(agent.run("trace-chat-async", request.model_dump(mode="json")))
 
     assert response.decision_type == "async_continuation_requested"
-    assert response.human_summary == "증상 내용을 확인해서 문항을 준비할게요."
+    assert response.human_summary
+    assert response.structured_payload["routing_mode"] == "delegated_agent"
+    assert response.structured_payload["supervisor_tool_calls"][0]["name"] == "delegate_to_medication_agent"
+    assert response.structured_payload["specialist_tool_calls"][0]["name"] == "get_medication_side_effect_assessment"
     assert response.structured_payload["async_continuation_required"] is True
     assert response.structured_payload["async_continuation_type"] == "side_effect_assessment"
     assert response.structured_payload["tool_calls"][0]["name"] == "get_medication_side_effect_assessment"
