@@ -15,12 +15,14 @@ from agent_app.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
+    GET_MEDICATION_DOSE_STATUS,
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     GET_NUTRITION_DAILY_SUMMARY,
     GET_NUTRITION_MEAL_RECORD_LIST,
     GET_NUTRITION_PREFERENCE_SUMMARY,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
     GET_PRO_CTCAE_QUESTIONNAIRE,
+    GET_SIDE_EFFECT_HISTORY,
     SEARCH_NUTRITION_FOOD_CANDIDATES,
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
     UPDATE_NUTRITION_FOOD_RECORD,
@@ -41,9 +43,13 @@ from shared.schemas import (
     AEProCtcaeAssessmentRequest,
     DoseTakenToolRequest,
     DoseTakenToolResult,
+    MedicationDoseStatusResult,
     NutritionPreferenceFactRequest,
     SideEffectAssessmentRequest,
     SideEffectAssessmentResult,
+    SideEffectHistoryResult,
+    SideEffectRecordRequest,
+    SideEffectRecordResult,
     ToolCallResult,
 )
 from shared.settings import get_settings
@@ -151,6 +157,8 @@ class AgentMcpToolServer:
             return deferred_policy_tool_result({"name": tool_name, "arguments": arguments}, trace_id=trace_id, source_event_type=source_event_type)
         if tool_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
             return await self._mark_dose_taken(arguments, trace_id=trace_id, source_event_type=source_event_type)
+        if tool_name == GET_MEDICATION_DOSE_STATUS:
+            return await self._get_medication_dose_status(arguments, trace_id=trace_id, payload=payload)
         if tool_name == SEARCH_NUTRITION_FOOD_CANDIDATES:
             return await self._search_food_nutrition(arguments, trace_id=trace_id, payload=payload)
         if tool_name == CREATE_NUTRITION_MEAL_RECORD:
@@ -174,7 +182,9 @@ class AgentMcpToolServer:
         if tool_name == GET_NUTRITION_RECOMMENDATION_CANDIDATES:
             return await self._recommend_diet(arguments, trace_id=trace_id, payload=payload)
         if tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT:
-            return await self._lookup_side_effect_info(arguments, trace_id=trace_id, payload=payload)
+            return await self._lookup_side_effect_info(arguments, trace_id=trace_id, source_event_type=source_event_type, payload=payload)
+        if tool_name == GET_SIDE_EFFECT_HISTORY:
+            return await self._get_side_effect_history(arguments, trace_id=trace_id, payload=payload)
         if tool_name == GET_PRO_CTCAE_QUESTIONNAIRE:
             return self._ae_pro_ctcae(arguments, trace_id=trace_id)
         return ToolCallResult(tool_name=tool_name or "unknown", status="error", error=f"unsupported_tool:{tool_name}")
@@ -202,6 +212,28 @@ class AgentMcpToolServer:
             status="success" if result.status == "taken" else "error",
             response=result.model_dump(mode="json"),
             idempotency_key=f"{trace_id}:{UPDATE_MEDICATION_DOSE_EVENT_STATUS}:{source_event_type}:{request.dose_event_id}",
+        )
+
+    async def _get_medication_dose_status(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
+        params = {}
+        patient_id = arguments.get("patient_id") or payload.get("patient_id")
+        if patient_id:
+            params["patient_id"] = patient_id
+        if arguments.get("target_date"):
+            params["target_date"] = arguments["target_date"]
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
+            response = await client.get(
+                f"{self.system_base_url}/api/agent/dose-events",
+                params=params,
+                headers=self._internal_headers(),
+            )
+            response.raise_for_status()
+        result = MedicationDoseStatusResult.model_validate(response.json())
+        return ToolCallResult(
+            tool_name=GET_MEDICATION_DOSE_STATUS,
+            status="success" if result.success else "error",
+            response=result.model_dump(mode="json"),
+            idempotency_key=f"{trace_id}:{GET_MEDICATION_DOSE_STATUS}",
         )
 
     async def _search_food_nutrition(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
@@ -458,7 +490,14 @@ class AgentMcpToolServer:
             idempotency_key=f"{trace_id}:{GET_NUTRITION_RECOMMENDATION_CANDIDATES}",
         )
 
-    async def _lookup_side_effect_info(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
+    async def _lookup_side_effect_info(
+        self,
+        arguments: dict[str, Any],
+        *,
+        trace_id: str,
+        source_event_type: str,
+        payload: dict[str, Any],
+    ) -> ToolCallResult:
         request_payload = {
             **arguments,
             "phr_patient_key": arguments.get("phr_patient_key") or payload.get("phr_patient_key"),
@@ -474,15 +513,79 @@ class AgentMcpToolServer:
                 idempotency_key=f"{trace_id}:{GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}",
             )
         request = SideEffectAssessmentRequest.model_validate(request_payload)
+        record_payload: dict[str, Any] = {}
+        record_error = ""
         async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
             response = await client.post(f"{self.phr_base_url}/phr/side-effects/assess", json=request.model_dump(mode="json"))
             response.raise_for_status()
-        result = SideEffectAssessmentResult.model_validate(response.json())
+            result = SideEffectAssessmentResult.model_validate(response.json())
+            try:
+                record_response = await client.post(
+                    f"{self.system_base_url}/api/agent/side-effects/records",
+                    json=SideEffectRecordRequest(
+                        patient_id=payload.get("patient_id"),
+                        phr_patient_key=request.phr_patient_key,
+                        medication_name=request.medication_name,
+                        symptom_text=request.symptom_text,
+                        suspected=result.suspected,
+                        severity=result.severity,
+                        matched_effects=result.matched_effects,
+                        matched_items=result.matched_items,
+                        evidence=result.evidence,
+                        recommendation=result.recommendation,
+                        source_trace_id=trace_id,
+                        source_event_type=source_event_type,
+                        related_dose_event_id=request.dose_event_id,
+                        metadata={"source_tool": GET_MEDICATION_SIDE_EFFECT_ASSESSMENT},
+                    ).model_dump(mode="json"),
+                    headers=self._internal_headers(),
+                )
+                record_response.raise_for_status()
+                record_payload = SideEffectRecordResult.model_validate(record_response.json()).model_dump(mode="json")
+            except Exception as exc:
+                record_error = safe_exception_summary(exc)
+                trace_logging.log_info(
+                    "agent_side_effect_record_failed",
+                    trace_id=trace_id,
+                    source_event_type=source_event_type,
+                    error=trace_logging.snippet(record_error),
+                )
+        response_payload = result.model_dump(mode="json")
+        if record_payload.get("record"):
+            response_payload["side_effect_record"] = record_payload["record"]
+        elif record_error:
+            response_payload["side_effect_record_error"] = safe_tool_error(record_error)
         return ToolCallResult(
             tool_name=GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
             status="success",
-            response=result.model_dump(mode="json"),
+            response=response_payload,
             idempotency_key=f"{trace_id}:{GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}",
+        )
+
+    async def _get_side_effect_history(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
+        params = {}
+        patient_id = arguments.get("patient_id") or payload.get("patient_id")
+        if patient_id:
+            params["patient_id"] = patient_id
+        if arguments.get("limit") is not None:
+            params["limit"] = arguments["limit"]
+        if arguments.get("suspected") is not None:
+            params["suspected"] = arguments["suspected"]
+        if arguments.get("medication_name"):
+            params["medication_name"] = arguments["medication_name"]
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
+            response = await client.get(
+                f"{self.system_base_url}/api/agent/side-effects/history",
+                params=params,
+                headers=self._internal_headers(),
+            )
+            response.raise_for_status()
+        result = SideEffectHistoryResult.model_validate(response.json())
+        return ToolCallResult(
+            tool_name=GET_SIDE_EFFECT_HISTORY,
+            status="success" if result.success else "error",
+            response=result.model_dump(mode="json"),
+            idempotency_key=f"{trace_id}:{GET_SIDE_EFFECT_HISTORY}",
         )
 
     @staticmethod

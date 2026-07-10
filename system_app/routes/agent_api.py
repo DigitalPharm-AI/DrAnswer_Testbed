@@ -10,6 +10,8 @@ from shared.schemas import (
     AgentNotificationRequest,
     DoseTakenToolRequest,
     DoseTakenToolResult,
+    MedicationDoseEventView,
+    MedicationDoseStatusResult,
     NutritionDailySummaryResult,
     NutritionFoodDeleteRequest,
     NutritionFoodDeleteResult,
@@ -30,8 +32,12 @@ from shared.schemas import (
     NutritionRecommendRequest,
     NutritionRecommendResult,
     PolicyApplyRequest,
+    SideEffectHistoryResult,
+    SideEffectRecordRequest,
+    SideEffectRecordResult,
     SystemPolicyApplyRequest,
 )
+from shared.settings import get_settings
 from system_app.db import get_session
 from system_app.routes.public_errors import public_error_code
 from system_app.runtime import SystemRuntime
@@ -53,6 +59,9 @@ from system_app.services.nutrition_service import (
 )
 from system_app.services.nutrition_preference_service import nutrition_preference_summary, record_preference_fact
 from system_app.services.policy_service import reload_policy_workbook
+from system_app.services.clock_service import ensure_clock
+from system_app.services.side_effect_record_service import list_side_effect_history, record_side_effect, side_effect_record_view
+from system_app.services.timeline_service import get_dose_events_for_date
 
 AGENT_NUTRITION_ERROR_CODES = {
     "food_name_required",
@@ -83,6 +92,70 @@ def create_agent_api_router(get_runtime: Callable[[], SystemRuntime]) -> APIRout
     async def agent_dose_taken(payload: DoseTakenToolRequest, session: Session = Depends(get_session)) -> DoseTakenToolResult:
         with get_runtime().write_lock:
             return apply_agent_dose_taken_request(session, payload)
+
+    @router.get("/api/agent/dose-events", response_model=MedicationDoseStatusResult)
+    async def agent_medication_dose_status(
+        target_date: str | None = None,
+        patient_id: str | None = None,
+        session: Session = Depends(get_session),
+    ) -> MedicationDoseStatusResult:
+        with get_runtime().write_lock:
+            try:
+                resolved_date = date.fromisoformat(target_date) if target_date else ensure_clock(session).current_time.date()
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail="invalid_dose_status_date") from exc
+            resolved_patient_id = patient_id or get_settings().patient_id
+            events = [event for event in get_dose_events_for_date(session, resolved_date) if event.patient_id == resolved_patient_id]
+            result = MedicationDoseStatusResult(
+                success=True,
+                patient_id=resolved_patient_id,
+                target_date=resolved_date,
+                dose_events=[
+                    MedicationDoseEventView(
+                        dose_event_id=event.id,
+                        patient_id=event.patient_id,
+                        medication_name=event.medication_name,
+                        slot_label=event.slot_label,
+                        scheduled_for=event.scheduled_for,
+                        status=event.status,
+                        taken_at=event.taken_at,
+                        note=event.note,
+                    )
+                    for event in events
+                ],
+                total=len(events),
+            )
+            session.commit()
+            return result
+
+    @router.post("/api/agent/side-effects/records", response_model=SideEffectRecordResult)
+    async def agent_side_effect_record(payload: SideEffectRecordRequest, session: Session = Depends(get_session)) -> SideEffectRecordResult:
+        with get_runtime().write_lock:
+            record = record_side_effect(session, payload)
+            result = SideEffectRecordResult.model_validate({"success": True, "record": side_effect_record_view(record)})
+            session.commit()
+            return result
+
+    @router.get("/api/agent/side-effects/history", response_model=SideEffectHistoryResult)
+    async def agent_side_effect_history(
+        patient_id: str | None = None,
+        limit: int = 20,
+        suspected: bool | None = None,
+        medication_name: str | None = None,
+        session: Session = Depends(get_session),
+    ) -> SideEffectHistoryResult:
+        records = list_side_effect_history(
+            session,
+            patient_id=patient_id,
+            limit=limit,
+            suspected=suspected,
+            medication_name=medication_name,
+        )
+        return SideEffectHistoryResult(
+            success=True,
+            records=[side_effect_record_view(record) for record in records],
+            total=len(records),
+        )
 
     @router.post("/api/agent/nutrition/food/search", response_model=NutritionFoodSearchResult)
     async def agent_nutrition_food_search(

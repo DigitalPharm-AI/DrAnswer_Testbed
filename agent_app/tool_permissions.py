@@ -6,12 +6,14 @@ from agent_app.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
+    GET_MEDICATION_DOSE_STATUS,
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     GET_NUTRITION_DAILY_SUMMARY,
     GET_NUTRITION_MEAL_RECORD_LIST,
     GET_NUTRITION_PREFERENCE_SUMMARY,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
     GET_PRO_CTCAE_QUESTIONNAIRE,
+    GET_SIDE_EFFECT_HISTORY,
     MEDICATION_CHAT_TOOLS,
     NUTRITION_MANAGEMENT_TOOLS,
     NUTRITION_RECOMMENDATION_TOOLS,
@@ -33,7 +35,7 @@ TOOL_ALLOWLIST: dict[str, set[str]] = {
     "daily_pattern": {PROPOSE_NOTIFICATION_POLICY},
     "manual_daily_pattern": {PROPOSE_NOTIFICATION_POLICY},
     "missed_dose": SIDE_EFFECT_TOOLS,
-    "multiturn_chat": {UPDATE_MEDICATION_DOSE_EVENT_STATUS, *SIDE_EFFECT_TOOLS, *POLICY_TOOLS, *NUTRITION_TOOLS},
+    "multiturn_chat": {*MEDICATION_CHAT_TOOLS, *POLICY_TOOLS, *NUTRITION_TOOLS},
     "mcp": {GET_PRO_CTCAE_QUESTIONNAIRE, *NUTRITION_TOOLS},
 }
 
@@ -74,6 +76,10 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
         return f"{tool_name} is only allowed as a deferred confirmation candidate"
     if tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT and not str(arguments.get("symptom_text") or "").strip():
         return f"{GET_MEDICATION_SIDE_EFFECT_ASSESSMENT} requires symptom_text"
+    if tool_name == GET_SIDE_EFFECT_HISTORY and "limit" in arguments and not _valid_positive_int(arguments.get("limit"), maximum=100):
+        return f"{GET_SIDE_EFFECT_HISTORY} requires limit between 1 and 100"
+    if tool_name == GET_MEDICATION_DOSE_STATUS and "target_date" in arguments and not str(arguments.get("target_date") or "").strip():
+        return f"{GET_MEDICATION_DOSE_STATUS} requires non-empty target_date when target_date is provided"
     if tool_name == GET_PRO_CTCAE_QUESTIONNAIRE and not (
         str(arguments.get("symptom_text") or "").strip() or str(arguments.get("symptom_normalize") or "").strip()
     ):
@@ -132,6 +138,10 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
         if not str(arguments.get("object_label") or "").strip():
             return f"{UPSERT_NUTRITION_PREFERENCE_FACT} requires object_label"
     return None
+
+
+def _valid_positive_int(value: Any, *, maximum: int) -> bool:
+    return isinstance(value, int) and 1 <= value <= maximum
 
 
 def requires_human_handoff(tool_name: str) -> bool:

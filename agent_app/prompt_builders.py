@@ -6,12 +6,14 @@ from agent_app.tool_names import (
     DELEGATE_TO_MEDICATION_AGENT,
     DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT,
     DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT,
+    GET_MEDICATION_DOSE_STATUS,
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     GET_NUTRITION_DAILY_SUMMARY,
     GET_NUTRITION_MEAL_RECORD_LIST,
     GET_NUTRITION_PREFERENCE_SUMMARY,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
     GET_PRO_CTCAE_QUESTIONNAIRE,
+    GET_SIDE_EFFECT_HISTORY,
     PROPOSE_NOTIFICATION_POLICY,
     PROPOSE_SYSTEM_POLICY,
     SEARCH_NUTRITION_FOOD_CANDIDATES,
@@ -62,7 +64,7 @@ def multiturn_chat_prompt() -> str:
         "tool call is already clearly required. "
         "Decide whether a tool is required. Use tool_call or tool_calls only when an action or clinical lookup is "
         f"needed: {UPDATE_MEDICATION_DOSE_EVENT_STATUS}, {PROPOSE_NOTIFICATION_POLICY}, {PROPOSE_SYSTEM_POLICY}, "
-        f"{GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}, {GET_PRO_CTCAE_QUESTIONNAIRE}, "
+        f"{GET_MEDICATION_DOSE_STATUS}, {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}, {GET_SIDE_EFFECT_HISTORY}, {GET_PRO_CTCAE_QUESTIONNAIRE}, "
         f"{DELEGATE_TO_MEDICATION_AGENT}, {DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT}, or {DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT}. "
         "For meal logging, updates, or deletes, ask one concise confirmation question when the user's intent is unclear, "
         f"then delegate the confirmed task to {DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT}. "
@@ -93,6 +95,8 @@ def multiturn_chat_prompt() -> str:
 def medication_agent_prompt() -> str:
     return (
         "You are a Korean MedicationAgent. Handle medication adherence, dose-taking updates, and side-effect triage only. "
+        f"Use {GET_MEDICATION_DOSE_STATUS} when the user asks whether medication was taken, what remains today, or what is scheduled on a date. "
+        f"Use {GET_SIDE_EFFECT_HISTORY} when the user asks whether side effects were previously recorded or asks for recent side-effect history. "
         f"Use {UPDATE_MEDICATION_DOSE_EVENT_STATUS} only when the user clearly says a current dose was taken and a valid dose_event_id exists in context. "
         f"For side-effect or medication-causality questions with phr_patient_key available, first call {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}. "
         f"Do not call {GET_PRO_CTCAE_QUESTIONNAIRE} before {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}; the runtime may continue to {GET_PRO_CTCAE_QUESTIONNAIRE} after a positive lookup. "

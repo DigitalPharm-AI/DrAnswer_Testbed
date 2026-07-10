@@ -44,6 +44,50 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
+                "name": "get_side_effect_history",
+                "title": "Get Side Effect History",
+                "description": "Read previously recorded side-effect assessment records for the current patient. Use when the user asks whether side effects were recorded before or wants recent side-effect history.",
+                "annotations": {
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "idempotentHint": True,
+                    "openWorldHint": False,
+                },
+                "required_arguments": [],
+                "optional_arguments": ["patient_id", "limit", "suspected", "medication_name"],
+                "inputSchema": _object_schema(
+                    {
+                        "patient_id": {"type": "string", "description": "Patient id. Omit to use the current patient."},
+                        "limit": {"type": "integer", "description": "Maximum records to return. Default 20, maximum 100."},
+                        "suspected": {"type": "boolean", "description": "When provided, filter by suspected side-effect status."},
+                        "medication_name": {"type": "string", "description": "Optional exact medication name filter."},
+                    },
+                    [],
+                ),
+                "outputSchema": _tool_result_schema(),
+            },
+            {
+                "name": "get_medication_dose_status",
+                "title": "Get Medication Dose Status",
+                "description": "Read scheduled/taken/missed dose events for a patient on a date. Use when the user asks what medication is scheduled, already taken, or still pending.",
+                "annotations": {
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "idempotentHint": True,
+                    "openWorldHint": False,
+                },
+                "required_arguments": [],
+                "optional_arguments": ["patient_id", "target_date"],
+                "inputSchema": _object_schema(
+                    {
+                        "patient_id": {"type": "string", "description": "Patient id. Omit to use the current patient."},
+                        "target_date": {"type": "string", "description": "YYYY-MM-DD. Omit to use the simulation clock date."},
+                    },
+                    [],
+                ),
+                "outputSchema": _tool_result_schema(),
+            },
+            {
                 "name": "mark_dose_taken",
                 "title": "Mark Dose Taken",
                 "description": "환자가 이미 복용했음을 명확히 말했을 때 dose_event_id를 taken으로 표시합니다.",

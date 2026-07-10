@@ -8,7 +8,9 @@ DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT = "delegate_to_nutrition_management_agent
 DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT = "delegate_to_nutrition_recommendation_agent"
 
 UPDATE_MEDICATION_DOSE_EVENT_STATUS = "update_medication_dose_event_status"
+GET_MEDICATION_DOSE_STATUS = "get_medication_dose_status"
 GET_MEDICATION_SIDE_EFFECT_ASSESSMENT = "get_medication_side_effect_assessment"
+GET_SIDE_EFFECT_HISTORY = "get_side_effect_history"
 GET_PRO_CTCAE_QUESTIONNAIRE = "get_pro_ctcae_questionnaire"
 
 SEARCH_NUTRITION_FOOD_CANDIDATES = "search_nutrition_food_candidates"
@@ -61,7 +63,7 @@ DELEGATION_TOOL_NAMES = {
     DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT,
     DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT,
 }
-SIDE_EFFECT_TOOLS = {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE}
+SIDE_EFFECT_TOOLS = {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_SIDE_EFFECT_HISTORY, GET_PRO_CTCAE_QUESTIONNAIRE}
 POLICY_TOOLS = {PROPOSE_NOTIFICATION_POLICY, PROPOSE_SYSTEM_POLICY}
 NUTRITION_TOOLS = {
     SEARCH_NUTRITION_FOOD_CANDIDATES,
@@ -76,7 +78,7 @@ NUTRITION_TOOLS = {
     GET_NUTRITION_PREFERENCE_SUMMARY,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
 }
-MEDICATION_CHAT_TOOLS = {UPDATE_MEDICATION_DOSE_EVENT_STATUS, *SIDE_EFFECT_TOOLS}
+MEDICATION_CHAT_TOOLS = {UPDATE_MEDICATION_DOSE_EVENT_STATUS, GET_MEDICATION_DOSE_STATUS, *SIDE_EFFECT_TOOLS}
 NUTRITION_MANAGEMENT_TOOLS = {
     SEARCH_NUTRITION_FOOD_CANDIDATES,
     CREATE_NUTRITION_MEAL_RECORD,
@@ -96,7 +98,7 @@ NUTRITION_RECOMMENDATION_TOOLS = {
     GET_NUTRITION_PREFERENCE_SUMMARY,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
 }
-ALL_TOOL_NAMES = SIDE_EFFECT_TOOLS | POLICY_TOOLS | NUTRITION_TOOLS | {UPDATE_MEDICATION_DOSE_EVENT_STATUS}
+ALL_TOOL_NAMES = SIDE_EFFECT_TOOLS | POLICY_TOOLS | NUTRITION_TOOLS | {UPDATE_MEDICATION_DOSE_EVENT_STATUS, GET_MEDICATION_DOSE_STATUS}
 
 
 def _metadata(domain: str, source_path: str, source_tool_name: str, mutability: str, risk_level: str) -> dict[str, str]:
@@ -121,8 +123,14 @@ MODEL_VISIBLE_TOOL_METADATA: dict[str, dict[str, str]] = {
     UPDATE_MEDICATION_DOSE_EVENT_STATUS: _metadata(
         "medication", "system_app/routes/agent_api.py", "agent_update_medication_dose_event_status", "write", "medium"
     ),
+    GET_MEDICATION_DOSE_STATUS: _metadata(
+        "medication", "system_app/routes/agent_api.py", "agent_get_medication_dose_status", "read", "low"
+    ),
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT: _metadata(
         "medication_safety", "agent_app/tool_mcp_server.py", "phr_side_effect_assessment", "read", "medium"
+    ),
+    GET_SIDE_EFFECT_HISTORY: _metadata(
+        "medication_safety", "system_app/routes/agent_api.py", "agent_get_side_effect_history", "read", "medium"
     ),
     GET_PRO_CTCAE_QUESTIONNAIRE: _metadata(
         "medication_safety", "agent_app/ae_pro_ctcae.py", "match_pro_ctcae_symptom", "read", "medium"
