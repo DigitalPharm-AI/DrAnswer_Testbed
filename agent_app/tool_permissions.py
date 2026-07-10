@@ -7,14 +7,14 @@ from agent_app.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
-    GET_MEDICATION_DOSE_EVENT_RECORD_LIST,
+    GET_MEDICATION_DOSE_STATUS,
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     GET_NUTRITION_DAILY_SUMMARY,
     GET_NUTRITION_MEAL_RECORD_LIST,
     GET_NUTRITION_PREFERENCE_SUMMARY,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
     GET_PRO_CTCAE_QUESTIONNAIRE,
-    GET_MEDICATION_SIDE_EFFECT_RECORD_LIST,
+    GET_SIDE_EFFECT_HISTORY,
     MEDICATION_CHAT_TOOLS,
     NUTRITION_MANAGEMENT_TOOLS,
     NUTRITION_RECOMMENDATION_TOOLS,
@@ -88,20 +88,20 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
         return f"{tool_name} is only allowed as a deferred confirmation candidate"
     if tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT and not str(arguments.get("symptom_text") or "").strip():
         return f"{GET_MEDICATION_SIDE_EFFECT_ASSESSMENT} requires symptom_text"
-    if tool_name == GET_MEDICATION_SIDE_EFFECT_RECORD_LIST and "limit" in arguments and not _valid_positive_int(arguments.get("limit"), maximum=100):
-        return f"{GET_MEDICATION_SIDE_EFFECT_RECORD_LIST} requires limit between 1 and 100"
-    if tool_name == GET_MEDICATION_SIDE_EFFECT_RECORD_LIST:
-        date_error = _validate_date_range_arguments(arguments, tool_name=GET_MEDICATION_SIDE_EFFECT_RECORD_LIST, max_days=366)
+    if tool_name == GET_SIDE_EFFECT_HISTORY and "limit" in arguments and not _valid_positive_int(arguments.get("limit"), maximum=100):
+        return f"{GET_SIDE_EFFECT_HISTORY} requires limit between 1 and 100"
+    if tool_name == GET_SIDE_EFFECT_HISTORY:
+        date_error = _validate_date_range_arguments(arguments, tool_name=GET_SIDE_EFFECT_HISTORY, max_days=366)
         if date_error:
             return date_error
         if arguments.get("severity") not in {None, "", "none", "low", "moderate", "high"}:
-            return f"{GET_MEDICATION_SIDE_EFFECT_RECORD_LIST} requires supported severity"
-    if tool_name == GET_MEDICATION_DOSE_EVENT_RECORD_LIST:
-        date_error = _validate_date_range_arguments(arguments, tool_name=GET_MEDICATION_DOSE_EVENT_RECORD_LIST, max_days=31)
+            return f"{GET_SIDE_EFFECT_HISTORY} requires supported severity"
+    if tool_name == GET_MEDICATION_DOSE_STATUS:
+        date_error = _validate_date_range_arguments(arguments, tool_name=GET_MEDICATION_DOSE_STATUS, max_days=31)
         if date_error:
             return date_error
         if arguments.get("status") not in {None, "", "scheduled", "taken", "missed"}:
-            return f"{GET_MEDICATION_DOSE_EVENT_RECORD_LIST} requires supported status"
+            return f"{GET_MEDICATION_DOSE_STATUS} requires supported status"
     if tool_name == GET_PRO_CTCAE_QUESTIONNAIRE and not (
         str(arguments.get("symptom_text") or "").strip() or str(arguments.get("symptom_normalize") or "").strip()
     ):

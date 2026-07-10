@@ -6,14 +6,14 @@ from agent_app.tool_names import (
     DELEGATE_TO_MEDICATION_AGENT,
     DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT,
     DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT,
-    GET_MEDICATION_DOSE_EVENT_RECORD_LIST,
+    GET_MEDICATION_DOSE_STATUS,
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     GET_NUTRITION_DAILY_SUMMARY,
     GET_NUTRITION_MEAL_RECORD_LIST,
     GET_NUTRITION_PREFERENCE_SUMMARY,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
     GET_PRO_CTCAE_QUESTIONNAIRE,
-    GET_MEDICATION_SIDE_EFFECT_RECORD_LIST,
+    GET_SIDE_EFFECT_HISTORY,
     PROPOSE_NOTIFICATION_POLICY,
     PROPOSE_SYSTEM_POLICY,
     SEARCH_NUTRITION_FOOD_CANDIDATES,
@@ -93,9 +93,9 @@ def multiturn_chat_prompt() -> str:
 def medication_agent_prompt() -> str:
     return (
         "You are a Korean MedicationAgent. Handle medication adherence, dose-taking updates, medication record queries, and side-effect assessment or history only. "
-        f"Use {GET_MEDICATION_DOSE_EVENT_RECORD_LIST} when the user asks whether medication was taken, what remains today, or what is scheduled on a date or date range. "
+        f"Use {GET_MEDICATION_DOSE_STATUS} when the user asks whether medication was taken, what remains today, or what is scheduled on a date or date range. "
         f"For a single day pass target_date; for a range pass start_date and end_date. "
-        f"Use {GET_MEDICATION_SIDE_EFFECT_RECORD_LIST} when the user asks whether side effects were previously recorded or asks for recent side-effect history. "
+        f"Use {GET_SIDE_EFFECT_HISTORY} when the user asks whether side effects were previously recorded or asks for recent side-effect history. "
         f"For side-effect history, also pass target_date for one day or start_date/end_date for a range when the user specifies dates. "
         f"Use {UPDATE_MEDICATION_DOSE_EVENT_STATUS} only when the user clearly says a current dose was taken and a valid dose_event_id exists in context. "
         f"For side-effect or medication-causality questions with phr_patient_key available, first call {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}. "

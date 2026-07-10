@@ -5,7 +5,7 @@ from datetime import date, datetime
 from fastapi.testclient import TestClient
 
 from agent_app.tool_catalog import ToolCatalog
-from agent_app.tool_names import GET_MEDICATION_DOSE_EVENT_RECORD_LIST, GET_MEDICATION_SIDE_EFFECT_RECORD_LIST, MEDICATION_CHAT_TOOLS
+from agent_app.tool_names import GET_MEDICATION_DOSE_STATUS, GET_SIDE_EFFECT_HISTORY, MEDICATION_CHAT_TOOLS
 from shared.settings import get_settings
 from system_app.db import SessionLocal
 from system_app.main import app
@@ -20,10 +20,10 @@ def _internal_headers() -> dict[str, str]:
 def test_medication_read_tools_are_cataloged_for_medication_chat():
     tools = {tool["name"]: tool for tool in ToolCatalog.available_tools_payload()}
 
-    assert GET_MEDICATION_DOSE_EVENT_RECORD_LIST in MEDICATION_CHAT_TOOLS
-    assert GET_MEDICATION_SIDE_EFFECT_RECORD_LIST in MEDICATION_CHAT_TOOLS
-    assert tools[GET_MEDICATION_DOSE_EVENT_RECORD_LIST]["_meta"]["mutability"] == "read"
-    assert tools[GET_MEDICATION_SIDE_EFFECT_RECORD_LIST]["_meta"]["mutability"] == "read"
+    assert GET_MEDICATION_DOSE_STATUS in MEDICATION_CHAT_TOOLS
+    assert GET_SIDE_EFFECT_HISTORY in MEDICATION_CHAT_TOOLS
+    assert tools[GET_MEDICATION_DOSE_STATUS]["_meta"]["mutability"] == "read"
+    assert tools[GET_SIDE_EFFECT_HISTORY]["_meta"]["mutability"] == "read"
 
 
 def test_agent_side_effect_record_and_history_api():

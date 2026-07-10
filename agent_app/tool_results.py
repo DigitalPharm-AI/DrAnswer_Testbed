@@ -7,14 +7,14 @@ from agent_app.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
-    GET_MEDICATION_DOSE_EVENT_RECORD_LIST,
+    GET_MEDICATION_DOSE_STATUS,
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     GET_NUTRITION_DAILY_SUMMARY,
     GET_NUTRITION_MEAL_RECORD_LIST,
     GET_NUTRITION_PREFERENCE_SUMMARY,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
     GET_PRO_CTCAE_QUESTIONNAIRE,
-    GET_MEDICATION_SIDE_EFFECT_RECORD_LIST,
+    GET_SIDE_EFFECT_HISTORY,
     POLICY_TOOLS,
     PROPOSE_NOTIFICATION_POLICY,
     PROPOSE_SYSTEM_POLICY,
@@ -44,10 +44,10 @@ def tool_calls_payload(tool_calls: list[dict[str, Any]], results: list[ToolCallR
         elif result.tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT:
             payload["side_effect_lookup"] = result.model_dump(mode="json")
             payload["side_effect_status"] = _side_effect_status(result)
-        elif result.tool_name == GET_MEDICATION_SIDE_EFFECT_RECORD_LIST and result.status == "success":
+        elif result.tool_name == GET_SIDE_EFFECT_HISTORY and result.status == "success":
             payload["side_effect_history"] = result.response.get("records", [])
             payload["side_effect_history_total"] = result.response.get("total", 0)
-        elif result.tool_name == GET_MEDICATION_DOSE_EVENT_RECORD_LIST and result.status == "success":
+        elif result.tool_name == GET_MEDICATION_DOSE_STATUS and result.status == "success":
             payload["medication_dose_status"] = result.response
         elif result.tool_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS and result.status == "success":
             payload["dose_taken_result"] = result.response
@@ -141,13 +141,13 @@ def tool_result_summary(results: list[ToolCallResult], fallback: str) -> str:
         if last.status == "success":
             return "현재 PHR 기준으로 직접 일치하는 대표 부작용은 확인되지 않았습니다."
         return "부작용 정보를 조회하지 못했습니다. 증상이 심하거나 지속되면 의료진 또는 약사에게 확인하세요."
-    if last.tool_name == GET_MEDICATION_SIDE_EFFECT_RECORD_LIST:
+    if last.tool_name == GET_SIDE_EFFECT_HISTORY:
         if last.status != "success":
             return _safe_result_error(last.error) or "부작용 이력을 조회하지 못했습니다."
         records = last.response.get("records") if isinstance(last.response.get("records"), list) else []
         suspected_count = sum(1 for item in records if isinstance(item, dict) and item.get("suspected") is True)
         return f"부작용 이력 {len(records)}건을 확인했습니다. 의심 기록은 {suspected_count}건입니다."
-    if last.tool_name == GET_MEDICATION_DOSE_EVENT_RECORD_LIST:
+    if last.tool_name == GET_MEDICATION_DOSE_STATUS:
         if last.status != "success":
             return _safe_result_error(last.error) or "복약 상태를 조회하지 못했습니다."
         events = last.response.get("dose_events") if isinstance(last.response.get("dose_events"), list) else []

@@ -44,8 +44,8 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "get_medication_side_effect_record_list",
-                "title": "Get Medication Side Effect Record List",
+                "name": "get_side_effect_history",
+                "title": "Get Side Effect History",
                 "description": "Read previously recorded side-effect assessment records for the current patient. Use target_date for one day, or start_date and end_date for a date range.",
                 "annotations": {
                     "readOnlyHint": True,
@@ -71,8 +71,8 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "get_medication_dose_event_record_list",
-                "title": "Get Medication Dose Event Record List",
+                "name": "get_medication_dose_status",
+                "title": "Get Medication Dose Status",
                 "description": "Read scheduled/taken/missed dose events for a patient. Use target_date for one day, or start_date and end_date for a date range.",
                 "annotations": {
                     "readOnlyHint": True,

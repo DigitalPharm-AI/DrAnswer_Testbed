@@ -8,9 +8,9 @@ DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT = "delegate_to_nutrition_management_agent
 DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT = "delegate_to_nutrition_recommendation_agent"
 
 UPDATE_MEDICATION_DOSE_EVENT_STATUS = "update_medication_dose_event_status"
-GET_MEDICATION_DOSE_EVENT_RECORD_LIST = "get_medication_dose_event_record_list"
+GET_MEDICATION_DOSE_STATUS = "get_medication_dose_status"
 GET_MEDICATION_SIDE_EFFECT_ASSESSMENT = "get_medication_side_effect_assessment"
-GET_MEDICATION_SIDE_EFFECT_RECORD_LIST = "get_medication_side_effect_record_list"
+GET_SIDE_EFFECT_HISTORY = "get_side_effect_history"
 GET_PRO_CTCAE_QUESTIONNAIRE = "get_pro_ctcae_questionnaire"
 
 SEARCH_NUTRITION_FOOD_CANDIDATES = "search_nutrition_food_candidates"
@@ -73,7 +73,7 @@ DELEGATION_TOOL_NAMES = {
     DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT,
 }
 SIDE_EFFECT_TOOLS = {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE}
-MEDICATION_QUERY_TOOLS = {GET_MEDICATION_DOSE_EVENT_RECORD_LIST, GET_MEDICATION_SIDE_EFFECT_RECORD_LIST}
+MEDICATION_QUERY_TOOLS = {GET_MEDICATION_DOSE_STATUS, GET_SIDE_EFFECT_HISTORY}
 POLICY_TOOLS = {PROPOSE_NOTIFICATION_POLICY, PROPOSE_SYSTEM_POLICY}
 NUTRITION_TOOLS = {
     SEARCH_NUTRITION_FOOD_CANDIDATES,
@@ -133,13 +133,13 @@ MODEL_VISIBLE_TOOL_METADATA: dict[str, dict[str, str]] = {
     UPDATE_MEDICATION_DOSE_EVENT_STATUS: _metadata(
         "medication", "system_app/routes/agent_api.py", "agent_update_medication_dose_event_status", "write", "medium"
     ),
-    GET_MEDICATION_DOSE_EVENT_RECORD_LIST: _metadata(
+    GET_MEDICATION_DOSE_STATUS: _metadata(
         "medication", "system_app/routes/agent_api.py", "agent_medication_dose_status", "read", "low"
     ),
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT: _metadata(
         "medication_safety", "agent_app/tool_mcp_server.py", "phr_side_effect_assessment", "read", "medium"
     ),
-    GET_MEDICATION_SIDE_EFFECT_RECORD_LIST: _metadata(
+    GET_SIDE_EFFECT_HISTORY: _metadata(
         "medication_safety", "system_app/routes/agent_api.py", "agent_side_effect_history", "read", "medium"
     ),
     GET_PRO_CTCAE_QUESTIONNAIRE: _metadata(

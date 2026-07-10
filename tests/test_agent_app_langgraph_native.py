@@ -43,8 +43,8 @@ from agent_app.tool_permissions import permission_denied_result, validate_tool_p
 from agent_app.tool_mcp_server import http_status_tool_error_result
 from agent_app.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
-    GET_MEDICATION_DOSE_EVENT_RECORD_LIST,
-    GET_MEDICATION_SIDE_EFFECT_RECORD_LIST,
+    GET_MEDICATION_DOSE_STATUS,
+    GET_SIDE_EFFECT_HISTORY,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
     LEGACY_TOOL_NAMES,
     SOURCE_MEDICATION_AGENT,
@@ -1100,7 +1100,7 @@ def test_specialist_source_event_types_enforce_tool_boundaries():
     )
     assert validate_tool_permission(dose_call, source_event_type=SOURCE_MEDICATION_AGENT, payload=dose_payload) is None
 
-    for query_tool_name in (GET_MEDICATION_DOSE_EVENT_RECORD_LIST, GET_MEDICATION_SIDE_EFFECT_RECORD_LIST):
+    for query_tool_name in (GET_MEDICATION_DOSE_STATUS, GET_SIDE_EFFECT_HISTORY):
         query_call = {"name": query_tool_name, "arguments": {}}
         assert (
             validate_tool_permission(query_call, source_event_type=SOURCE_MULTITURN_CHAT, payload={})
@@ -1327,8 +1327,8 @@ def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_perm
         "update_medication_dose_event_status",
         "get_medication_side_effect_assessment",
         "get_pro_ctcae_questionnaire",
-        "get_medication_dose_event_record_list",
-        "get_medication_side_effect_record_list",
+        "get_medication_dose_status",
+        "get_side_effect_history",
     } <= specialist_tools
     assert "get_nutrition_recommendation_candidates" not in specialist_tools
 
