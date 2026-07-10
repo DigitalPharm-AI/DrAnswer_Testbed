@@ -123,16 +123,29 @@ class MultiturnChatOutput(BaseModel):
         return self
 
 
-def validate_llm_output(decision_type: str, output: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+def validate_llm_output(
+    decision_type: str,
+    output: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    allow_tool_only: bool = False,
+) -> dict[str, Any]:
     if decision_type == "pattern_analysis":
         DailyPatternOutput.model_validate(output)
     elif decision_type == "missed_dose_assessment":
         MissedDoseOutput.model_validate(output)
-        _validate_missed_dose_contextual_requirements(output, payload)
+        if not (allow_tool_only and _has_tool_call(output)):
+            _validate_missed_dose_contextual_requirements(output, payload)
     elif decision_type == "system_guidance":
         MultiturnChatOutput.model_validate(output)
     return output
 
+
+
+def _has_tool_call(output: dict[str, Any]) -> bool:
+    return isinstance(output.get("tool_call"), dict) or (
+        isinstance(output.get("tool_calls"), list) and bool(output.get("tool_calls"))
+    )
 
 def _validate_missed_dose_contextual_requirements(output: dict[str, Any], payload: dict[str, Any]) -> None:
     if not (_has_context(payload, "tone_policy_context") or _has_context(payload, "adherence_pattern_context")):

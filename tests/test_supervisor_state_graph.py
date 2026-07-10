@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime
+
+from agent_app.graph import AgentLangGraphNativeOrchestrator
+from agent_app.tool_names import DELEGATE_TO_MEDICATION_AGENT, GET_MEDICATION_DOSE_STATUS, UPDATE_MEDICATION_DOSE_EVENT_STATUS
+from shared.schemas import MultiturnChatRequest
+from tests.test_agent_app_langgraph_native import (
+    NativeDelegatingMedicationProvider,
+    NativeFakeToolExecutor,
+    NativeRecentChatProvider,
+    build_taken_chat_request,
+)
+
+
+def test_supervisor_state_graph_direct_answer_uses_one_bound_model_call():
+    provider = NativeRecentChatProvider()
+    orchestrator = AgentLangGraphNativeOrchestrator(provider, NativeFakeToolExecutor())
+    request = MultiturnChatRequest(
+        patient_id="demo-patient",
+        event_type="multiturn_chat",
+        message="안녕하세요.",
+        current_time=datetime(2026, 4, 20, 9, 35),
+        context={},
+    )
+    graph_id = id(orchestrator.multiturn_chat_agent.graph)
+
+    response = asyncio.run(orchestrator.invoke("multiturn_chat", request.model_dump(mode="json")))
+
+    assert id(orchestrator.multiturn_chat_agent.graph) == graph_id
+    assert len(provider.chat_model_bound_tool_history) == 1
+    assert provider.chat_model_bound_tool_history[0]
+    assert response.structured_payload["routing_mode"] == "direct_answer"
+    assert response.structured_payload["agent_graph_mode"] == "langgraph_state_graph"
+    assert response.structured_payload["tool_execution_mode"] == "single_round"
+    assert "finalization_mode" not in response.structured_payload
+
+
+def test_supervisor_delegation_runs_once_and_uses_unbound_finalizer():
+    provider = NativeDelegatingMedicationProvider()
+    executor = NativeFakeToolExecutor()
+    orchestrator = AgentLangGraphNativeOrchestrator(provider, executor)
+
+    response = asyncio.run(
+        orchestrator.invoke("multiturn_chat", build_taken_chat_request().model_dump(mode="json"))
+    )
+
+    supervisor_decision_calls = [
+        tools for tools in provider.chat_model_bound_tool_history if DELEGATE_TO_MEDICATION_AGENT in tools
+    ]
+    assert len(supervisor_decision_calls) == 1
+    assert provider.chat_model_bound_tool_history[-1] == []
+    assert [call["name"] for call in executor.calls] == [UPDATE_MEDICATION_DOSE_EVENT_STATUS]
+    assert response.structured_payload["routing_mode"] == "delegated_agent"
+    assert response.structured_payload["agent_graph_mode"] == "langgraph_state_graph"
+    assert response.structured_payload["tool_execution_mode"] == "single_round"
+    assert response.structured_payload["finalization_mode"] == "llm_after_tool_result"
+    assert response.structured_payload["message_flow"] == [
+        "HumanMessage",
+        "AIMessage(tool_calls:delegation)",
+        "ToolMessage(delegated_agent_result)",
+        "AIMessage(final_answer)",
+    ]
+
+
+class MedicationStatusSummaryProvider(NativeDelegatingMedicationProvider):
+    async def generate_json(self, system_prompt, user_payload):
+        self.seen_payloads.append(user_payload)
+        self.bound_tool_history.append(list(self.bound_tool_names))
+        response_mode = user_payload.get("response_mode")
+        if response_mode == "multiturn_chat":
+            return {
+                "message": "\ubcf5\uc57d \uc870\ud68c\ub97c \ub2f4\ub2f9 \uc5d0\uc774\uc804\ud2b8\uc5d0\uac8c \uc694\uccad\ud558\uaca0\uc2b5\ub2c8\ub2e4.",
+                "tool_call": {
+                    "name": DELEGATE_TO_MEDICATION_AGENT,
+                    "arguments": {
+                        "task": "\uc9c0\uae08\uae4c\uc9c0\uc758 \uc57d \ubcf5\uc6a9 \uc0c1\ud669\uc744 \uc870\ud68c\ud558\uace0 \uc694\uc57d\ud574 \uc8fc\uc138\uc694.",
+                        "reason": "\uc0ac\uc6a9\uc790\uac00 \ubcf5\uc57d \ud604\ud669 \uc870\ud68c\ub97c \uc694\uccad\ud588\uc2b5\ub2c8\ub2e4.",
+                    },
+                },
+            }
+        if response_mode == "medication_chat":
+            return {
+                "message": "\ubcf5\uc57d \uae30\ub85d\uc744 \uc870\ud68c\ud558\uaca0\uc2b5\ub2c8\ub2e4.",
+                "tool_call": {
+                    "name": GET_MEDICATION_DOSE_STATUS,
+                    "arguments": {"target_date": "2026-04-20"},
+                },
+            }
+        return {"message": "\uc694\uccad\uc744 \ud655\uc778\ud588\uc2b5\ub2c8\ub2e4."}
+
+    async def finalize_tool_results(self, system_prompt, user_payload, tool_results):
+        return {
+            "message": "\uc624\ub298 \ubcf5\uc57d \ud604\ud669\uc740 \uc544\uce68 08:00 \uc57d 1\ud68c \ubcf5\uc6a9 \uc644\ub8cc\uc785\ub2c8\ub2e4.",
+            "advice": "\ub2e4\uc74c \ubcf5\uc57d \uc77c\uc815\ub3c4 \uc78a\uc9c0 \ub9d0\uace0 \ucc59\uaca8\uc8fc\uc138\uc694.",
+        }
+
+
+def test_supervisor_preserves_medication_status_message_when_finalizer_returns_advice():
+    provider = MedicationStatusSummaryProvider()
+    executor = NativeFakeToolExecutor()
+    orchestrator = AgentLangGraphNativeOrchestrator(provider, executor)
+    request = MultiturnChatRequest(
+        patient_id="demo-patient",
+        event_type="multiturn_chat",
+        message="\uc9c0\uae08\uae4c\uc9c0\uc758 \uc57d \ubcf5\uc6a9\uc0c1\ud669\uc744 \uc54c\uace0 \uc2f6\uc5b4",
+        current_time=datetime(2026, 4, 20, 9, 35),
+        context={},
+    )
+
+    response = asyncio.run(
+        orchestrator.invoke("multiturn_chat", request.model_dump(mode="json"))
+    )
+
+    assert [call["name"] for call in executor.calls] == [GET_MEDICATION_DOSE_STATUS]
+    assert "\uc624\ub298 \ubcf5\uc57d \ud604\ud669" in response.human_summary
+    assert "\uc544\uce68 08:00" in response.human_summary
+    assert "\ub2e4\uc74c \ubcf5\uc57d \uc77c\uc815" in response.human_summary

@@ -92,16 +92,25 @@ class NativeProviderChatModel(BaseChatModel):
         return asyncio.run(self._agenerate(messages, stop=stop, run_manager=None, **kwargs))
 
     async def _agenerate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager=None, **kwargs: Any) -> ChatResult:
+        history = getattr(self.provider, "chat_model_bound_tool_history", [])
+        history.append([langchain_tool_name(tool) for tool in self.bound_tools])
+        setattr(self.provider, "chat_model_bound_tool_history", history)
+
+        payload = human_payload_from_messages(messages)
         tool_results = tool_results_from_messages(messages)
         if tool_results:
+            finalizer = getattr(self.provider, "finalize_tool_results", None)
+            if callable(finalizer):
+                output = await finalizer(system_prompt_from_messages(messages), payload, tool_results)
+                if not isinstance(output, dict):
+                    output = {}
+                return _chat_result(AIMessage(content=natural_chat_summary(output), response_metadata={"model_output": output}))
             fallback = tool_result_summary(tool_results, "도구 실행 결과를 확인했습니다.")
             return _chat_result(AIMessage(content=fallback, response_metadata={"model_output": {"message": fallback, "fallback": "tool_result_summary"}}))
 
-        payload = human_payload_from_messages(messages)
         output = await self.provider.generate_json(system_prompt_from_messages(messages), payload)
         if not isinstance(output, dict):
             output = {}
-        validate_llm_output(str(payload.get("decision_type") or "system_guidance"), output, payload)
         tool_calls = normalize_tool_calls(output)
         if tool_calls:
             return _chat_result(ai_message_from_tool_calls(tool_calls, content=natural_chat_summary(output), model_output=output))
@@ -417,7 +426,7 @@ class NativeRecentChatProvider(NativeChatProvider):
         }
 
 
-class InvalidMissedDoseHybridProvider(BaseLLMProvider):
+class InvalidMissedDoseHybridProvider(NativeChatProvider):
     async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         assert user_payload["response_mode"] == "missed_dose_coaching"
         return {
@@ -426,7 +435,7 @@ class InvalidMissedDoseHybridProvider(BaseLLMProvider):
         }
 
 
-class UnsafeMissedDoseToolProvider(BaseLLMProvider):
+class UnsafeMissedDoseToolProvider(NativeChatProvider):
     async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         assert user_payload["response_mode"] == "missed_dose_coaching"
         return {
@@ -461,6 +470,25 @@ class NativeFakeToolExecutor:
                 },
                 idempotency_key=f"{trace_id}:update_medication_dose_event_status:{source_event_type}:12",
             )
+        if name == GET_MEDICATION_DOSE_STATUS:
+            return ToolCallResult(
+                tool_name=name,
+                status="success",
+                response={
+                    "success": True,
+                    "dose_events": [
+                        {
+                            "slot_label": "\uc544\uce68 08:00",
+                            "status": "taken",
+                            "taken_at": "2026-04-20T09:30:00",
+                        }
+                    ],
+                    "total": 1,
+                    "totals_by_status": {"taken": 1, "scheduled": 0, "missed": 0},
+                },
+                idempotency_key=f"{trace_id}:get_medication_dose_status",
+            )
+
         if name == "propose_notification_policy":
             return ToolCallResult(
                 tool_name=name,

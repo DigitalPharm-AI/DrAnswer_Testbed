@@ -133,6 +133,7 @@ async def run_tool_chat_agent(
                 "executed_by": agent_name,
                 "specialist_agent": agent_name,
                 "tool_loop_mode": TOOL_LOOP_MODE,
+                "agent_graph_mode": TOOL_LOOP_MODE,
                 "specialist_tool_names": [str(call.get("name") or "") for call in tool_calls],
                 "tool_names": [str(call.get("name") or "") for call in tool_calls],
             },
@@ -167,6 +168,7 @@ async def run_tool_chat_agent(
                 structured_payload={
                     "routing_mode": "specialist_async_continuation",
                     "tool_loop_mode": TOOL_LOOP_MODE,
+                    "agent_graph_mode": TOOL_LOOP_MODE,
                     "executed_by": agent_name,
                     "specialist_agent": agent_name,
                     "specialist_tool_calls": [*all_executed_calls, *tool_calls],
@@ -201,6 +203,7 @@ async def run_tool_chat_agent(
                 structured_payload={
                     "routing_mode": "specialist_max_iterations",
                     "tool_loop_mode": TOOL_LOOP_MODE,
+                    "agent_graph_mode": TOOL_LOOP_MODE,
                     "executed_by": agent_name,
                     "specialist_agent": agent_name,
                     "specialist_tool_calls": all_executed_calls,
@@ -229,6 +232,7 @@ async def run_tool_chat_agent(
         structured_payload = {
             "routing_mode": "specialist_tool",
             "tool_loop_mode": TOOL_LOOP_MODE,
+            "agent_graph_mode": TOOL_LOOP_MODE,
             "executed_by": agent_name,
             "specialist_agent": agent_name,
             "specialist_tool_calls": all_executed_calls,
@@ -288,6 +292,7 @@ async def run_tool_chat_agent(
             structured_payload={
                 "routing_mode": "specialist_answer",
                 "tool_loop_mode": TOOL_LOOP_MODE,
+                "agent_graph_mode": TOOL_LOOP_MODE,
                 "executed_by": agent_name,
                 "specialist_agent": agent_name,
                 "specialist_tool_calls": [],

@@ -35,6 +35,21 @@ def natural_chat_summary(output: dict[str, Any]) -> str:
     return ""
 
 
+def finalized_chat_summary(output: dict[str, Any]) -> str:
+    primary = next(
+        (
+            text
+            for key in ("message", "response", "answer", "patient_message")
+            if (text := text_field(output.get(key)))
+        ),
+        "",
+    )
+    advice = text_field(output.get("advice"))
+    if primary and advice and advice not in primary:
+        return f"{primary}\n\n{advice}"
+    return primary or advice
+
+
 def missed_dose_hybrid_payload(output: dict[str, Any]) -> dict[str, Any]:
     raw = output.get("missed_dose_hybrid")
     if not isinstance(raw, dict):

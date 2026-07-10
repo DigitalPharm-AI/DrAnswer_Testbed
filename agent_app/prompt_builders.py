@@ -26,15 +26,25 @@ from agent_app.tool_names import (
 
 def daily_pattern_prompt() -> str:
     return (
-        "You analyze the rolling 7-day medication adherence pattern in the payload. If a policy change should be applied, "
-        f"return {PROPOSE_NOTIFICATION_POLICY} in tool_call or tool_calls with complete arguments. Return JSON only."
+        "You analyze the rolling 7-day medication adherence pattern in the payload. If a policy change should be proposed, "
+        f"call the provided {PROPOSE_NOTIFICATION_POLICY} tool with complete arguments through the native tool interface. "
+        "Do not serialize tool_call or tool_calls in response text. If no tool is needed, return JSON only with summary or message."
+    )
+
+
+def daily_pattern_final_prompt() -> str:
+    return (
+        "You finalize a rolling 7-day medication adherence analysis after tool execution. Tools are no longer available. "
+        "Return JSON only with summary or message. Reflect whether a policy proposal was prepared and requires confirmation. "
+        "Do not include tool_call or tool_calls."
     )
 
 
 def missed_dose_prompt() -> str:
     return (
         "You coach a patient after a missed medication dose. If side-effect verification is needed, "
-        f"call {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT} or {GET_PRO_CTCAE_QUESTIONNAIRE}. Return JSON only. "
+        f"call the provided {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT} or {GET_PRO_CTCAE_QUESTIONNAIRE} tool through the native tool interface. "
+        "Do not serialize tool_call or tool_calls in response text. If no tool is needed, return JSON only. "
         "When adherence_pattern_context and tone_policy_context are present, keep the tone_key fixed. "
         "Always include missed_dose_hybrid.generated_message as the patient-facing missed-dose chat sentence. "
         "Generate it in Korean polite 해요체, 1-2 short sentences, 45 characters or fewer, matching tone_key. "
@@ -44,6 +54,17 @@ def missed_dose_prompt() -> str:
         "and judgement_reason only if the rule-based pattern looks ambiguous. "
         "Use this exact nested shape for the generated sentence: "
         '{"missed_dose_hybrid":{"reason":"<why this expression fits the tone/context>","generated_message":"<safe Korean sentence>","tone_key":"<tone_policy_context.tone_key>","safety_notes":["no_medication_name","no_diagnosis","non_directive"]}}'
+    )
+
+
+def missed_dose_final_prompt() -> str:
+    return (
+        "You finalize Korean missed-dose coaching after tool execution. Tools are no longer available. Return JSON only. "
+        "Use the tool results when describing side-effect status. Always include patient_message or message and "
+        "missed_dose_hybrid.generated_message as a Korean polite 1-2 sentence patient-facing response, 45 characters or fewer. "
+        "Do not include medication names, diagnosis names, medical numbers, fear-inducing words, blame, commands, tool_call, or tool_calls. "
+        "Include likely_reason, side_effect_signal, symptom_summary, follow_up_questions, recommendation, and this nested shape: "
+        '{"missed_dose_hybrid":{"reason":"<audit reason>","generated_message":"<safe Korean sentence>","tone_key":"<tone_policy_context.tone_key>","safety_notes":["no_medication_name","no_diagnosis","non_directive"]}}'
     )
 
 
@@ -77,7 +98,8 @@ def multiturn_chat_prompt() -> str:
         "If the user refers to a previously displayed diet recommendation card by food name, ordinal, or a phrase like "
         f"'that one' and wants to eat, log, or replace a meal with it, delegate to {DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT}. "
         "Use context.recent_diet_recommendations as candidate memory for that handoff. "
-        "If no tool is needed, return a natural Korean response in advice or message and include "
+        "Return the complete final user-facing Korean response in message. Do not split the main answer between message and advice. "
+        "If no tool is needed, return a natural Korean response in message and include "
         "brief observations. When context.missed_dose_reply is present, you may include "
         "missed_dose_reply_understanding as structured interpretation only: reply_intent, barrier_type, "
         "reaction_action, confidence, evidence, and policy_signals. Do not decide the final adherence pattern "

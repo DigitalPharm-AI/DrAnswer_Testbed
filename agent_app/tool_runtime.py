@@ -71,6 +71,9 @@ def _routing_log_payload(routing_context: dict[str, Any] | None) -> dict[str, An
         "delegated_by",
         "delegation_reason",
         "tool_loop_mode",
+        "agent_graph_mode",
+        "tool_execution_mode",
+        "finalization_mode",
     ):
         value = routing_context.get(key)
         if value is not None:
