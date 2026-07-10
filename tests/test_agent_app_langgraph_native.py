@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import ConfigDict, Field
 
 import agent_app.main as native_agent_main
+from agent_app.agent_delegation import delegation_tools_payload
 from agent_app.agents.tool_chat import SPECIALIST_TOOL_LOOP_LIMIT, run_tool_chat_agent
 from agent_app.async_tasks import DEAD, enqueue_async_task
 from agent_app.chat_tooling import (
@@ -38,6 +40,7 @@ from agent_app.tool_executor import McpAgentToolExecutor
 from agent_app.tool_policy import _notification_policy_deltas, deferred_policy_tool_result, is_deferred_policy_tool_call
 from agent_app.tool_permissions import permission_denied_result, validate_tool_permission
 from agent_app.tool_mcp_server import http_status_tool_error_result
+from agent_app.tool_names import CREATE_NUTRITION_MEAL_RECORD, LEGACY_TOOL_NAMES, replace_legacy_tool_names
 from agent_app.tool_protocol import (
     MCP_METHOD_TOOLS_CALL,
     MCP_METHOD_TOOLS_LIST,
@@ -110,7 +113,7 @@ class NativeFakeProvider(NativeChatProvider):
             return {
                 "summary": "아침 시간대 미복용이 반복됩니다.",
                 "tool_call": {
-                    "name": "apply_notification_policy",
+                    "name": "propose_notification_policy",
                     "arguments": {
                         "slot_label": "아침 08:00",
                         "extra_reminders": 2,
@@ -135,7 +138,7 @@ class NativeFakeProvider(NativeChatProvider):
             return {
                 "message": "복약 완료를 기록하겠습니다.",
                 "tool_call": {
-                    "name": "mark_dose_taken",
+                    "name": "update_medication_dose_event_status",
                     "arguments": {
                         "dose_event_id": 12,
                         "reason": "patient_reported_taken",
@@ -156,7 +159,7 @@ class NativeDelegatingMedicationProvider(NativeChatProvider):
             return {
                 "message": "복약 담당 에이전트가 확인하겠습니다.",
                 "tool_call": {
-                    "name": "call_medication_agent",
+                    "name": "delegate_to_medication_agent",
                     "arguments": {
                         "task": "record reported dose as taken",
                         "reason": "patient reported taking a current medication dose",
@@ -167,7 +170,7 @@ class NativeDelegatingMedicationProvider(NativeChatProvider):
             return {
                 "message": "복약 완료를 기록하겠습니다.",
                 "tool_call": {
-                    "name": "mark_dose_taken",
+                    "name": "update_medication_dose_event_status",
                     "arguments": {
                         "dose_event_id": 12,
                         "reason": "patient_reported_taken",
@@ -190,7 +193,7 @@ class NativeDelegatingNutritionManagementProvider(NativeChatProvider):
             return {
                 "message": "영양 관리 에이전트가 확인하겠습니다.",
                 "tool_call": {
-                    "name": "call_nutrition_management_agent",
+                    "name": "delegate_to_nutrition_management_agent",
                     "arguments": {
                         "task": "search food candidates before saving the meal",
                         "reason": "patient reported eating a food item",
@@ -201,7 +204,7 @@ class NativeDelegatingNutritionManagementProvider(NativeChatProvider):
             return {
                 "message": "음식 후보를 확인하겠습니다.",
                 "tool_call": {
-                    "name": "search_food_nutrition",
+                    "name": "search_nutrition_food_candidates",
                     "arguments": {"query": "삶은 계란"},
                 },
             }
@@ -221,7 +224,7 @@ class NativeDelegatingNutritionRecommendationProvider(NativeChatProvider):
             return {
                 "message": "영양 추천 에이전트가 확인하겠습니다.",
                 "tool_call": {
-                    "name": "call_nutrition_recommendation_agent",
+                    "name": "delegate_to_nutrition_recommendation_agent",
                     "arguments": {
                         "task": "recommend a suitable dinner",
                         "reason": "patient asked what to eat",
@@ -232,7 +235,7 @@ class NativeDelegatingNutritionRecommendationProvider(NativeChatProvider):
             return {
                 "message": "오늘 섭취와 선호도를 반영해 추천하겠습니다.",
                 "tool_call": {
-                    "name": "recommend_diet",
+                    "name": "get_nutrition_recommendation_candidates",
                     "arguments": {"constraints": {"sodium": "low"}, "meal_type": "dinner"},
                 },
             }
@@ -263,7 +266,7 @@ class NativeMultiStepNutritionFoodUpdateChatModel(NativeProviderChatModel):
                 ai_message_from_tool_calls(
                     [
                         {
-                            "name": "call_nutrition_management_agent",
+                            "name": "delegate_to_nutrition_management_agent",
                             "arguments": {
                                 "task": "change the recorded lunch food from 탕수육 to 꿔바로우",
                                 "reason": "patient corrected a previously recorded food item",
@@ -279,25 +282,25 @@ class NativeMultiStepNutritionFoodUpdateChatModel(NativeProviderChatModel):
             if not tool_result_names:
                 return _chat_result(
                     ai_message_from_tool_calls(
-                        [{"name": "list_meals", "arguments": {"meal_date": "2026-04-20"}}],
+                        [{"name": "get_nutrition_meal_record_list", "arguments": {"meal_date": "2026-04-20"}}],
                         content="수정할 음식의 meal_id와 food_id를 확인하겠습니다.",
                         model_output={"message": "수정할 음식의 meal_id와 food_id를 확인하겠습니다."},
                     )
                 )
-            if tool_result_names[-1] == "list_meals":
+            if tool_result_names[-1] == "get_nutrition_meal_record_list":
                 return _chat_result(
                     ai_message_from_tool_calls(
-                        [{"name": "search_food_nutrition", "arguments": {"query": "꿔바로우"}}],
+                        [{"name": "search_nutrition_food_candidates", "arguments": {"query": "꿔바로우"}}],
                         content="새 음식의 영양 정보를 확인하겠습니다.",
                         model_output={"message": "새 음식의 영양 정보를 확인하겠습니다."},
                     )
                 )
-            if tool_result_names[-1] == "search_food_nutrition":
+            if tool_result_names[-1] == "search_nutrition_food_candidates":
                 return _chat_result(
                     ai_message_from_tool_calls(
                         [
                             {
-                                "name": "update_nutrition_food",
+                                "name": "update_nutrition_food_record",
                                 "arguments": {
                                     "meal_id": 101,
                                     "food_id": 202,
@@ -313,11 +316,11 @@ class NativeMultiStepNutritionFoodUpdateChatModel(NativeProviderChatModel):
                         model_output={"message": "확인한 food_id로 음식 기록을 수정하겠습니다."},
                     )
                 )
-            if tool_result_names[-1] == "update_nutrition_food":
+            if tool_result_names[-1] == "update_nutrition_food_record":
                 summary = "전문 에이전트가 점심의 탕수육을 꿔바로우로 수정했습니다."
                 return _chat_result(AIMessage(content=summary, response_metadata={"model_output": {"message": summary}}))
 
-        if payload.get("response_mode") == "multiturn_chat" and tool_result_names[-1:] == ["call_nutrition_management_agent"]:
+        if payload.get("response_mode") == "multiturn_chat" and tool_result_names[-1:] == ["delegate_to_nutrition_management_agent"]:
             summary = "점심 식사 기록에서 탕수육을 꿔바로우로 수정했어요."
             return _chat_result(AIMessage(content=summary, response_metadata={"model_output": {"message": summary}}))
 
@@ -331,7 +334,7 @@ class NativeSideEffectLookupProvider(NativeChatProvider):
         return {
             "message": "복용약 주의사항을 먼저 확인하겠습니다.",
             "tool_call": {
-                "name": "lookup_side_effect_info",
+                "name": "get_medication_side_effect_assessment",
                 "arguments": {
                     "symptom_text": "속이 메스꺼워요.",
                     "medication_name": "항암제",
@@ -354,7 +357,7 @@ class NativeLoopLimitProvider(NativeChatProvider):
 class NativeLoopLimitChatModel(NativeProviderChatModel):
     async def _agenerate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager=None, **kwargs: Any) -> ChatResult:
         tool_call = {
-            "name": "search_food_nutrition",
+            "name": "search_nutrition_food_candidates",
             "arguments": {"query": "계란"},
         }
         return _chat_result(
@@ -396,7 +399,7 @@ class UnsafeMissedDoseToolProvider(BaseLLMProvider):
         return {
             "patient_message": "복용 완료를 기록하겠습니다.",
             "tool_call": {
-                "name": "mark_dose_taken",
+                "name": "update_medication_dose_event_status",
                 "arguments": {"dose_event_id": 12},
             },
         }
@@ -414,7 +417,7 @@ class NativeFakeToolExecutor:
         if is_deferred_policy_tool_call(tool_call):
             return deferred_policy_tool_result(tool_call, trace_id=trace_id, source_event_type=source_event_type)
         self.calls.append(tool_call)
-        if name == "mark_dose_taken":
+        if name == "update_medication_dose_event_status":
             return ToolCallResult(
                 tool_name=name,
                 status="success",
@@ -423,20 +426,20 @@ class NativeFakeToolExecutor:
                     "status": "taken",
                     "message": "아침 08:00 혈압약 복약을 완료로 기록했습니다.",
                 },
-                idempotency_key=f"{trace_id}:mark_dose_taken:{source_event_type}:12",
+                idempotency_key=f"{trace_id}:update_medication_dose_event_status:{source_event_type}:12",
             )
-        if name == "apply_notification_policy":
+        if name == "propose_notification_policy":
             return ToolCallResult(
                 tool_name=name,
                 status="success",
                 response={
-                    "idempotency_key": f"{trace_id}:apply_notification_policy:{source_event_type}",
+                    "idempotency_key": f"{trace_id}:propose_notification_policy:{source_event_type}",
                     "results": [{"slot_label": "아침 08:00", "applied": True, "message": "정책을 적용했습니다."}],
                     "all_applied": True,
                 },
-                idempotency_key=f"{trace_id}:apply_notification_policy:{source_event_type}",
+                idempotency_key=f"{trace_id}:propose_notification_policy:{source_event_type}",
             )
-        if name == "lookup_side_effect_info":
+        if name == "get_medication_side_effect_assessment":
             return ToolCallResult(
                 tool_name=name,
                 status="success",
@@ -448,9 +451,9 @@ class NativeFakeToolExecutor:
                     "evidence": "주의사항에 메스꺼움이 포함되어 있습니다.",
                     "recommendation": "증상 문항 확인이 필요합니다.",
                 },
-                idempotency_key=f"{trace_id}:lookup_side_effect_info",
+                idempotency_key=f"{trace_id}:get_medication_side_effect_assessment",
             )
-        if name == "AE_pro_ctcae":
+        if name == "get_pro_ctcae_questionnaire":
             return ToolCallResult(
                 tool_name=name,
                 status="success",
@@ -468,9 +471,9 @@ class NativeFakeToolExecutor:
                     "questions": [],
                     "candidates": [],
                 },
-                idempotency_key=f"{trace_id}:AE_pro_ctcae",
+                idempotency_key=f"{trace_id}:get_pro_ctcae_questionnaire",
             )
-        if name == "search_food_nutrition":
+        if name == "search_nutrition_food_candidates":
             return ToolCallResult(
                 tool_name=name,
                 status="success",
@@ -486,9 +489,9 @@ class NativeFakeToolExecutor:
                         }
                     ],
                 },
-                idempotency_key=f"{trace_id}:search_food_nutrition",
+                idempotency_key=f"{trace_id}:search_nutrition_food_candidates",
             )
-        if name == "list_meals":
+        if name == "get_nutrition_meal_record_list":
             return ToolCallResult(
                 tool_name=name,
                 status="success",
@@ -511,9 +514,9 @@ class NativeFakeToolExecutor:
                         }
                     ],
                 },
-                idempotency_key=f"{trace_id}:list_meals",
+                idempotency_key=f"{trace_id}:get_nutrition_meal_record_list",
             )
-        if name == "recommend_diet":
+        if name == "get_nutrition_recommendation_candidates":
             return ToolCallResult(
                 tool_name=name,
                 status="success",
@@ -522,23 +525,23 @@ class NativeFakeToolExecutor:
                     "recommendations": [{"food_name": "두부 샐러드", "score": 0.9}],
                     "blocked_count": 0,
                 },
-                idempotency_key=f"{trace_id}:recommend_diet",
+                idempotency_key=f"{trace_id}:get_nutrition_recommendation_candidates",
             )
-        if name == "update_nutrition_meal":
+        if name == "update_nutrition_meal_record":
             return ToolCallResult(
                 tool_name=name,
                 status="success",
                 response={"success": True, "meal": {"id": tool_call["arguments"]["meal_id"], "meal_label": "점심"}, "daily_summary": {}},
-                idempotency_key=f"{trace_id}:update_nutrition_meal:{tool_call['arguments']['meal_id']}",
+                idempotency_key=f"{trace_id}:update_nutrition_meal_record:{tool_call['arguments']['meal_id']}",
             )
-        if name == "delete_nutrition_meal":
+        if name == "delete_nutrition_meal_record":
             return ToolCallResult(
                 tool_name=name,
                 status="success",
                 response={"success": True, "deleted_meal": {"id": tool_call["arguments"]["meal_id"], "meal_label": "점심"}, "daily_summary": {}},
-                idempotency_key=f"{trace_id}:delete_nutrition_meal:{tool_call['arguments']['meal_id']}",
+                idempotency_key=f"{trace_id}:delete_nutrition_meal_record:{tool_call['arguments']['meal_id']}",
             )
-        if name == "update_nutrition_food":
+        if name == "update_nutrition_food_record":
             return ToolCallResult(
                 tool_name=name,
                 status="success",
@@ -548,9 +551,9 @@ class NativeFakeToolExecutor:
                     "food": {"id": tool_call["arguments"]["food_id"], "food_name": tool_call["arguments"].get("food_name", "수정 음식")},
                     "daily_summary": {},
                 },
-                idempotency_key=f"{trace_id}:update_nutrition_food:{tool_call['arguments']['meal_id']}:{tool_call['arguments']['food_id']}",
+                idempotency_key=f"{trace_id}:update_nutrition_food_record:{tool_call['arguments']['meal_id']}:{tool_call['arguments']['food_id']}",
             )
-        if name == "delete_nutrition_food":
+        if name == "delete_nutrition_food_record":
             return ToolCallResult(
                 tool_name=name,
                 status="success",
@@ -562,7 +565,7 @@ class NativeFakeToolExecutor:
                     "daily_summary": {},
                     "meal_deleted": False,
                 },
-                idempotency_key=f"{trace_id}:delete_nutrition_food:{tool_call['arguments']['meal_id']}:{tool_call['arguments']['food_id']}",
+                idempotency_key=f"{trace_id}:delete_nutrition_food_record:{tool_call['arguments']['meal_id']}:{tool_call['arguments']['food_id']}",
             )
         return ToolCallResult(tool_name=name, status="error", error="unexpected_tool")
 
@@ -625,11 +628,11 @@ def test_nutrition_record_verification_prompts_do_not_trust_recent_chat():
 
     assert "Recent chat is not an authoritative source for current nutrition records" in supervisor_prompt
     assert "do not answer from recent_chat" in supervisor_prompt
-    assert "delegate to call_nutrition_management_agent" in supervisor_prompt
+    assert "delegate to delegate_to_nutrition_management_agent" in supervisor_prompt
     assert "context.recent_diet_recommendations" in supervisor_prompt
-    assert "call list_meals first" in management_prompt
+    assert "call get_nutrition_meal_record_list first" in management_prompt
     assert "Do not infer current records from recent chat" in management_prompt
-    assert "Use context.recent_diet_recommendations before search_food_nutrition" in management_prompt
+    assert "Use context.recent_diet_recommendations before search_nutrition_food_candidates" in management_prompt
     assert "prefer meal-like foods over snacks or beverages" in recommendation_prompt
 
 
@@ -804,27 +807,55 @@ def test_tool_catalog_can_be_exposed_as_mcp_tools_list():
     payload = mcp_tools_list(tools)
 
     assert "tools" in payload
-    assert {tool["name"] for tool in payload["tools"]} >= {"mark_dose_taken", "lookup_side_effect_info", "AE_pro_ctcae"}
+    assert {tool["name"] for tool in payload["tools"]} >= {"update_medication_dose_event_status", "get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"}
     for tool in payload["tools"]:
         assert tool["inputSchema"]["type"] == "object"
         assert "properties" in tool["inputSchema"]
         assert tool["outputSchema"]["type"] == "object"
+        assert tool["args_schema"] == tool["inputSchema"]
+        assert {"domain", "source_repo", "source_path", "source_tool_name", "mutability", "risk_level"} <= set(tool)
+        assert tool["_meta"]["domain"] == tool["domain"]
+
+
+def test_model_visible_tool_contract_does_not_expose_legacy_names():
+    tools_payload = json.dumps(ToolCatalog.available_tools_payload(), ensure_ascii=False)
+    delegation_payload = json.dumps(delegation_tools_payload(), ensure_ascii=False)
+    prompt_payload = "\n".join(
+        [
+            multiturn_chat_prompt(),
+            nutrition_management_agent_prompt(),
+            nutrition_recommendation_agent_prompt(),
+        ]
+    )
+    visible_payload = "\n".join([tools_payload, delegation_payload, prompt_payload])
+    violations = [
+        legacy_name
+        for legacy_name in sorted(LEGACY_TOOL_NAMES)
+        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(legacy_name)}(?![A-Za-z0-9_])", visible_payload)
+    ]
+
+    assert violations == []
+
+
+def test_legacy_tool_name_replacement_keeps_canonical_names_stable():
+    assert replace_legacy_tool_names("record_meal should be hidden") == "create_nutrition_meal_record should be hidden"
+    assert replace_legacy_tool_names(CREATE_NUTRITION_MEAL_RECORD) == CREATE_NUTRITION_MEAL_RECORD
 
 
 def test_tool_result_round_trips_through_mcp_shape():
     result = ToolCallResult(
-        tool_name="mark_dose_taken",
+        tool_name="update_medication_dose_event_status",
         status="success",
         response={"status": "taken", "message": "복용 완료로 기록했습니다."},
-        idempotency_key="trace:mark_dose_taken",
+        idempotency_key="trace:update_medication_dose_event_status",
     )
 
     mcp_result = mcp_result_from_tool_result(result)
-    restored = tool_result_from_mcp_result("mark_dose_taken", mcp_result)
+    restored = tool_result_from_mcp_result("update_medication_dose_event_status", mcp_result)
 
     assert mcp_result["isError"] is False
     assert mcp_result["content"][0]["type"] == "text"
-    assert mcp_result["structuredContent"]["tool_name"] == "mark_dose_taken"
+    assert mcp_result["structuredContent"]["tool_name"] == "update_medication_dose_event_status"
     assert restored == result
 
 
@@ -842,13 +873,13 @@ def test_http_status_tool_error_preserves_public_detail_code_and_redacts_private
 
     public_result = http_status_tool_error_result(
         httpx.HTTPStatusError("unprocessable", request=public_response.request, response=public_response),
-        tool_name="record_meal",
+        tool_name="create_nutrition_meal_record",
         trace_id="trace-http-public",
         elapsed_ms=7,
     )
     private_result = http_status_tool_error_result(
         httpx.HTTPStatusError("unprocessable", request=private_response.request, response=private_response),
-        tool_name="record_meal",
+        tool_name="create_nutrition_meal_record",
         trace_id="trace-http-private",
         elapsed_ms=9,
     )
@@ -872,17 +903,17 @@ def test_mcp_agent_tool_executor_calls_tools_call_json_rpc():
 
     result = asyncio.run(
         executor.execute_tool_call(
-            {"name": "mark_dose_taken", "arguments": {"dose_event_id": 12}},
+            {"name": "update_medication_dose_event_status", "arguments": {"dose_event_id": 12}},
             trace_id="trace-mcp",
             source_event_type="multiturn_chat",
             payload={"patient_id": "demo-patient"},
         )
     )
 
-    assert result.tool_name == "mark_dose_taken"
+    assert result.tool_name == "update_medication_dose_event_status"
     assert result.status == "success"
     assert server.requests[0]["request"]["method"] == MCP_METHOD_TOOLS_CALL
-    assert server.requests[0]["request"]["params"] == {"name": "mark_dose_taken", "arguments": {"dose_event_id": 12}}
+    assert server.requests[0]["request"]["params"] == {"name": "update_medication_dose_event_status", "arguments": {"dose_event_id": 12}}
     assert server.requests[0]["trace_id"] == "trace-mcp"
     assert server.requests[0]["source_event_type"] == "multiturn_chat"
 
@@ -899,21 +930,21 @@ def test_agent_app_mcp_tools_list_endpoint_reports_context_allowed_catalog():
     tool_names = {tool["name"] for tool in payload["result"]["tools"]}
     assert payload["result"]["source_event_type"] == "mcp"
     assert {
-        "AE_pro_ctcae",
-        "search_food_nutrition",
-        "record_meal",
-        "update_nutrition_meal",
-        "delete_nutrition_meal",
-        "update_nutrition_food",
-        "delete_nutrition_food",
-        "list_meals",
-        "get_daily_nutrition_summary",
-        "record_nutrition_preference",
-        "get_nutrition_preferences",
+        "get_pro_ctcae_questionnaire",
+        "search_nutrition_food_candidates",
+        "create_nutrition_meal_record",
+        "update_nutrition_meal_record",
+        "delete_nutrition_meal_record",
+        "update_nutrition_food_record",
+        "delete_nutrition_food_record",
+        "get_nutrition_meal_record_list",
+        "get_nutrition_daily_summary",
+        "upsert_nutrition_preference_fact",
+        "get_nutrition_preference_summary",
     } <= tool_names
-    assert "mark_dose_taken" not in tool_names
-    assert "lookup_side_effect_info" not in tool_names
-    assert "apply_notification_policy" not in tool_names
+    assert "update_medication_dose_event_status" not in tool_names
+    assert "get_medication_side_effect_assessment" not in tool_names
+    assert "propose_notification_policy" not in tool_names
 
     context_request = mcp_json_rpc_request(
         MCP_METHOD_TOOLS_LIST,
@@ -926,8 +957,8 @@ def test_agent_app_mcp_tools_list_endpoint_reports_context_allowed_catalog():
     context_payload = context_response.json()
     assert context_payload["result"]["source_event_type"] == "multiturn_chat"
     context_tools = {tool["name"]: tool for tool in context_payload["result"]["tools"]}
-    assert {"mark_dose_taken", "lookup_side_effect_info", "apply_notification_policy", "apply_system_policy"} <= set(context_tools)
-    policy_meta = context_tools["apply_notification_policy"]["_meta"]
+    assert {"update_medication_dose_event_status", "get_medication_side_effect_assessment", "propose_notification_policy", "propose_system_policy"} <= set(context_tools)
+    policy_meta = context_tools["propose_notification_policy"]["_meta"]
     assert policy_meta["execution_mode"] == "deferred_confirmation"
     assert policy_meta["requires_human_handoff"] is True
     assert policy_meta["handoff_gate"] == "high_risk_policy_change"
@@ -938,7 +969,7 @@ def test_tool_call_validation_accepts_tool_name_alias():
         "message": "음식 정보를 먼저 찾아볼게요.",
         "tool_calls": [
             {
-                "tool_name": "search_food_nutrition",
+                "tool_name": "search_nutrition_food_candidates",
                 "args": {"query": "마라탕"},
             }
         ],
@@ -949,9 +980,9 @@ def test_tool_call_validation_accepts_tool_name_alias():
 
     assert calls == [
         {
-            "tool_name": "search_food_nutrition",
+            "tool_name": "search_nutrition_food_candidates",
             "args": {"query": "마라탕"},
-            "name": "search_food_nutrition",
+            "name": "search_nutrition_food_candidates",
             "arguments": {"query": "마라탕"},
         }
     ]
@@ -966,13 +997,13 @@ def test_tool_calls_payload_keeps_food_search_meal_type_hint():
     payload = tool_calls_payload(
         [
             {
-                "name": "search_food_nutrition",
+                "name": "search_nutrition_food_candidates",
                 "arguments": {"query": "pizza", "limit": 6, "meal_type": "dinner"},
             }
         ],
         [
             ToolCallResult(
-                tool_name="search_food_nutrition",
+                tool_name="search_nutrition_food_candidates",
                 status="success",
                 response={"success": True, "query": "pizza", "candidates": candidates},
             )
@@ -987,7 +1018,7 @@ def test_tool_calls_payload_keeps_food_search_meal_type_hint():
 def test_agent_app_mcp_direct_call_enforces_default_tool_allowlist():
     request = mcp_json_rpc_request(
         MCP_METHOD_TOOLS_CALL,
-        {"name": "mark_dose_taken", "arguments": {"dose_event_id": 12}},
+        {"name": "update_medication_dose_event_status", "arguments": {"dose_event_id": 12}},
         request_id="blocked-tool",
     )
 
@@ -997,7 +1028,7 @@ def test_agent_app_mcp_direct_call_enforces_default_tool_allowlist():
     payload = response.json()
     result = payload["result"]
     assert result["isError"] is True
-    assert result["structuredContent"]["tool_name"] == "mark_dose_taken"
+    assert result["structuredContent"]["tool_name"] == "update_medication_dose_event_status"
     assert result["structuredContent"]["status"] == "error"
     assert result["structuredContent"]["error"] == "tool_permission_denied"
     assert result["structuredContent"]["response"]["source_event_type"] == "mcp"
@@ -1006,7 +1037,7 @@ def test_agent_app_mcp_direct_call_enforces_default_tool_allowlist():
 def test_agent_app_mcp_allows_nutrition_tools():
     denial = validate_tool_permission(
         {
-            "name": "record_meal",
+            "name": "create_nutrition_meal_record",
             "arguments": {
                 "meal_type": "lunch",
                 "foods": [{"food_name": "짜장면", "nutrients": {"sodium": 1200}}],
@@ -1020,7 +1051,7 @@ def test_agent_app_mcp_allows_nutrition_tools():
 
     preference_denial = validate_tool_permission(
         {
-            "name": "record_nutrition_preference",
+            "name": "upsert_nutrition_preference_fact",
             "arguments": {"predicate": "dislikes", "object_label": "짜장면"},
         },
         source_event_type="mcp",
@@ -1029,22 +1060,22 @@ def test_agent_app_mcp_allows_nutrition_tools():
 
     assert preference_denial is None
     assert validate_tool_permission(
-        {"name": "update_nutrition_meal", "arguments": {"meal_id": 1, "meal_type": "dinner"}},
+        {"name": "update_nutrition_meal_record", "arguments": {"meal_id": 1, "meal_type": "dinner"}},
         source_event_type="mcp",
         payload={},
     ) is None
     assert validate_tool_permission(
-        {"name": "delete_nutrition_meal", "arguments": {"meal_id": 1}},
+        {"name": "delete_nutrition_meal_record", "arguments": {"meal_id": 1}},
         source_event_type="mcp",
         payload={},
     ) is None
     assert validate_tool_permission(
-        {"name": "update_nutrition_food", "arguments": {"meal_id": 1, "food_id": 10, "portion": "half"}},
+        {"name": "update_nutrition_food_record", "arguments": {"meal_id": 1, "food_id": 10, "portion": "half"}},
         source_event_type="mcp",
         payload={},
     ) is None
     assert validate_tool_permission(
-        {"name": "delete_nutrition_food", "arguments": {"meal_id": 1, "food_id": 10}},
+        {"name": "delete_nutrition_food_record", "arguments": {"meal_id": 1, "food_id": 10}},
         source_event_type="mcp",
         payload={},
     ) is None
@@ -1091,7 +1122,7 @@ def test_agent_app_daily_pattern_endpoint_is_system_compatible(monkeypatch):
     assert payload["decision_type"] == "tool_call"
     assert payload["structured_payload"]["tools_executed"] is False
     assert payload["structured_payload"]["policy_confirmation_required"] is True
-    assert payload["structured_payload"]["tool_results"][0]["tool_name"] == "apply_notification_policy"
+    assert payload["structured_payload"]["tool_results"][0]["tool_name"] == "propose_notification_policy"
     assert payload["structured_payload"]["tool_results"][0]["status"] == "skipped"
     assert payload["structured_payload"]["tool_results"][0]["response"]["human_handoff_required"] is True
     assert payload["structured_payload"]["tool_results"][0]["response"]["handoff_gate"] == "high_risk_policy_change"
@@ -1141,8 +1172,8 @@ def test_missed_dose_tool_permission_blocks_mark_taken(monkeypatch):
     response = asyncio.run(orchestrator.invoke("missed_dose", build_missed_payload().model_dump(mode="json")))
 
     structured = response.structured_payload
-    assert structured["tool_call"]["name"] == "mark_dose_taken"
-    assert structured["tool_results"][0]["tool_name"] == "mark_dose_taken"
+    assert structured["tool_call"]["name"] == "update_medication_dose_event_status"
+    assert structured["tool_results"][0]["tool_name"] == "update_medication_dose_event_status"
     assert structured["tool_results"][0]["status"] == "error"
     assert structured["tool_results"][0]["error"] == "tool_permission_denied"
     assert "missed_dose" in structured["tool_results"][0]["response"]["source_event_type"]
@@ -1160,21 +1191,21 @@ def test_agent_app_multiturn_mark_taken_tool_call(monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["decision_type"] == "tool_call"
-    assert payload["structured_payload"]["tool_call"]["name"] == "mark_dose_taken"
+    assert payload["structured_payload"]["tool_call"]["name"] == "update_medication_dose_event_status"
     assert payload["structured_payload"]["tool_call"]["arguments"]["dose_event_id"] == 12
     assert payload["structured_payload"]["tools_executed"] is True
-    assert payload["structured_payload"]["tool_results"][0]["tool_name"] == "mark_dose_taken"
+    assert payload["structured_payload"]["tool_results"][0]["tool_name"] == "update_medication_dose_event_status"
     assert payload["structured_payload"]["message_flow"] == ["HumanMessage", "AIMessage(tool_calls)", "ToolMessage", "AIMessage(final_answer)"]
     assert payload["structured_payload"]["routing_mode"] == "direct_tool"
     assert payload["structured_payload"]["executed_by"] == "system_event_agent"
     assert payload["structured_payload"]["final_answer_source"] == "tool_result_summary"
     assert payload["structured_payload"]["tool_result_summary_used"] is True
-    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "mark_dose_taken"
-    assert tool_executor.calls[0]["name"] == "mark_dose_taken"
-    assert {"mark_dose_taken", "lookup_side_effect_info", "AE_pro_ctcae", "call_nutrition_management_agent", "call_nutrition_recommendation_agent"} <= set(provider.bound_tool_names)
-    assert "recommend_diet" not in provider.bound_tool_names
-    assert "record_meal" not in provider.bound_tool_names
-    assert "search_food_nutrition" not in provider.bound_tool_names
+    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "update_medication_dose_event_status"
+    assert tool_executor.calls[0]["name"] == "update_medication_dose_event_status"
+    assert {"update_medication_dose_event_status", "get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire", "delegate_to_nutrition_management_agent", "delegate_to_nutrition_recommendation_agent"} <= set(provider.bound_tool_names)
+    assert "get_nutrition_recommendation_candidates" not in provider.bound_tool_names
+    assert "create_nutrition_meal_record" not in provider.bound_tool_names
+    assert "search_nutrition_food_candidates" not in provider.bound_tool_names
 
 
 def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_permission(monkeypatch):
@@ -1196,16 +1227,16 @@ def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_perm
     assert payload["structured_payload"]["supervisor_agent"] == "system_event_agent"
     assert payload["structured_payload"]["specialist_agent"] == "medication_agent"
     assert payload["structured_payload"]["executed_by"] == "system_event_agent"
-    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "call_medication_agent"
-    assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "mark_dose_taken"
-    assert payload["structured_payload"]["tool_call"]["name"] == "mark_dose_taken"
-    assert payload["structured_payload"]["tool_results"][0]["tool_name"] == "mark_dose_taken"
+    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "delegate_to_medication_agent"
+    assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "update_medication_dose_event_status"
+    assert payload["structured_payload"]["tool_call"]["name"] == "update_medication_dose_event_status"
+    assert payload["structured_payload"]["tool_results"][0]["tool_name"] == "update_medication_dose_event_status"
     assert payload["structured_payload"]["tool_results"][0]["status"] == "success"
     assert payload["structured_payload"]["tool_results"][0]["response"]["status"] == "taken"
-    assert tool_executor.calls[0]["name"] == "mark_dose_taken"
+    assert tool_executor.calls[0]["name"] == "update_medication_dose_event_status"
     assert [seen["response_mode"] for seen in provider.seen_payloads] == ["multiturn_chat", "medication_chat"]
-    assert {"mark_dose_taken", "lookup_side_effect_info", "AE_pro_ctcae"} <= set(provider.bound_tool_names)
-    assert "recommend_diet" not in provider.bound_tool_names
+    assert {"update_medication_dose_event_status", "get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"} <= set(provider.bound_tool_names)
+    assert "get_nutrition_recommendation_candidates" not in provider.bound_tool_names
 
 
 def test_agent_app_multiturn_delegates_nutrition_management_tools(monkeypatch):
@@ -1232,29 +1263,29 @@ def test_agent_app_multiturn_delegates_nutrition_management_tools(monkeypatch):
     assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
     assert payload["structured_payload"]["tool_loop_mode"] == "langgraph_state_graph"
     assert payload["structured_payload"]["specialist_agent"] == "nutrition_management_agent"
-    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "call_nutrition_management_agent"
-    assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "search_food_nutrition"
-    assert tool_executor.calls[0]["name"] == "search_food_nutrition"
-    assert {"call_nutrition_management_agent", "call_nutrition_recommendation_agent"} <= supervisor_tools
+    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "delegate_to_nutrition_management_agent"
+    assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "search_nutrition_food_candidates"
+    assert tool_executor.calls[0]["name"] == "search_nutrition_food_candidates"
+    assert {"delegate_to_nutrition_management_agent", "delegate_to_nutrition_recommendation_agent"} <= supervisor_tools
     assert not {
-        "search_food_nutrition",
-        "record_meal",
-        "update_nutrition_meal",
-        "delete_nutrition_meal",
-        "update_nutrition_food",
-        "delete_nutrition_food",
-        "recommend_diet",
+        "search_nutrition_food_candidates",
+        "create_nutrition_meal_record",
+        "update_nutrition_meal_record",
+        "delete_nutrition_meal_record",
+        "update_nutrition_food_record",
+        "delete_nutrition_food_record",
+        "get_nutrition_recommendation_candidates",
     } & supervisor_tools
     assert {
-        "search_food_nutrition",
-        "record_meal",
-        "update_nutrition_meal",
-        "delete_nutrition_meal",
-        "update_nutrition_food",
-        "delete_nutrition_food",
-        "get_daily_nutrition_summary",
+        "search_nutrition_food_candidates",
+        "create_nutrition_meal_record",
+        "update_nutrition_meal_record",
+        "delete_nutrition_meal_record",
+        "update_nutrition_food_record",
+        "delete_nutrition_food_record",
+        "get_nutrition_daily_summary",
     } <= specialist_tools
-    assert "recommend_diet" not in specialist_tools
+    assert "get_nutrition_recommendation_candidates" not in specialist_tools
 
 
 def test_agent_app_multiturn_delegated_nutrition_food_update_reaches_supervisor_final(monkeypatch):
@@ -1281,19 +1312,19 @@ def test_agent_app_multiturn_delegated_nutrition_food_update_reaches_supervisor_
     assert payload["structured_payload"]["tool_loop_mode"] == "langgraph_state_graph"
     assert payload["structured_payload"]["specialist_agent"] == "nutrition_management_agent"
     assert payload["structured_payload"]["final_answer_source"] == "model_output"
-    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "call_nutrition_management_agent"
+    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "delegate_to_nutrition_management_agent"
     assert [call["name"] for call in payload["structured_payload"]["specialist_tool_calls"]] == [
-        "list_meals",
-        "search_food_nutrition",
-        "update_nutrition_food",
+        "get_nutrition_meal_record_list",
+        "search_nutrition_food_candidates",
+        "update_nutrition_food_record",
     ]
     assert [call["name"] for call in tool_executor.calls] == [
-        "list_meals",
-        "search_food_nutrition",
-        "update_nutrition_food",
+        "get_nutrition_meal_record_list",
+        "search_nutrition_food_candidates",
+        "update_nutrition_food_record",
     ]
-    assert provider.bound_tool_history[0] and "call_nutrition_management_agent" in provider.bound_tool_history[0]
-    assert provider.bound_tool_history[1:] and all("update_nutrition_food" in names for names in provider.bound_tool_history[1:4])
+    assert provider.bound_tool_history[0] and "delegate_to_nutrition_management_agent" in provider.bound_tool_history[0]
+    assert provider.bound_tool_history[1:] and all("update_nutrition_food_record" in names for names in provider.bound_tool_history[1:4])
 
 
 def test_agent_app_multiturn_delegates_nutrition_recommendation_tools(monkeypatch):
@@ -1320,26 +1351,26 @@ def test_agent_app_multiturn_delegates_nutrition_recommendation_tools(monkeypatc
     assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
     assert payload["structured_payload"]["tool_loop_mode"] == "langgraph_state_graph"
     assert payload["structured_payload"]["specialist_agent"] == "nutrition_recommendation_agent"
-    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "call_nutrition_recommendation_agent"
-    assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "recommend_diet"
-    assert tool_executor.calls[0]["name"] == "recommend_diet"
+    assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "delegate_to_nutrition_recommendation_agent"
+    assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "get_nutrition_recommendation_candidates"
+    assert tool_executor.calls[0]["name"] == "get_nutrition_recommendation_candidates"
     assert not {
-        "search_food_nutrition",
-        "record_meal",
-        "update_nutrition_meal",
-        "delete_nutrition_meal",
-        "update_nutrition_food",
-        "delete_nutrition_food",
-        "recommend_diet",
+        "search_nutrition_food_candidates",
+        "create_nutrition_meal_record",
+        "update_nutrition_meal_record",
+        "delete_nutrition_meal_record",
+        "update_nutrition_food_record",
+        "delete_nutrition_food_record",
+        "get_nutrition_recommendation_candidates",
     } & supervisor_tools
-    assert {"search_food_nutrition", "list_meals", "get_daily_nutrition_summary", "get_nutrition_preferences", "recommend_diet"} <= specialist_tools
+    assert {"search_nutrition_food_candidates", "get_nutrition_meal_record_list", "get_nutrition_daily_summary", "get_nutrition_preference_summary", "get_nutrition_recommendation_candidates"} <= specialist_tools
     assert not {
-        "record_meal",
-        "update_nutrition_meal",
-        "delete_nutrition_meal",
-        "update_nutrition_food",
-        "delete_nutrition_food",
-        "record_nutrition_preference",
+        "create_nutrition_meal_record",
+        "update_nutrition_meal_record",
+        "delete_nutrition_meal_record",
+        "update_nutrition_food_record",
+        "delete_nutrition_food_record",
+        "upsert_nutrition_preference_fact",
     } & specialist_tools
 
 
@@ -1362,7 +1393,7 @@ def test_specialist_state_graph_stops_at_common_tool_loop_limit():
             prompt=nutrition_management_agent_prompt(),
             response_mode="nutrition_management_chat",
             decision_type="tool_call",
-            tool_names=("search_food_nutrition",),
+            tool_names=("search_nutrition_food_candidates",),
             source_event_type="multiturn_chat",
         )
     )
@@ -1372,7 +1403,7 @@ def test_specialist_state_graph_stops_at_common_tool_loop_limit():
     assert structured["tool_loop_mode"] == "langgraph_state_graph"
     assert len(structured["tool_calls"]) == SPECIALIST_TOOL_LOOP_LIMIT
     assert len(tool_executor.calls) == SPECIALIST_TOOL_LOOP_LIMIT
-    assert structured["pending_tool_calls"][0]["name"] == "search_food_nutrition"
+    assert structured["pending_tool_calls"][0]["name"] == "search_nutrition_food_candidates"
     assert "도구 실행 단계" in response.human_summary
 
 
@@ -1395,7 +1426,7 @@ def test_agent_app_multiturn_forces_ae_after_positive_side_effect_lookup(monkeyp
     payload = response.json()
     assert payload["decision_type"] == "async_continuation_requested"
     assert payload["structured_payload"]["async_continuation_type"] == "side_effect_assessment"
-    assert [call["name"] for call in payload["structured_payload"]["tool_calls"]] == ["lookup_side_effect_info"]
+    assert [call["name"] for call in payload["structured_payload"]["tool_calls"]] == ["get_medication_side_effect_assessment"]
     assert tool_executor.calls == []
 
     continuation = request.model_copy(deep=True)
@@ -1408,9 +1439,9 @@ def test_agent_app_multiturn_forces_ae_after_positive_side_effect_lookup(monkeyp
     assert continuation_response.status_code == 200
     continuation_payload = continuation_response.json()
     assert continuation_payload["decision_type"] == "side_effect_assessment"
-    assert [call["name"] for call in continuation_payload["structured_payload"]["tool_calls"]] == ["lookup_side_effect_info", "AE_pro_ctcae"]
-    assert [result["tool_name"] for result in continuation_payload["structured_payload"]["tool_results"]] == ["lookup_side_effect_info", "AE_pro_ctcae"]
-    assert [call["name"] for call in tool_executor.calls] == ["lookup_side_effect_info", "AE_pro_ctcae"]
+    assert [call["name"] for call in continuation_payload["structured_payload"]["tool_calls"]] == ["get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"]
+    assert [result["tool_name"] for result in continuation_payload["structured_payload"]["tool_results"]] == ["get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"]
+    assert [call["name"] for call in tool_executor.calls] == ["get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"]
     assert tool_executor.calls[1]["arguments"]["symptom_normalize"] == "메스꺼움"
     assert "항암제 주의사항" in continuation_payload["human_summary"]
     assert "메스꺼움 관련 가능성" in continuation_payload["human_summary"]
@@ -1468,7 +1499,7 @@ def test_rule_based_provider_is_test_only_for_runtime_selection(monkeypatch):
 
 def test_ae_tool_call_from_lookup_normalizes_generic_phr_effect_to_pro_ctcae_symptom():
     result = ToolCallResult(
-        tool_name="lookup_side_effect_info",
+        tool_name="get_medication_side_effect_assessment",
         status="success",
         response={
             "suspected": True,
@@ -1481,14 +1512,14 @@ def test_ae_tool_call_from_lookup_normalizes_generic_phr_effect_to_pro_ctcae_sym
     )
     tool_call = ae_tool_call_from_lookup(
         {
-            "name": "lookup_side_effect_info",
+            "name": "get_medication_side_effect_assessment",
             "arguments": {"symptom_text": "속이 메스꺼운데 약때문일까?"},
         },
         result,
         {"message": "속이 메스꺼운데 약때문일까?"},
     )
 
-    assert tool_call["name"] == "AE_pro_ctcae"
+    assert tool_call["name"] == "get_pro_ctcae_questionnaire"
     assert tool_call["arguments"]["symptom_normalize"] == "메스꺼움"
 
 
@@ -1513,7 +1544,7 @@ def test_rule_based_provider_requires_repeated_daily_pattern_before_policy_tool_
 
     assert daily_output["tool_calls"] == []
     assert daily_output["repeated_missed_slots"] == []
-    assert repeated_daily_output["tool_calls"][0]["name"] == "apply_notification_policy"
+    assert repeated_daily_output["tool_calls"][0]["name"] == "propose_notification_policy"
     assert repeated_daily_output["tool_calls"][0]["arguments"]["slot_label"] == "아침 08:00"
     assert "tool_call" not in chat_output
     assert "tool_calls" not in chat_output

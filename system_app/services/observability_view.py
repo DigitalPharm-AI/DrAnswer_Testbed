@@ -13,6 +13,23 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from agent_app.tool_catalog import ToolCatalog
+from agent_app.tool_names import (
+    CREATE_NUTRITION_MEAL_RECORD,
+    DELETE_NUTRITION_FOOD_RECORD,
+    DELETE_NUTRITION_MEAL_RECORD,
+    GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+    GET_NUTRITION_DAILY_SUMMARY,
+    GET_NUTRITION_MEAL_RECORD_LIST,
+    GET_NUTRITION_PREFERENCE_SUMMARY,
+    GET_PRO_CTCAE_QUESTIONNAIRE,
+    POLICY_TOOLS,
+    SEARCH_NUTRITION_FOOD_CANDIDATES,
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+    UPDATE_NUTRITION_FOOD_RECORD,
+    UPDATE_NUTRITION_MEAL_RECORD,
+    UPSERT_NUTRITION_PREFERENCE_FACT,
+    canonical_tool_name,
+)
 from agent_app.tool_permissions import requires_human_handoff
 from shared.json_utils import parse_json_object
 from shared.eval_cases import (
@@ -1303,24 +1320,25 @@ def _short_id(value: str) -> str:
 
 
 def _tool_domain(name: str) -> str:
-    if name in {
-        "search_food_nutrition",
-        "record_meal",
-        "update_nutrition_meal",
-        "delete_nutrition_meal",
-        "update_nutrition_food",
-        "delete_nutrition_food",
-        "list_meals",
-        "get_daily_nutrition_summary",
-        "record_nutrition_preference",
-        "get_nutrition_preferences",
+    tool_name = canonical_tool_name(name)
+    if tool_name in {
+        SEARCH_NUTRITION_FOOD_CANDIDATES,
+        CREATE_NUTRITION_MEAL_RECORD,
+        UPDATE_NUTRITION_MEAL_RECORD,
+        DELETE_NUTRITION_MEAL_RECORD,
+        UPDATE_NUTRITION_FOOD_RECORD,
+        DELETE_NUTRITION_FOOD_RECORD,
+        GET_NUTRITION_MEAL_RECORD_LIST,
+        GET_NUTRITION_DAILY_SUMMARY,
+        UPSERT_NUTRITION_PREFERENCE_FACT,
+        GET_NUTRITION_PREFERENCE_SUMMARY,
     }:
         return "nutrition"
-    if name in {"apply_notification_policy", "apply_system_policy"}:
+    if tool_name in POLICY_TOOLS:
         return "policy"
-    if name in {"AE_pro_ctcae", "lookup_side_effect_info"}:
+    if tool_name in {GET_PRO_CTCAE_QUESTIONNAIRE, GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}:
         return "safety"
-    if name == "mark_dose_taken":
+    if tool_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
         return "medication"
     return "shared"
 
@@ -1335,27 +1353,29 @@ def _tool_owner(domain: str) -> str:
 
 
 def _tool_side_effect(name: str) -> str:
-    if name in {
-        "record_meal",
-        "update_nutrition_meal",
-        "delete_nutrition_meal",
-        "update_nutrition_food",
-        "delete_nutrition_food",
-        "record_nutrition_preference",
+    tool_name = canonical_tool_name(name)
+    if tool_name in {
+        CREATE_NUTRITION_MEAL_RECORD,
+        UPDATE_NUTRITION_MEAL_RECORD,
+        DELETE_NUTRITION_MEAL_RECORD,
+        UPDATE_NUTRITION_FOOD_RECORD,
+        DELETE_NUTRITION_FOOD_RECORD,
+        UPSERT_NUTRITION_PREFERENCE_FACT,
     }:
         return "record_write"
-    if name in {"mark_dose_taken"}:
+    if tool_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
         return "state_write"
-    if name in {"apply_notification_policy", "apply_system_policy"}:
+    if tool_name in POLICY_TOOLS:
         return "candidate_write"
     return "read_only"
 
 
 def _tool_risk(name: str, side_effect: str) -> str:
-    if name in {"apply_notification_policy", "apply_system_policy"}:
+    tool_name = canonical_tool_name(name)
+    if tool_name in POLICY_TOOLS:
         return "high"
     if side_effect in {"record_write", "state_write", "candidate_write"}:
         return "medium"
-    if name in {"AE_pro_ctcae", "lookup_side_effect_info"}:
+    if tool_name in {GET_PRO_CTCAE_QUESTIONNAIRE, GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}:
         return "medium"
     return "low"

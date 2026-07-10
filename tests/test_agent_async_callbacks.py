@@ -374,7 +374,7 @@ def test_multiturn_side_effect_request_returns_async_continuation_ack():
     assert response.human_summary == "증상 내용을 확인해서 문항을 준비할게요."
     assert response.structured_payload["async_continuation_required"] is True
     assert response.structured_payload["async_continuation_type"] == "side_effect_assessment"
-    assert response.structured_payload["tool_calls"][0]["name"] == "lookup_side_effect_info"
+    assert response.structured_payload["tool_calls"][0]["name"] == "get_medication_side_effect_assessment"
 
 
 def test_multiturn_policy_request_returns_async_continuation_ack():
@@ -394,7 +394,7 @@ def test_multiturn_policy_request_returns_async_continuation_ack():
     assert response.human_summary == "알림 정책 변경 후보를 만들고 있어요. 준비되면 확인할 수 있게 보여드릴게요."
     assert response.structured_payload["async_continuation_type"] == "policy_change_request"
     assert response.structured_payload["policy_confirmation_required"] is True
-    assert response.structured_payload["tool_calls"][0]["name"] == "apply_notification_policy"
+    assert response.structured_payload["tool_calls"][0]["name"] == "propose_notification_policy"
 
 
 def test_async_missed_dose_job_result_persists_once_by_idempotency_key():
@@ -582,8 +582,8 @@ def test_async_chat_result_skips_food_selection_after_nutrition_write():
                 ],
                 "nutrition_food_update_result": {"success": True, "food": {"food_name": "영양돌솥밥"}},
                 "tool_results": [
-                    {"tool_name": "search_food_nutrition", "status": "success", "response": {"success": True}},
-                    {"tool_name": "update_nutrition_food", "status": "success", "response": {"success": True}},
+                    {"tool_name": "search_nutrition_food_candidates", "status": "success", "response": {"success": True}},
+                    {"tool_name": "update_nutrition_food_record", "status": "success", "response": {"success": True}},
                 ],
                 "tools_executed": True,
             },
@@ -673,7 +673,7 @@ def test_async_chat_worker_executes_required_continuation_before_callback(monkey
                     prompt_version_id="v1",
                     decision_type="async_continuation_requested",
                     structured_payload={
-                        "tool_calls": [{"name": "lookup_side_effect_info", "arguments": {"symptom_text": "메스꺼움"}}],
+                        "tool_calls": [{"name": "get_medication_side_effect_assessment", "arguments": {"symptom_text": "메스꺼움"}}],
                         "tool_results": [],
                         "async_continuation_required": True,
                         "async_continuation_type": "side_effect_lookup",
@@ -685,7 +685,7 @@ def test_async_chat_worker_executes_required_continuation_before_callback(monkey
                 agent_name="side_effect_triage_agent",
                 prompt_version_id="v1",
                 decision_type="side_effect_assessment",
-                structured_payload={"tool_results": [{"tool_name": "AE_pro_ctcae", "status": "success"}]},
+                structured_payload={"tool_results": [{"tool_name": "get_pro_ctcae_questionnaire", "status": "success"}]},
                 human_summary="의료진에게 알려야 할 증상인지 확인하기 위해 식사와 수분 상태를 같이 확인해 주세요.",
             )
 
@@ -719,7 +719,7 @@ def test_async_chat_worker_executes_required_continuation_before_callback(monkey
 
     assert len(orchestrator.payloads) == 2
     assert orchestrator.payloads[1]["context"]["execute_async_continuation"] is True
-    assert orchestrator.payloads[1]["context"]["async_tool_calls"][0]["name"] == "lookup_side_effect_info"
+    assert orchestrator.payloads[1]["context"]["async_tool_calls"][0]["name"] == "get_medication_side_effect_assessment"
     assert captured["response"].decision_type == "side_effect_assessment"
     assert "의료진" in captured["response"].human_summary
 

@@ -2,51 +2,39 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_app.tool_names import (
+    CREATE_NUTRITION_MEAL_RECORD,
+    DELETE_NUTRITION_FOOD_RECORD,
+    DELETE_NUTRITION_MEAL_RECORD,
+    GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+    GET_NUTRITION_DAILY_SUMMARY,
+    GET_NUTRITION_MEAL_RECORD_LIST,
+    GET_NUTRITION_PREFERENCE_SUMMARY,
+    GET_NUTRITION_RECOMMENDATION_CANDIDATES,
+    GET_PRO_CTCAE_QUESTIONNAIRE,
+    MEDICATION_CHAT_TOOLS,
+    NUTRITION_MANAGEMENT_TOOLS,
+    NUTRITION_RECOMMENDATION_TOOLS,
+    NUTRITION_TOOLS,
+    POLICY_TOOLS,
+    PROPOSE_NOTIFICATION_POLICY,
+    SEARCH_NUTRITION_FOOD_CANDIDATES,
+    SIDE_EFFECT_TOOLS,
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+    UPDATE_NUTRITION_FOOD_RECORD,
+    UPDATE_NUTRITION_MEAL_RECORD,
+    UPSERT_NUTRITION_PREFERENCE_FACT,
+)
 from shared.schemas import ToolCallResult
 
-SIDE_EFFECT_TOOLS = {"lookup_side_effect_info", "AE_pro_ctcae"}
-POLICY_TOOLS = {"apply_notification_policy", "apply_system_policy"}
-NUTRITION_TOOLS = {
-    "search_food_nutrition",
-    "record_meal",
-    "update_nutrition_meal",
-    "delete_nutrition_meal",
-    "update_nutrition_food",
-    "delete_nutrition_food",
-    "list_meals",
-    "get_daily_nutrition_summary",
-    "record_nutrition_preference",
-    "get_nutrition_preferences",
-    "recommend_diet",
-}
-MEDICATION_CHAT_TOOLS = {"mark_dose_taken", *SIDE_EFFECT_TOOLS}
-NUTRITION_MANAGEMENT_TOOLS = {
-    "search_food_nutrition",
-    "record_meal",
-    "update_nutrition_meal",
-    "delete_nutrition_meal",
-    "update_nutrition_food",
-    "delete_nutrition_food",
-    "list_meals",
-    "get_daily_nutrition_summary",
-    "record_nutrition_preference",
-    "get_nutrition_preferences",
-}
-NUTRITION_RECOMMENDATION_TOOLS = {
-    "search_food_nutrition",
-    "list_meals",
-    "get_daily_nutrition_summary",
-    "get_nutrition_preferences",
-    "recommend_diet",
-}
 HIGH_RISK_HUMAN_HANDOFF_TOOLS = POLICY_TOOLS
 
 TOOL_ALLOWLIST: dict[str, set[str]] = {
-    "daily_pattern": {"apply_notification_policy"},
-    "manual_daily_pattern": {"apply_notification_policy"},
+    "daily_pattern": {PROPOSE_NOTIFICATION_POLICY},
+    "manual_daily_pattern": {PROPOSE_NOTIFICATION_POLICY},
     "missed_dose": SIDE_EFFECT_TOOLS,
-    "multiturn_chat": {"mark_dose_taken", *SIDE_EFFECT_TOOLS, *POLICY_TOOLS, *NUTRITION_TOOLS},
-    "mcp": {"AE_pro_ctcae", *NUTRITION_TOOLS},
+    "multiturn_chat": {UPDATE_MEDICATION_DOSE_EVENT_STATUS, *SIDE_EFFECT_TOOLS, *POLICY_TOOLS, *NUTRITION_TOOLS},
+    "mcp": {GET_PRO_CTCAE_QUESTIONNAIRE, *NUTRITION_TOOLS},
 }
 
 
@@ -80,57 +68,57 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
     if tool_name not in allowed_tools:
         return f"{tool_name or 'unknown'} is not allowed for {source_event_type}"
     arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
-    if tool_name == "mark_dose_taken":
+    if tool_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
         return _validate_mark_dose_taken(arguments, source_event_type=source_event_type, payload=payload)
     if tool_name in POLICY_TOOLS and source_event_type not in {"daily_pattern", "manual_daily_pattern", "multiturn_chat"}:
         return f"{tool_name} is only allowed as a deferred confirmation candidate"
-    if tool_name == "lookup_side_effect_info" and not str(arguments.get("symptom_text") or "").strip():
-        return "lookup_side_effect_info requires symptom_text"
-    if tool_name == "AE_pro_ctcae" and not (
+    if tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT and not str(arguments.get("symptom_text") or "").strip():
+        return f"{GET_MEDICATION_SIDE_EFFECT_ASSESSMENT} requires symptom_text"
+    if tool_name == GET_PRO_CTCAE_QUESTIONNAIRE and not (
         str(arguments.get("symptom_text") or "").strip() or str(arguments.get("symptom_normalize") or "").strip()
     ):
-        return "AE_pro_ctcae requires symptom_text or symptom_normalize"
-    if tool_name == "search_food_nutrition" and not str(arguments.get("query") or "").strip():
-        return "search_food_nutrition requires query"
-    if tool_name == "search_food_nutrition" and arguments.get("meal_type") not in {None, "", "breakfast", "lunch", "dinner", "snack"}:
-        return "search_food_nutrition requires supported meal_type"
-    if tool_name == "record_meal":
+        return f"{GET_PRO_CTCAE_QUESTIONNAIRE} requires symptom_text or symptom_normalize"
+    if tool_name == SEARCH_NUTRITION_FOOD_CANDIDATES and not str(arguments.get("query") or "").strip():
+        return f"{SEARCH_NUTRITION_FOOD_CANDIDATES} requires query"
+    if tool_name == SEARCH_NUTRITION_FOOD_CANDIDATES and arguments.get("meal_type") not in {None, "", "breakfast", "lunch", "dinner", "snack"}:
+        return f"{SEARCH_NUTRITION_FOOD_CANDIDATES} requires supported meal_type"
+    if tool_name == CREATE_NUTRITION_MEAL_RECORD:
         if arguments.get("meal_type") not in {"breakfast", "lunch", "dinner", "snack"}:
-            return "record_meal requires meal_type"
+            return f"{CREATE_NUTRITION_MEAL_RECORD} requires meal_type"
         if not isinstance(arguments.get("foods"), list) or not arguments.get("foods"):
-            return "record_meal requires foods"
-    if tool_name == "update_nutrition_meal":
+            return f"{CREATE_NUTRITION_MEAL_RECORD} requires foods"
+    if tool_name == UPDATE_NUTRITION_MEAL_RECORD:
         if not isinstance(arguments.get("meal_id"), int):
-            return "update_nutrition_meal requires integer meal_id"
+            return f"{UPDATE_NUTRITION_MEAL_RECORD} requires integer meal_id"
         if "meal_type" in arguments and arguments.get("meal_type") not in {None, "breakfast", "lunch", "dinner", "snack"}:
-            return "update_nutrition_meal requires supported meal_type"
+            return f"{UPDATE_NUTRITION_MEAL_RECORD} requires supported meal_type"
         if "foods" in arguments and (not isinstance(arguments.get("foods"), list) or not arguments.get("foods")):
-            return "update_nutrition_meal requires non-empty foods when foods is provided"
+            return f"{UPDATE_NUTRITION_MEAL_RECORD} requires non-empty foods when foods is provided"
         if not any(key in arguments for key in ("meal_type", "meal_date", "meal_time", "scenario_key", "description", "foods")):
-            return "update_nutrition_meal requires at least one update field"
-    if tool_name == "delete_nutrition_meal":
+            return f"{UPDATE_NUTRITION_MEAL_RECORD} requires at least one update field"
+    if tool_name == DELETE_NUTRITION_MEAL_RECORD:
         if not isinstance(arguments.get("meal_id"), int):
-            return "delete_nutrition_meal requires integer meal_id"
-    if tool_name == "update_nutrition_food":
+            return f"{DELETE_NUTRITION_MEAL_RECORD} requires integer meal_id"
+    if tool_name == UPDATE_NUTRITION_FOOD_RECORD:
         if not isinstance(arguments.get("meal_id"), int):
-            return "update_nutrition_food requires integer meal_id"
+            return f"{UPDATE_NUTRITION_FOOD_RECORD} requires integer meal_id"
         if not isinstance(arguments.get("food_id"), int):
-            return "update_nutrition_food requires integer food_id"
+            return f"{UPDATE_NUTRITION_FOOD_RECORD} requires integer food_id"
         if not any(key in arguments for key in ("food_ref_id", "food_name", "portion", "nutrients")):
-            return "update_nutrition_food requires at least one update field"
+            return f"{UPDATE_NUTRITION_FOOD_RECORD} requires at least one update field"
         if "food_name" in arguments and not str(arguments.get("food_name") or "").strip():
-            return "update_nutrition_food requires non-empty food_name when food_name is provided"
+            return f"{UPDATE_NUTRITION_FOOD_RECORD} requires non-empty food_name when food_name is provided"
         if "nutrients" in arguments and not isinstance(arguments.get("nutrients"), dict):
-            return "update_nutrition_food requires nutrients object when nutrients is provided"
-    if tool_name == "delete_nutrition_food":
+            return f"{UPDATE_NUTRITION_FOOD_RECORD} requires nutrients object when nutrients is provided"
+    if tool_name == DELETE_NUTRITION_FOOD_RECORD:
         if not isinstance(arguments.get("meal_id"), int):
-            return "delete_nutrition_food requires integer meal_id"
+            return f"{DELETE_NUTRITION_FOOD_RECORD} requires integer meal_id"
         if not isinstance(arguments.get("food_id"), int):
-            return "delete_nutrition_food requires integer food_id"
-    if tool_name == "recommend_diet":
+            return f"{DELETE_NUTRITION_FOOD_RECORD} requires integer food_id"
+    if tool_name == GET_NUTRITION_RECOMMENDATION_CANDIDATES:
         if not isinstance(arguments.get("constraints"), dict) or not arguments.get("constraints"):
-            return "recommend_diet requires constraints"
-    if tool_name == "record_nutrition_preference":
+            return f"{GET_NUTRITION_RECOMMENDATION_CANDIDATES} requires constraints"
+    if tool_name == UPSERT_NUTRITION_PREFERENCE_FACT:
         if arguments.get("predicate") not in {
             "likes",
             "dislikes",
@@ -140,9 +128,9 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
             "medically_avoids",
             "religious_avoids",
         }:
-            return "record_nutrition_preference requires supported predicate"
+            return f"{UPSERT_NUTRITION_PREFERENCE_FACT} requires supported predicate"
         if not str(arguments.get("object_label") or "").strip():
-            return "record_nutrition_preference requires object_label"
+            return f"{UPSERT_NUTRITION_PREFERENCE_FACT} requires object_label"
     return None
 
 
@@ -152,13 +140,13 @@ def requires_human_handoff(tool_name: str) -> bool:
 
 def _validate_mark_dose_taken(arguments: dict[str, Any], *, source_event_type: str, payload: dict[str, Any]) -> str | None:
     if source_event_type != "multiturn_chat":
-        return "mark_dose_taken is only allowed in multiturn_chat"
+        return f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} is only allowed in multiturn_chat"
     dose_event_id = arguments.get("dose_event_id")
     if not isinstance(dose_event_id, int):
-        return "mark_dose_taken requires integer dose_event_id"
+        return f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} requires integer dose_event_id"
     allowed_ids = _context_dose_event_ids(payload)
     if allowed_ids and dose_event_id not in allowed_ids:
-        return "mark_dose_taken dose_event_id must match current chat context"
+        return f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} dose_event_id must match current chat context"
     return None
 
 

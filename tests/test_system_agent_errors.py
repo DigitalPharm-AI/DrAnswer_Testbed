@@ -58,7 +58,7 @@ class LockCheckingSystemEventAgentClient:
             decision_type="side_effect_assessment",
             structured_payload={
                 "tool_call": {
-                    "name": "lookup_side_effect_info",
+                    "name": "get_medication_side_effect_assessment",
                     "arguments": {"symptom_text": payload.message},
                 },
                 "tools_executed": True,

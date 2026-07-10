@@ -11,6 +11,22 @@ from agent_app.payload_context import context_value
 from agent_app.tool_catalog import ToolCatalog
 from agent_app.tool_permissions import allowed_tool_names_for_source, permission_denied_result, validate_tool_permission
 from agent_app.tool_policy import DEFERRED_POLICY_TOOL_NAMES, deferred_policy_tool_result
+from agent_app.tool_names import (
+    CREATE_NUTRITION_MEAL_RECORD,
+    DELETE_NUTRITION_FOOD_RECORD,
+    DELETE_NUTRITION_MEAL_RECORD,
+    GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+    GET_NUTRITION_DAILY_SUMMARY,
+    GET_NUTRITION_MEAL_RECORD_LIST,
+    GET_NUTRITION_PREFERENCE_SUMMARY,
+    GET_NUTRITION_RECOMMENDATION_CANDIDATES,
+    GET_PRO_CTCAE_QUESTIONNAIRE,
+    SEARCH_NUTRITION_FOOD_CANDIDATES,
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+    UPDATE_NUTRITION_FOOD_RECORD,
+    UPDATE_NUTRITION_MEAL_RECORD,
+    UPSERT_NUTRITION_PREFERENCE_FACT,
+)
 from agent_app.tool_protocol import (
     ALLOWED_TOOL_NAMES,
     MCP_METHOD_TOOLS_CALL,
@@ -133,33 +149,33 @@ class AgentMcpToolServer:
             )
         if tool_name in DEFERRED_POLICY_TOOL_NAMES:
             return deferred_policy_tool_result({"name": tool_name, "arguments": arguments}, trace_id=trace_id, source_event_type=source_event_type)
-        if tool_name == "mark_dose_taken":
+        if tool_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
             return await self._mark_dose_taken(arguments, trace_id=trace_id, source_event_type=source_event_type)
-        if tool_name == "search_food_nutrition":
+        if tool_name == SEARCH_NUTRITION_FOOD_CANDIDATES:
             return await self._search_food_nutrition(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == "record_meal":
+        if tool_name == CREATE_NUTRITION_MEAL_RECORD:
             return await self._record_meal(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == "update_nutrition_meal":
+        if tool_name == UPDATE_NUTRITION_MEAL_RECORD:
             return await self._update_nutrition_meal(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == "delete_nutrition_meal":
+        if tool_name == DELETE_NUTRITION_MEAL_RECORD:
             return await self._delete_nutrition_meal(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == "update_nutrition_food":
+        if tool_name == UPDATE_NUTRITION_FOOD_RECORD:
             return await self._update_nutrition_food(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == "delete_nutrition_food":
+        if tool_name == DELETE_NUTRITION_FOOD_RECORD:
             return await self._delete_nutrition_food(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == "list_meals":
+        if tool_name == GET_NUTRITION_MEAL_RECORD_LIST:
             return await self._list_meals(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == "get_daily_nutrition_summary":
+        if tool_name == GET_NUTRITION_DAILY_SUMMARY:
             return await self._get_daily_nutrition_summary(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == "record_nutrition_preference":
+        if tool_name == UPSERT_NUTRITION_PREFERENCE_FACT:
             return await self._record_nutrition_preference(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == "get_nutrition_preferences":
+        if tool_name == GET_NUTRITION_PREFERENCE_SUMMARY:
             return await self._get_nutrition_preferences(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == "recommend_diet":
+        if tool_name == GET_NUTRITION_RECOMMENDATION_CANDIDATES:
             return await self._recommend_diet(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == "lookup_side_effect_info":
+        if tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT:
             return await self._lookup_side_effect_info(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == "AE_pro_ctcae":
+        if tool_name == GET_PRO_CTCAE_QUESTIONNAIRE:
             return self._ae_pro_ctcae(arguments, trace_id=trace_id)
         return ToolCallResult(tool_name=tool_name or "unknown", status="error", error=f"unsupported_tool:{tool_name}")
 
@@ -182,10 +198,10 @@ class AgentMcpToolServer:
             response.raise_for_status()
         result = DoseTakenToolResult.model_validate(response.json())
         return ToolCallResult(
-            tool_name="mark_dose_taken",
+            tool_name=UPDATE_MEDICATION_DOSE_EVENT_STATUS,
             status="success" if result.status == "taken" else "error",
             response=result.model_dump(mode="json"),
-            idempotency_key=f"{trace_id}:mark_dose_taken:{source_event_type}:{request.dose_event_id}",
+            idempotency_key=f"{trace_id}:{UPDATE_MEDICATION_DOSE_EVENT_STATUS}:{source_event_type}:{request.dose_event_id}",
         )
 
     async def _search_food_nutrition(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
@@ -204,11 +220,11 @@ class AgentMcpToolServer:
             response.raise_for_status()
         payload = response.json()
         return ToolCallResult(
-            tool_name="search_food_nutrition",
+            tool_name=SEARCH_NUTRITION_FOOD_CANDIDATES,
             status="success" if payload.get("success") else "error",
             response=payload,
             error=safe_tool_error(payload.get("error")),
-            idempotency_key=f"{trace_id}:search_food_nutrition",
+            idempotency_key=f"{trace_id}:{SEARCH_NUTRITION_FOOD_CANDIDATES}",
         )
 
     async def _record_meal(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
@@ -225,11 +241,11 @@ class AgentMcpToolServer:
             response.raise_for_status()
         result = response.json()
         return ToolCallResult(
-            tool_name="record_meal",
+            tool_name=CREATE_NUTRITION_MEAL_RECORD,
             status="success" if result.get("success") else "error",
             response=result,
             error=safe_tool_error(result.get("error")),
-            idempotency_key=f"{trace_id}:record_meal:{result.get('meal', {}).get('id', 'unknown')}",
+            idempotency_key=f"{trace_id}:{CREATE_NUTRITION_MEAL_RECORD}:{result.get('meal', {}).get('id', 'unknown')}",
         )
 
     async def _update_nutrition_meal(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
@@ -249,11 +265,11 @@ class AgentMcpToolServer:
             response.raise_for_status()
         result = response.json()
         return ToolCallResult(
-            tool_name="update_nutrition_meal",
+            tool_name=UPDATE_NUTRITION_MEAL_RECORD,
             status="success" if result.get("success") else "error",
             response=result,
             error=safe_tool_error(result.get("error")),
-            idempotency_key=f"{trace_id}:update_nutrition_meal:{meal_id}",
+            idempotency_key=f"{trace_id}:{UPDATE_NUTRITION_MEAL_RECORD}:{meal_id}",
         )
 
     async def _delete_nutrition_meal(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
@@ -271,11 +287,11 @@ class AgentMcpToolServer:
             response.raise_for_status()
         result = response.json()
         return ToolCallResult(
-            tool_name="delete_nutrition_meal",
+            tool_name=DELETE_NUTRITION_MEAL_RECORD,
             status="success" if result.get("success") else "error",
             response=result,
             error=safe_tool_error(result.get("error")),
-            idempotency_key=f"{trace_id}:delete_nutrition_meal:{meal_id}",
+            idempotency_key=f"{trace_id}:{DELETE_NUTRITION_MEAL_RECORD}:{meal_id}",
         )
 
     async def _update_nutrition_food(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
@@ -296,11 +312,11 @@ class AgentMcpToolServer:
             response.raise_for_status()
         result = response.json()
         return ToolCallResult(
-            tool_name="update_nutrition_food",
+            tool_name=UPDATE_NUTRITION_FOOD_RECORD,
             status="success" if result.get("success") else "error",
             response=result,
             error=safe_tool_error(result.get("error")),
-            idempotency_key=f"{trace_id}:update_nutrition_food:{meal_id}:{food_id}",
+            idempotency_key=f"{trace_id}:{UPDATE_NUTRITION_FOOD_RECORD}:{meal_id}:{food_id}",
         )
 
     async def _delete_nutrition_food(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
@@ -320,11 +336,11 @@ class AgentMcpToolServer:
             response.raise_for_status()
         result = response.json()
         return ToolCallResult(
-            tool_name="delete_nutrition_food",
+            tool_name=DELETE_NUTRITION_FOOD_RECORD,
             status="success" if result.get("success") else "error",
             response=result,
             error=safe_tool_error(result.get("error")),
-            idempotency_key=f"{trace_id}:delete_nutrition_food:{meal_id}:{food_id}",
+            idempotency_key=f"{trace_id}:{DELETE_NUTRITION_FOOD_RECORD}:{meal_id}:{food_id}",
         )
 
     async def _list_meals(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
@@ -343,11 +359,11 @@ class AgentMcpToolServer:
             response.raise_for_status()
         result = response.json()
         return ToolCallResult(
-            tool_name="list_meals",
+            tool_name=GET_NUTRITION_MEAL_RECORD_LIST,
             status="success" if result.get("success") else "error",
             response=result,
             error=safe_tool_error(result.get("error")),
-            idempotency_key=f"{trace_id}:list_meals",
+            idempotency_key=f"{trace_id}:{GET_NUTRITION_MEAL_RECORD_LIST}",
         )
 
     async def _get_daily_nutrition_summary(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
@@ -366,11 +382,11 @@ class AgentMcpToolServer:
             response.raise_for_status()
         result = response.json()
         return ToolCallResult(
-            tool_name="get_daily_nutrition_summary",
+            tool_name=GET_NUTRITION_DAILY_SUMMARY,
             status="success" if result.get("success") else "error",
             response=result,
             error=safe_tool_error(result.get("error")),
-            idempotency_key=f"{trace_id}:get_daily_nutrition_summary",
+            idempotency_key=f"{trace_id}:{GET_NUTRITION_DAILY_SUMMARY}",
         )
 
     async def _record_nutrition_preference(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
@@ -390,11 +406,11 @@ class AgentMcpToolServer:
         result = response.json()
         fact = result.get("fact") if isinstance(result.get("fact"), dict) else {}
         return ToolCallResult(
-            tool_name="record_nutrition_preference",
+            tool_name=UPSERT_NUTRITION_PREFERENCE_FACT,
             status="success" if result.get("success") else "error",
             response=result,
             error=safe_tool_error(result.get("error")),
-            idempotency_key=f"{trace_id}:record_nutrition_preference:{fact.get('predicate', 'unknown')}:{fact.get('object_key', 'unknown')}",
+            idempotency_key=f"{trace_id}:{UPSERT_NUTRITION_PREFERENCE_FACT}:{fact.get('predicate', 'unknown')}:{fact.get('object_key', 'unknown')}",
         )
 
     async def _get_nutrition_preferences(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
@@ -411,11 +427,11 @@ class AgentMcpToolServer:
             response.raise_for_status()
         result = response.json()
         return ToolCallResult(
-            tool_name="get_nutrition_preferences",
+            tool_name=GET_NUTRITION_PREFERENCE_SUMMARY,
             status="success" if result.get("success") else "error",
             response=result,
             error=safe_tool_error(result.get("error")),
-            idempotency_key=f"{trace_id}:get_nutrition_preferences",
+            idempotency_key=f"{trace_id}:{GET_NUTRITION_PREFERENCE_SUMMARY}",
         )
 
     async def _recommend_diet(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
@@ -435,11 +451,11 @@ class AgentMcpToolServer:
             response.raise_for_status()
         result = response.json()
         return ToolCallResult(
-            tool_name="recommend_diet",
+            tool_name=GET_NUTRITION_RECOMMENDATION_CANDIDATES,
             status="success" if result.get("success") else "error",
             response=result,
             error=safe_tool_error(result.get("error")),
-            idempotency_key=f"{trace_id}:recommend_diet",
+            idempotency_key=f"{trace_id}:{GET_NUTRITION_RECOMMENDATION_CANDIDATES}",
         )
 
     async def _lookup_side_effect_info(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
@@ -452,10 +468,10 @@ class AgentMcpToolServer:
         }
         if not request_payload.get("phr_patient_key"):
             return ToolCallResult(
-                tool_name="lookup_side_effect_info",
+                tool_name=GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
                 status="skipped",
                 error="phr_registration_required",
-                idempotency_key=f"{trace_id}:lookup_side_effect_info",
+                idempotency_key=f"{trace_id}:{GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}",
             )
         request = SideEffectAssessmentRequest.model_validate(request_payload)
         async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
@@ -463,10 +479,10 @@ class AgentMcpToolServer:
             response.raise_for_status()
         result = SideEffectAssessmentResult.model_validate(response.json())
         return ToolCallResult(
-            tool_name="lookup_side_effect_info",
+            tool_name=GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
             status="success",
             response=result.model_dump(mode="json"),
-            idempotency_key=f"{trace_id}:lookup_side_effect_info",
+            idempotency_key=f"{trace_id}:{GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}",
         )
 
     @staticmethod
@@ -474,10 +490,10 @@ class AgentMcpToolServer:
         request = AEProCtcaeAssessmentRequest.model_validate(arguments)
         result = match_pro_ctcae_symptom(request.symptom_normalize or request.symptom_text, threshold=request.threshold)
         return ToolCallResult(
-            tool_name="AE_pro_ctcae",
+            tool_name=GET_PRO_CTCAE_QUESTIONNAIRE,
             status="success",
             response=result.model_dump(mode="json"),
-            idempotency_key=f"{trace_id}:AE_pro_ctcae",
+            idempotency_key=f"{trace_id}:{GET_PRO_CTCAE_QUESTIONNAIRE}",
         )
 
 

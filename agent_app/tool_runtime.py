@@ -5,6 +5,11 @@ from typing import Any
 from agent_app import trace_logging
 from agent_app.tool_protocol import AgentToolExecutorProtocol
 from agent_app.tool_side_effects import ae_tool_call_from_lookup, positive_side_effect_lookup
+from agent_app.tool_names import (
+    GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+    GET_PRO_CTCAE_QUESTIONNAIRE,
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+)
 from shared.redaction import safe_log_arguments
 
 
@@ -24,7 +29,7 @@ def _tool_result_log_payload(result: Any) -> dict[str, Any]:
         "error": trace_logging.snippet(getattr(result, "error", "")),
         "idempotency_key_present": bool(getattr(result, "idempotency_key", None)),
     }
-    if result.tool_name == "lookup_side_effect_info":
+    if result.tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT:
         payload["response"] = {
             "suspected": response.get("suspected"),
             "matched_effects": response.get("matched_effects", []),
@@ -32,7 +37,7 @@ def _tool_result_log_payload(result: Any) -> dict[str, Any]:
             "severity": response.get("severity"),
             "evidence": trace_logging.snippet(response.get("evidence")),
         }
-    elif result.tool_name == "AE_pro_ctcae":
+    elif result.tool_name == GET_PRO_CTCAE_QUESTIONNAIRE:
         payload["response"] = {
             "input_symptom": trace_logging.snippet(response.get("input_symptom")),
             "matched": response.get("matched"),
@@ -42,7 +47,7 @@ def _tool_result_log_payload(result: Any) -> dict[str, Any]:
             "similarity": response.get("similarity"),
             "question_count": len(response.get("questions", [])) if isinstance(response.get("questions"), list) else 0,
         }
-    elif result.tool_name == "mark_dose_taken":
+    elif result.tool_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
         payload["response"] = {
             "dose_event_id": response.get("dose_event_id"),
             "status": response.get("status"),
@@ -95,7 +100,7 @@ class ToolRuntime:
             return tool_calls, []
         executed_calls = list(tool_calls)
         results = []
-        ae_already_requested = any(call.get("name") == "AE_pro_ctcae" for call in executed_calls)
+        ae_already_requested = any(call.get("name") == GET_PRO_CTCAE_QUESTIONNAIRE for call in executed_calls)
         routing = _routing_log_payload(routing_context)
         trace_logging.log_info(
             "agent_tool_plan_created",
@@ -136,7 +141,7 @@ class ToolRuntime:
                     routing=routing,
                     reason="positive_side_effect_lookup",
                     source_tool=str(tool_call.get("name") or ""),
-                    forced_tool="AE_pro_ctcae",
+                    forced_tool=GET_PRO_CTCAE_QUESTIONNAIRE,
                     arguments=_tool_call_log_payload(ae_call).get("arguments", {}),
                 )
                 executed_calls.append(ae_call)

@@ -1405,7 +1405,7 @@ def test_policy_confirmation_reply_keeps_success_result_until_confirmed():
             decision_type="tool_call",
             structured_payload={
                 "tool_call": {
-                    "name": "apply_notification_policy",
+                    "name": "propose_notification_policy",
                     "arguments": {
                         "slot_label": "아침 08:00",
                         "extra_reminders": 2,
@@ -1502,7 +1502,7 @@ def test_policy_confirmation_prompt_appears_in_chat_from_notification_metadata()
             decision_type="tool_call",
             structured_payload={
                 "tool_call": {
-                    "name": "apply_notification_policy",
+                    "name": "propose_notification_policy",
                     "arguments": {
                         "slot_label": "아침 08:00",
                         "extra_reminders": 2,
@@ -1570,7 +1570,7 @@ def test_policy_confirmation_decrease_prompt_shows_decrease_choice_in_chat():
             decision_type="tool_call",
             structured_payload={
                 "tool_call": {
-                    "name": "apply_notification_policy",
+                    "name": "propose_notification_policy",
                     "arguments": {
                         "slot_label": "아침 08:00",
                         "extra_reminders": 1,

@@ -19,6 +19,7 @@ from agent_app.generation import PROMPT_VERSION_ID
 from agent_app.providers import BaseLLMProvider
 from agent_app.response_builders import natural_chat_summary, string_list
 from agent_app.tool_catalog import ToolCatalog
+from agent_app.tool_names import UPDATE_MEDICATION_DOSE_EVENT_STATUS
 from agent_app.tool_policy import has_deferred_policy_tool_call, normalize_policy_tool_calls
 from agent_app.tool_results import tool_calls_payload, tool_result_summary
 from agent_app.tool_runtime import ToolRuntime
@@ -107,7 +108,9 @@ async def run_tool_chat_agent(
     def route_after_llm(state: ToolChatGraphState) -> str:
         tool_calls = state.get("pending_tool_calls", [])
         continuation_type = state.get("continuation_type", "")
-        if continuation_type and forced_tool_calls is None and not any(str(call.get("name") or "") == "mark_dose_taken" for call in tool_calls):
+        if continuation_type and forced_tool_calls is None and not any(
+            str(call.get("name") or "") == UPDATE_MEDICATION_DOSE_EVENT_STATUS for call in tool_calls
+        ):
             return "async_continuation_response"
         if not tool_calls:
             return "final_response"

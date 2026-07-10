@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from agent_app.tool_names import GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE
+
 
 def normalize_tool_calls(output: dict[str, Any]) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
@@ -17,7 +19,7 @@ def normalize_tool_calls(output: dict[str, Any]) -> list[dict[str, Any]]:
 
 def order_tool_calls(calls: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     indexed = list(enumerate(calls))
-    priority = {"lookup_side_effect_info": 10, "AE_pro_ctcae": 20}
+    priority = {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT: 10, GET_PRO_CTCAE_QUESTIONNAIRE: 20}
     return [call for _, call in sorted(indexed, key=lambda item: (priority.get(str(item[1].get("name")), 0), item[0]))]
 
 

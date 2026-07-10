@@ -74,10 +74,10 @@ def test_multiturn_tools_bind_through_chat_model_tool_specs():
     by_name = {tool["function"]["name"]: tool for tool in tools}
 
     assert not hasattr(BaseLLMProvider, "bind_tools")
-    assert {"mark_dose_taken", "record_meal", "recommend_diet"} <= set(by_name)
-    assert by_name["mark_dose_taken"]["type"] == "function"
-    assert by_name["mark_dose_taken"]["function"]["parameters"]["type"] == "object"
-    assert "dose_event_id" in by_name["mark_dose_taken"]["function"]["parameters"]["required"]
+    assert {"update_medication_dose_event_status", "create_nutrition_meal_record", "get_nutrition_recommendation_candidates"} <= set(by_name)
+    assert by_name["update_medication_dose_event_status"]["type"] == "function"
+    assert by_name["update_medication_dose_event_status"]["function"]["parameters"]["type"] == "object"
+    assert "dose_event_id" in by_name["update_medication_dose_event_status"]["function"]["parameters"]["required"]
 
 
 def test_tool_runtime_delegates_permission_decisions_to_executor_boundary():
@@ -106,14 +106,14 @@ def test_tool_runtime_delegates_permission_decisions_to_executor_boundary():
 
     executed_calls, results = asyncio.run(
         runtime.execute(
-            [{"name": "record_meal", "arguments": {"meal_type": "lunch", "foods": []}}],
+            [{"name": "create_nutrition_meal_record", "arguments": {"meal_type": "lunch", "foods": []}}],
             trace_id="structure-test-trace",
             source_event_type="missed_dose",
             payload={},
         )
     )
 
-    assert executed_calls[0]["name"] == "record_meal"
+    assert executed_calls[0]["name"] == "create_nutrition_meal_record"
     assert len(executor.calls) == 1
     assert executor.calls[0]["source_event_type"] == "missed_dose"
     assert results[0].status == "success"
@@ -139,7 +139,7 @@ def test_tool_runtime_logs_routing_context(monkeypatch):
     runtime = ToolRuntime(CapturingExecutor())
     asyncio.run(
         runtime.execute(
-            [{"name": "mark_dose_taken", "arguments": {"dose_event_id": 12}}],
+            [{"name": "update_medication_dose_event_status", "arguments": {"dose_event_id": 12}}],
             trace_id="routing-log-trace",
             source_event_type="multiturn_chat",
             payload={},
@@ -149,8 +149,8 @@ def test_tool_runtime_logs_routing_context(monkeypatch):
                 "supervisor_agent": "system_event_agent",
                 "specialist_agent": "medication_agent",
                 "tool_loop_mode": "langgraph_state_graph",
-                "supervisor_tool_names": ["call_medication_agent"],
-                "specialist_tool_names": ["mark_dose_taken"],
+                "supervisor_tool_names": ["delegate_to_medication_agent"],
+                "specialist_tool_names": ["update_medication_dose_event_status"],
             },
         )
     )
@@ -160,8 +160,8 @@ def test_tool_runtime_logs_routing_context(monkeypatch):
     assert started["routing"]["routing_mode"] == "delegated_agent"
     assert started["routing"]["executed_by"] == "medication_agent"
     assert started["routing"]["tool_loop_mode"] == "langgraph_state_graph"
-    assert started["routing"]["supervisor_tool_names"] == ["call_medication_agent"]
-    assert started["routing"]["specialist_tool_names"] == ["mark_dose_taken"]
+    assert started["routing"]["supervisor_tool_names"] == ["delegate_to_medication_agent"]
+    assert started["routing"]["specialist_tool_names"] == ["update_medication_dose_event_status"]
 
 
 def test_trace_retention_policy_is_single_source_for_logs_view():

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from agent_app.tool_names import UPDATE_MEDICATION_DOSE_EVENT_STATUS
 from shared.json_utils import dump_json as dump_metadata_json
 from shared.json_utils import parse_json_object as parse_metadata_json
 from shared.schemas import (
@@ -18,7 +19,7 @@ from system_app.services.timeline_service import add_chat_message
 
 
 def apply_agent_dose_taken_request(session: Session, payload: DoseTakenToolRequest) -> DoseTakenToolResult:
-    trace_id = f"{payload.source_trace_id or 'agent'}:mark_dose_taken:{payload.source_event_type}:{payload.dose_event_id}"
+    trace_id = f"{payload.source_trace_id or 'agent'}:{UPDATE_MEDICATION_DOSE_EVENT_STATUS}:{payload.source_event_type}:{payload.dose_event_id}"
     event = mark_dose_taken(session, payload.dose_event_id, taken_at=payload.taken_at)
     if event is None:
         result = DoseTakenToolResult(
@@ -38,7 +39,7 @@ def apply_agent_dose_taken_request(session: Session, payload: DoseTakenToolReque
         trace_id=trace_id,
         agent_name="agent_tool_executor",
         prompt_version_id=payload.source_trace_id or "n/a",
-        decision_type="mark_dose_taken",
+        decision_type=UPDATE_MEDICATION_DOSE_EVENT_STATUS,
         structured_payload=payload.model_dump(mode="json"),
         human_summary=result.message,
         applied=result.status == "taken",

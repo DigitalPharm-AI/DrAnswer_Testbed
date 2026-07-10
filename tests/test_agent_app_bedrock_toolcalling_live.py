@@ -29,20 +29,20 @@ class RecordingToolExecutor:
         self.calls.append(tool_call)
         tool_name = str(tool_call.get("name") or "")
         arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
-        if tool_name == "mark_dose_taken":
+        if tool_name == "update_medication_dose_event_status":
             return ToolCallResult(
-                tool_name="mark_dose_taken",
+                tool_name="update_medication_dose_event_status",
                 status="success",
                 response={
                     "dose_event_id": arguments.get("dose_event_id"),
                     "status": "taken",
                     "message": "테스트 복약 기록을 완료 처리했습니다.",
                 },
-                idempotency_key=f"{trace_id}:mark_dose_taken:{source_event_type}",
+                idempotency_key=f"{trace_id}:update_medication_dose_event_status:{source_event_type}",
             )
-        if tool_name == "lookup_side_effect_info":
+        if tool_name == "get_medication_side_effect_assessment":
             return ToolCallResult(
-                tool_name="lookup_side_effect_info",
+                tool_name="get_medication_side_effect_assessment",
                 status="success",
                 response={
                     "suspected": True,
@@ -52,11 +52,11 @@ class RecordingToolExecutor:
                     "evidence": "테스트 PHR 주의사항에 메스꺼움이 포함되어 있습니다.",
                     "recommendation": "PRO-CTCAE 문항 확인이 필요합니다.",
                 },
-                idempotency_key=f"{trace_id}:lookup_side_effect_info",
+                idempotency_key=f"{trace_id}:get_medication_side_effect_assessment",
             )
-        if tool_name == "AE_pro_ctcae":
+        if tool_name == "get_pro_ctcae_questionnaire":
             return ToolCallResult(
-                tool_name="AE_pro_ctcae",
+                tool_name="get_pro_ctcae_questionnaire",
                 status="success",
                 response={
                     "input_symptom": arguments.get("symptom_normalize") or arguments.get("symptom_text") or "메스꺼움",
@@ -72,7 +72,7 @@ class RecordingToolExecutor:
                     "questions": [],
                     "candidates": [],
                 },
-                idempotency_key=f"{trace_id}:AE_pro_ctcae",
+                idempotency_key=f"{trace_id}:get_pro_ctcae_questionnaire",
             )
         return ToolCallResult(tool_name=tool_name or "unknown", status="error", error=f"unexpected_tool:{tool_name}")
 
@@ -87,7 +87,7 @@ def _build_orchestrator() -> tuple[AgentLangGraphNativeOrchestrator, RecordingTo
 
 
 @pytest.mark.asyncio
-async def test_bedrock_multiturn_mark_dose_taken_executes_tool() -> None:
+async def test_bedrock_multiturn_update_medication_dose_event_status_executes_tool() -> None:
     orchestrator, executor = _build_orchestrator()
     request = MultiturnChatRequest(
         patient_id="demo-patient",
@@ -112,8 +112,8 @@ async def test_bedrock_multiturn_mark_dose_taken_executes_tool() -> None:
 
     assert response.decision_type == "tool_call"
     assert response.structured_payload["tools_executed"] is True
-    assert [call["name"] for call in executor.calls] == ["mark_dose_taken"]
-    assert response.structured_payload["tool_results"][0]["tool_name"] == "mark_dose_taken"
+    assert [call["name"] for call in executor.calls] == ["update_medication_dose_event_status"]
+    assert response.structured_payload["tool_results"][0]["tool_name"] == "update_medication_dose_event_status"
     assert response.structured_payload["tool_results"][0]["response"]["status"] == "taken"
 
 
@@ -139,7 +139,7 @@ async def test_bedrock_multiturn_side_effect_lookup_forces_ae_pro_ctcae() -> Non
     assert response.decision_type == "async_continuation_requested"
     assert response.structured_payload["async_continuation_required"] is True
     assert response.structured_payload["async_continuation_type"] == "side_effect_assessment"
-    assert [call["name"] for call in response.structured_payload["tool_calls"]] == ["lookup_side_effect_info"]
+    assert [call["name"] for call in response.structured_payload["tool_calls"]] == ["get_medication_side_effect_assessment"]
     assert executor.calls == []
 
     continuation = request.model_copy(deep=True)
@@ -152,7 +152,7 @@ async def test_bedrock_multiturn_side_effect_lookup_forces_ae_pro_ctcae() -> Non
 
     assert response.decision_type == "side_effect_assessment"
     assert response.structured_payload["tools_executed"] is True
-    assert [call["name"] for call in executor.calls] == ["lookup_side_effect_info", "AE_pro_ctcae"]
-    assert [result["tool_name"] for result in response.structured_payload["tool_results"]] == ["lookup_side_effect_info", "AE_pro_ctcae"]
+    assert [call["name"] for call in executor.calls] == ["get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"]
+    assert [result["tool_name"] for result in response.structured_payload["tool_results"]] == ["get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"]
     assert response.structured_payload["side_effect_status"] == "suspected"
     assert response.structured_payload["ae_pro_ctcae"]["matched"] is True

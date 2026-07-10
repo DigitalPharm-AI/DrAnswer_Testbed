@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_app.tool_names import POLICY_TOOLS, PROPOSE_NOTIFICATION_POLICY
 from shared.schemas import NotificationPolicyDelta, ToolCallResult
 
-DEFERRED_POLICY_TOOL_NAMES = {"apply_notification_policy", "apply_system_policy"}
+DEFERRED_POLICY_TOOL_NAMES = set(POLICY_TOOLS)
 
 
 def is_deferred_policy_tool_call(tool_call: dict[str, Any]) -> bool:
@@ -36,7 +37,7 @@ def deferred_policy_tool_result(tool_call: dict[str, Any], *, trace_id: str, sou
 
 
 def has_notification_policy_tool_call(tool_calls: list[dict[str, Any]]) -> bool:
-    return any(str(tool_call.get("name") or "") == "apply_notification_policy" for tool_call in tool_calls)
+    return any(str(tool_call.get("name") or "") == PROPOSE_NOTIFICATION_POLICY for tool_call in tool_calls)
 
 
 def has_deferred_policy_tool_call(tool_calls: list[dict[str, Any]]) -> bool:
@@ -46,7 +47,7 @@ def has_deferred_policy_tool_call(tool_calls: list[dict[str, Any]]) -> bool:
 def normalize_policy_tool_calls(tool_calls: list[dict[str, Any]], *, source_event_type: str) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for tool_call in tool_calls:
-        if str(tool_call.get("name") or "") != "apply_notification_policy":
+        if str(tool_call.get("name") or "") != PROPOSE_NOTIFICATION_POLICY:
             normalized.append(tool_call)
             continue
         arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
@@ -70,7 +71,7 @@ def _notification_policy_deltas(arguments: dict[str, Any], *, source_event_type:
     if raw_items is None:
         raw_items = [arguments]
     if not isinstance(raw_items, list):
-        raise ValueError("apply_notification_policy requires a policy object or policies list.")
+        raise ValueError(f"{PROPOSE_NOTIFICATION_POLICY} requires a policy object or policies list.")
     normalized_items = []
     for item in raw_items:
         if not isinstance(item, dict):

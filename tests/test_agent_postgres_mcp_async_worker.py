@@ -28,7 +28,7 @@ class AeToolProvider(BaseLLMProvider):
         return {
             "message": "증상 문항을 준비합니다.",
             "tool_call": {
-                "name": "AE_pro_ctcae",
+                "name": "get_pro_ctcae_questionnaire",
                 "arguments": {
                     "symptom_text": "속이 메스꺼워요",
                     "symptom_normalize": "메스꺼움",
@@ -124,8 +124,8 @@ def test_postgres_mcp_async_worker_chat_continuation_callback_round_trip(monkeyp
         assert callback["path"] == "/api/agent/async/chat-results"
         assert callback["json"]["request_id"] == request_id
         structured = callback["json"]["response"]["structured_payload"]
-        assert structured["tool_call"]["name"] == "AE_pro_ctcae"
-        assert structured["tool_results"][0]["tool_name"] == "AE_pro_ctcae"
+        assert structured["tool_call"]["name"] == "get_pro_ctcae_questionnaire"
+        assert structured["tool_results"][0]["tool_name"] == "get_pro_ctcae_questionnaire"
         assert structured["tool_results"][0]["status"] == "success"
         assert structured["ae_pro_ctcae"]["matched"] is True
     finally:

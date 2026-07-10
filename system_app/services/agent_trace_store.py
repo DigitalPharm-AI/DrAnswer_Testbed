@@ -5,6 +5,23 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from agent_app.tool_names import (
+    CREATE_NUTRITION_MEAL_RECORD,
+    DELETE_NUTRITION_FOOD_RECORD,
+    DELETE_NUTRITION_MEAL_RECORD,
+    GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+    GET_NUTRITION_DAILY_SUMMARY,
+    GET_NUTRITION_MEAL_RECORD_LIST,
+    GET_NUTRITION_PREFERENCE_SUMMARY,
+    GET_PRO_CTCAE_QUESTIONNAIRE,
+    POLICY_TOOLS,
+    SEARCH_NUTRITION_FOOD_CANDIDATES,
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+    UPDATE_NUTRITION_FOOD_RECORD,
+    UPDATE_NUTRITION_MEAL_RECORD,
+    UPSERT_NUTRITION_PREFERENCE_FACT,
+    canonical_tool_name,
+)
 from shared.json_utils import dump_json
 from shared.readiness_budget import estimate_model_cost_usd
 from shared.redaction import redact_for_logging, redact_inline_secrets, stable_hash
@@ -356,18 +373,25 @@ def _int_value(value: Any) -> int:
 
 
 def _side_effect_level(tool_name: str) -> str:
-    if tool_name in {
-        "mark_dose_taken",
-        "record_meal",
-        "update_nutrition_meal",
-        "delete_nutrition_meal",
-        "update_nutrition_food",
-        "delete_nutrition_food",
-        "record_nutrition_preference",
-        "apply_notification_policy",
-        "apply_system_policy",
+    name = canonical_tool_name(tool_name)
+    if name in {
+        UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+        CREATE_NUTRITION_MEAL_RECORD,
+        UPDATE_NUTRITION_MEAL_RECORD,
+        DELETE_NUTRITION_MEAL_RECORD,
+        UPDATE_NUTRITION_FOOD_RECORD,
+        DELETE_NUTRITION_FOOD_RECORD,
+        UPSERT_NUTRITION_PREFERENCE_FACT,
+        *POLICY_TOOLS,
     }:
         return "write"
-    if tool_name in {"lookup_side_effect_info", "get_daily_nutrition_summary", "list_meals", "search_food_nutrition", "get_nutrition_preferences", "AE_pro_ctcae"}:
+    if name in {
+        GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+        GET_NUTRITION_DAILY_SUMMARY,
+        GET_NUTRITION_MEAL_RECORD_LIST,
+        SEARCH_NUTRITION_FOOD_CANDIDATES,
+        GET_NUTRITION_PREFERENCE_SUMMARY,
+        GET_PRO_CTCAE_QUESTIONNAIRE,
+    }:
         return "read"
     return "none"

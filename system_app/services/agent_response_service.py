@@ -2,6 +2,19 @@ from __future__ import annotations
 
 from datetime import date
 
+from agent_app.tool_names import (
+    CREATE_NUTRITION_MEAL_RECORD,
+    DELETE_NUTRITION_FOOD_RECORD,
+    DELETE_NUTRITION_MEAL_RECORD,
+    GET_PRO_CTCAE_QUESTIONNAIRE,
+    POLICY_TOOLS,
+    PROPOSE_NOTIFICATION_POLICY,
+    PROPOSE_SYSTEM_POLICY,
+    SEARCH_NUTRITION_FOOD_CANDIDATES,
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+    UPDATE_NUTRITION_FOOD_RECORD,
+    UPDATE_NUTRITION_MEAL_RECORD,
+)
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -36,11 +49,11 @@ POLICY_DELTA_REQUIRED_FIELDS = {
     "source",
 }
 NUTRITION_WRITE_TOOL_NAMES = {
-    "record_meal",
-    "update_nutrition_meal",
-    "delete_nutrition_meal",
-    "update_nutrition_food",
-    "delete_nutrition_food",
+    CREATE_NUTRITION_MEAL_RECORD,
+    UPDATE_NUTRITION_MEAL_RECORD,
+    DELETE_NUTRITION_MEAL_RECORD,
+    UPDATE_NUTRITION_FOOD_RECORD,
+    DELETE_NUTRITION_FOOD_RECORD,
 }
 FOOD_SELECTION_CANDIDATE_LIMIT = 6
 SUPPORTED_MEAL_TYPES = {"breakfast", "lunch", "dinner", "snack"}
@@ -56,7 +69,7 @@ def ae_pro_ctcae_payload(response: AgentResponse) -> dict | None:
     for result in raw_results:
         if not isinstance(result, dict):
             continue
-        if result.get("tool_name") != "AE_pro_ctcae" or result.get("status") != "success":
+        if result.get("tool_name") != GET_PRO_CTCAE_QUESTIONNAIRE or result.get("status") != "success":
             continue
         result_response = result.get("response")
         if isinstance(result_response, dict):
@@ -105,7 +118,7 @@ def food_selection_chat_metadata(response: AgentResponse) -> dict:
         tool_call = response.structured_payload.get("tool_call")
         query = ""
         meal_type = ""
-        if isinstance(tool_call, dict) and tool_call.get("name") == "search_food_nutrition":
+        if isinstance(tool_call, dict) and tool_call.get("name") == SEARCH_NUTRITION_FOOD_CANDIDATES:
             arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else tool_call.get("input", {})
             query = str(arguments.get("query", "")) if isinstance(arguments, dict) else ""
             meal_type = _valid_meal_type(arguments.get("meal_type")) if isinstance(arguments, dict) else ""
@@ -282,7 +295,7 @@ def persist_agent_summary(
 
 def maybe_apply_policy_response(session: Session, response: AgentResponse, source_event_type: str) -> tuple[bool, str]:
     tool_call = response.structured_payload.get("tool_call")
-    if isinstance(tool_call, dict) and tool_call.get("name") not in {"apply_notification_policy", "apply_system_policy"}:
+    if isinstance(tool_call, dict) and tool_call.get("name") not in POLICY_TOOLS:
         record_agent_audit(session, response, source_event_type, applied=False, error_message="")
         return False, response.human_summary or "정책 변경 대상이 아닌 응답입니다."
 
@@ -374,24 +387,24 @@ def record_executed_tool_results(session: Session, response: AgentResponse, sour
 
 def maybe_apply_dose_taken_response(session: Session, response: AgentResponse, source_event_type: str) -> tuple[bool, str] | None:
     tool_call = response.structured_payload.get("tool_call")
-    if not isinstance(tool_call, dict) or tool_call.get("name") != "mark_dose_taken":
+    if not isinstance(tool_call, dict) or tool_call.get("name") != UPDATE_MEDICATION_DOSE_EVENT_STATUS:
         return None
 
     if response.structured_payload.get("tools_executed") is True:
         raw_results = response.structured_payload.get("tool_results")
         if isinstance(raw_results, list):
             for result in raw_results:
-                if not isinstance(result, dict) or result.get("tool_name") != "mark_dose_taken":
+                if not isinstance(result, dict) or result.get("tool_name") != UPDATE_MEDICATION_DOSE_EVENT_STATUS:
                     continue
                 payload = result.get("response") if isinstance(result.get("response"), dict) else {}
                 message = str(payload.get("message") or result.get("error") or response.human_summary or "")
                 applied = result.get("status") == "success" and payload.get("status") == "taken"
                 record_agent_audit(session, response, source_event_type, applied=applied, error_message="" if applied else message)
                 return applied, message or response.human_summary
-        record_agent_audit(session, response, source_event_type, applied=False, error_message="실행된 mark_dose_taken tool result가 없습니다.")
+        record_agent_audit(session, response, source_event_type, applied=False, error_message=f"실행된 {UPDATE_MEDICATION_DOSE_EVENT_STATUS} tool result가 없습니다.")
         return False, "실행된 복약 완료 tool result가 없습니다."
 
-    record_agent_audit(session, response, source_event_type, applied=False, error_message="mark_dose_taken tool was not executed")
+    record_agent_audit(session, response, source_event_type, applied=False, error_message=f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} tool was not executed")
     return False, "실행된 복약 완료 tool result가 없습니다."
 
 def build_manual_pattern_analysis_payload(session: Session, target_date: date | None = None):

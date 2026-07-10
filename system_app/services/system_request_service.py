@@ -5,6 +5,12 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from agent_app.tool_names import (
+    GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+    GET_PRO_CTCAE_QUESTIONNAIRE,
+    POLICY_TOOLS,
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+)
 from shared.json_utils import dump_json, parse_json_object
 from shared.redaction import safe_exception_summary, safe_log_arguments
 from shared.schemas import AgentCallbackContext, AgentResponse, MultiturnChatRequest, NotificationPolicyDelta
@@ -430,7 +436,7 @@ def _tool_result_log_payload(result: dict) -> dict:
         "error": trace_logging.snippet(result.get("error")),
         "idempotency_key_present": bool(result.get("idempotency_key")),
     }
-    if tool_name == "lookup_side_effect_info":
+    if tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT:
         payload["response"] = {
             "suspected": response.get("suspected"),
             "matched_effects": response.get("matched_effects", []),
@@ -438,7 +444,7 @@ def _tool_result_log_payload(result: dict) -> dict:
             "severity": response.get("severity"),
             "evidence": trace_logging.snippet(response.get("evidence")),
         }
-    elif tool_name == "AE_pro_ctcae":
+    elif tool_name == GET_PRO_CTCAE_QUESTIONNAIRE:
         payload["response"] = {
             "input_symptom": trace_logging.snippet(response.get("input_symptom")),
             "matched": response.get("matched"),
@@ -448,7 +454,7 @@ def _tool_result_log_payload(result: dict) -> dict:
             "similarity": response.get("similarity"),
             "question_count": len(response.get("questions", [])) if isinstance(response.get("questions"), list) else 0,
         }
-    elif tool_name == "mark_dose_taken":
+    elif tool_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
         payload["response"] = {
             "dose_event_id": response.get("dose_event_id"),
             "status": response.get("status"),
@@ -493,12 +499,11 @@ def mark_system_event_request_failed(
 
 
 def is_policy_tool_response(response: AgentResponse) -> bool:
-    policy_tool_names = {"apply_notification_policy", "apply_system_policy"}
     tool_call = response.structured_payload.get("tool_call")
-    if isinstance(tool_call, dict) and tool_call.get("name") in policy_tool_names:
+    if isinstance(tool_call, dict) and tool_call.get("name") in POLICY_TOOLS:
         return True
     tool_calls = response.structured_payload.get("tool_calls")
-    return isinstance(tool_calls, list) and any(isinstance(item, dict) and item.get("name") in policy_tool_names for item in tool_calls)
+    return isinstance(tool_calls, list) and any(isinstance(item, dict) and item.get("name") in POLICY_TOOLS for item in tool_calls)
 
 
 def policy_tool_chat_message(status: str, result_message: str, response: AgentResponse | None = None) -> str:

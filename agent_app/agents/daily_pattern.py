@@ -7,6 +7,7 @@ from agent_app.prompt_builders import daily_pattern_prompt
 from agent_app.providers import BaseLLMProvider
 from agent_app.tool_calling import normalize_tool_calls
 from agent_app.tool_catalog import ToolCatalog
+from agent_app.tool_names import PROPOSE_NOTIFICATION_POLICY
 from agent_app.tool_policy import has_deferred_policy_tool_call, normalize_policy_tool_calls
 from agent_app.tool_results import tool_calls_payload, tool_result_summary
 from agent_app.tool_runtime import ToolRuntime
@@ -32,7 +33,7 @@ class DailyPatternAgent:
                 {
                     **pattern.model_dump(mode="json"),
                     "response_mode": "daily_pattern_analysis",
-                    "available_tools": ToolCatalog.tools_for("apply_notification_policy"),
+                    "available_tools": ToolCatalog.tools_for(PROPOSE_NOTIFICATION_POLICY),
                 },
             )
             tool_calls = normalize_policy_tool_calls(normalize_tool_calls(output), source_event_type="daily_pattern")

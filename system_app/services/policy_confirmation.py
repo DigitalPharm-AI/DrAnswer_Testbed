@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from agent_app.tool_names import PROPOSE_NOTIFICATION_POLICY, PROPOSE_SYSTEM_POLICY
 from shared.schemas import AgentResponse, NotificationPolicyDelta, SystemPolicyDelta
 from system_app.services.audit_service import record_agent_audit
 from system_app.services.clock_service import pause_simulation_clock_for_conversation
@@ -93,7 +94,7 @@ def policy_deltas_from_tool_response(response: AgentResponse, source_event_type:
     for raw_tool_call in raw_tool_calls:
         if not isinstance(raw_tool_call, dict):
             continue
-        if raw_tool_call.get("name") != "apply_notification_policy":
+        if raw_tool_call.get("name") != PROPOSE_NOTIFICATION_POLICY:
             continue
         arguments = raw_tool_call.get("arguments")
         if not isinstance(arguments, dict):
@@ -107,10 +108,10 @@ def policy_deltas_from_tool_response(response: AgentResponse, source_event_type:
 
 def has_notification_policy_tool_call(response: AgentResponse) -> bool:
     raw_tool_calls = response.structured_payload.get("tool_calls")
-    if isinstance(raw_tool_calls, list) and any(isinstance(item, dict) and item.get("name") == "apply_notification_policy" for item in raw_tool_calls):
+    if isinstance(raw_tool_calls, list) and any(isinstance(item, dict) and item.get("name") == PROPOSE_NOTIFICATION_POLICY for item in raw_tool_calls):
         return True
     raw_tool_call = response.structured_payload.get("tool_call")
-    return isinstance(raw_tool_call, dict) and raw_tool_call.get("name") == "apply_notification_policy"
+    return isinstance(raw_tool_call, dict) and raw_tool_call.get("name") == PROPOSE_NOTIFICATION_POLICY
 
 
 def system_policy_deltas_from_tool_response(response: AgentResponse, source_event_type: str = "") -> list[SystemPolicyDelta]:
@@ -122,7 +123,7 @@ def system_policy_deltas_from_tool_response(response: AgentResponse, source_even
     for raw_tool_call in raw_tool_calls:
         if not isinstance(raw_tool_call, dict):
             continue
-        if raw_tool_call.get("name") != "apply_system_policy":
+        if raw_tool_call.get("name") != PROPOSE_SYSTEM_POLICY:
             continue
         arguments = raw_tool_call.get("arguments")
         if not isinstance(arguments, dict):
@@ -137,10 +138,10 @@ def system_policy_deltas_from_tool_response(response: AgentResponse, source_even
 
 def has_system_policy_tool_call(response: AgentResponse) -> bool:
     raw_tool_calls = response.structured_payload.get("tool_calls")
-    if isinstance(raw_tool_calls, list) and any(isinstance(item, dict) and item.get("name") == "apply_system_policy" for item in raw_tool_calls):
+    if isinstance(raw_tool_calls, list) and any(isinstance(item, dict) and item.get("name") == PROPOSE_SYSTEM_POLICY for item in raw_tool_calls):
         return True
     raw_tool_call = response.structured_payload.get("tool_call")
-    return isinstance(raw_tool_call, dict) and raw_tool_call.get("name") == "apply_system_policy"
+    return isinstance(raw_tool_call, dict) and raw_tool_call.get("name") == PROPOSE_SYSTEM_POLICY
 
 
 def _notification_policy_argument_items(arguments: dict) -> list[dict]:
@@ -152,7 +153,7 @@ def _notification_policy_argument_items(arguments: dict) -> list[dict]:
     if raw_items is None:
         raw_items = [arguments]
     if not isinstance(raw_items, list):
-        raise ValueError("apply_notification_policy requires a policy object or policies list.")
+        raise ValueError(f"{PROPOSE_NOTIFICATION_POLICY} requires a policy object or policies list.")
     return [item for item in raw_items if isinstance(item, dict)]
 
 
@@ -165,7 +166,7 @@ def _system_policy_argument_items(arguments: dict) -> list[dict]:
     if raw_items is None:
         raw_items = [arguments]
     if not isinstance(raw_items, list):
-        raise ValueError("apply_system_policy requires a policy object or policies list.")
+        raise ValueError(f"{PROPOSE_SYSTEM_POLICY} requires a policy object or policies list.")
     return [item for item in raw_items if isinstance(item, dict)]
 
 

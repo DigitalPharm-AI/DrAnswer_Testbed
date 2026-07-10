@@ -20,6 +20,11 @@ from agent_app.payload_context import context_value
 from agent_app.provider_base import BaseLLMProvider
 from agent_app.response_builders import natural_chat_summary
 from agent_app.tool_calling import normalize_tool_calls
+from agent_app.tool_names import (
+    GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+    PROPOSE_NOTIFICATION_POLICY,
+    UPSERT_NUTRITION_PREFERENCE_FACT,
+)
 from agent_app.tool_results import tool_result_summary
 
 
@@ -108,7 +113,7 @@ def _summary_has_repeated_miss_pattern(summary: dict[str, Any]) -> bool:
 def _notification_policy_tool_call(slot_label: str, payload: dict[str, Any]) -> dict[str, Any]:
     current_date = _payload_date(payload)
     return {
-        "name": "apply_notification_policy",
+        "name": PROPOSE_NOTIFICATION_POLICY,
         "arguments": {
             "slot_label": slot_label,
             "extra_reminders": 2,
@@ -136,7 +141,7 @@ def _rule_based_side_effect_tool_call(payload: dict[str, Any]) -> dict[str, Any]
     if not any(keyword in message for keyword in side_effect_keywords):
         return None
     return {
-        "name": "lookup_side_effect_info",
+        "name": GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
         "arguments": {
             "symptom_text": message,
         },
@@ -152,7 +157,7 @@ def _rule_based_policy_tool_call(payload: dict[str, Any]) -> dict[str, Any] | No
     extra_reminders = 2 if "2" in message or "두" in message else 1
     interval_minutes = 10 if "10" in message else 30
     return {
-        "name": "apply_notification_policy",
+        "name": PROPOSE_NOTIFICATION_POLICY,
         "arguments": {
             "slot_label": slot_label,
             "extra_reminders": extra_reminders,
@@ -197,7 +202,7 @@ def _rule_based_preference_tool_calls(payload: dict[str, Any]) -> list[dict[str,
             continue
         calls.append(
             {
-                "name": "record_nutrition_preference",
+                "name": UPSERT_NUTRITION_PREFERENCE_FACT,
                 "arguments": {
                     "predicate": predicate,
                     "object_label": label,

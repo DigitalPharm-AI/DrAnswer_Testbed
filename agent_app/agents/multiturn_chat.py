@@ -28,6 +28,11 @@ from agent_app.providers import BaseLLMProvider
 from agent_app.response_builders import natural_chat_summary, string_list
 from agent_app.tool_catalog import ToolCatalog
 from agent_app.tool_permissions import MEDICATION_CHAT_TOOLS, POLICY_TOOLS
+from agent_app.tool_names import (
+    GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+    GET_PRO_CTCAE_QUESTIONNAIRE,
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+)
 from agent_app.tool_policy import has_deferred_policy_tool_call, normalize_policy_tool_calls
 from agent_app.tool_results import tool_calls_payload, tool_result_summary
 from agent_app.tool_runtime import ToolRuntime
@@ -88,7 +93,7 @@ class MultiturnChatAgent:
                 )
             continuation_type = async_continuation_type(tool_calls)
             if continuation_type and context.get("execute_async_continuation") is not True and not any(
-                str(call.get("name") or "") == "mark_dose_taken" for call in tool_calls
+                str(call.get("name") or "") == UPDATE_MEDICATION_DOSE_EVENT_STATUS for call in tool_calls
             ):
                 summary = async_continuation_summary(continuation_type)
                 return AgentResponse(
@@ -141,7 +146,11 @@ class MultiturnChatAgent:
             raise agent_error(trace_id, agent_name, "system_guidance", exc) from exc
 
         if executed_calls:
-            decision_type = "side_effect_assessment" if any(call.get("name") in {"lookup_side_effect_info", "AE_pro_ctcae"} for call in executed_calls) else "tool_call"
+            decision_type = (
+                "side_effect_assessment"
+                if any(call.get("name") in {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE} for call in executed_calls)
+                else "tool_call"
+            )
             structured_payload = {
                 "routing_mode": "direct_tool",
                 "supervisor_agent": agent_name,

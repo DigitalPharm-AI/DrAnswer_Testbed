@@ -21,6 +21,7 @@ from agent_app.async_tasks import (
 from agent_app.db import SessionLocal
 from agent_app.graph import AgentLangGraphNativeOrchestrator
 from agent_app.models import AgentAsyncTask
+from agent_app.tool_names import POLICY_TOOLS
 from agent_app.worker_status import (
     mark_worker_started,
     mark_worker_stopped,
@@ -142,11 +143,11 @@ def _is_policy_change_response(response: AgentResponse) -> bool:
     if response.structured_payload.get("policy_confirmation_required") is True:
         return True
     tool_call = response.structured_payload.get("tool_call")
-    if isinstance(tool_call, dict) and tool_call.get("name") in {"apply_notification_policy", "apply_system_policy"}:
+    if isinstance(tool_call, dict) and tool_call.get("name") in POLICY_TOOLS:
         return True
     tool_calls = response.structured_payload.get("tool_calls")
     return isinstance(tool_calls, list) and any(
-        isinstance(item, dict) and item.get("name") in {"apply_notification_policy", "apply_system_policy"} for item in tool_calls
+        isinstance(item, dict) and item.get("name") in POLICY_TOOLS for item in tool_calls
     )
 
 

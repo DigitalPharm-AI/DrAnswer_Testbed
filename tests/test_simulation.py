@@ -41,7 +41,7 @@ class PolicyChangeSystemAgentClient:
             decision_type="tool_call",
             structured_payload={
                 "tool_call": {
-                    "name": "apply_notification_policy",
+                    "name": "propose_notification_policy",
                     "arguments": {
                         "slot_label": "아침 08:00",
                         "extra_reminders": 2,
@@ -84,14 +84,14 @@ class SideEffectSystemAgentClient:
             decision_type="side_effect_assessment",
             structured_payload={
                 "tool_call": {
-                    "name": "lookup_side_effect_info",
+                    "name": "get_medication_side_effect_assessment",
                     "arguments": {
                         "symptom_text": request.message,
                     },
                 },
                 "tool_results": [
                     {
-                        "tool_name": "lookup_side_effect_info",
+                        "tool_name": "get_medication_side_effect_assessment",
                         "status": "success",
                         "response": {
                             "suspected": True,
@@ -1257,7 +1257,7 @@ def test_system_policy_tool_call_creates_confirmation_then_applies_reply():
             decision_type="tool_call",
             structured_payload={
                 "tool_call": {
-                    "name": "apply_system_policy",
+                    "name": "propose_system_policy",
                     "arguments": {
                         "policy_key": "daily_pattern_conversation_time",
                         "value": "09:20",
@@ -1267,10 +1267,10 @@ def test_system_policy_tool_call_creates_confirmation_then_applies_reply():
                 },
                 "tool_results": [
                     {
-                        "tool_name": "apply_system_policy",
+                        "tool_name": "propose_system_policy",
                         "status": "skipped",
                         "response": {
-                            "tool_name": "apply_system_policy",
+                            "tool_name": "propose_system_policy",
                             "reason": "policy_confirmation_required",
                             "policy_key": "daily_pattern_conversation_time",
                         },
@@ -1316,7 +1316,7 @@ def test_system_policy_confirmation_keep_current_does_not_apply_override():
             decision_type="tool_call",
             structured_payload={
                 "tool_call": {
-                    "name": "apply_system_policy",
+                    "name": "propose_system_policy",
                     "arguments": {
                         "policy_key": "daily_pattern_conversation_time",
                         "value": "09:20",
@@ -1339,7 +1339,7 @@ def test_system_policy_confirmation_keep_current_does_not_apply_override():
         assert session.query(SystemPolicyOverride).filter(SystemPolicyOverride.policy_key == "daily_pattern_conversation_time").count() == 0
 
 
-def test_unexecuted_mark_dose_taken_tool_call_does_not_change_dose_event():
+def test_unexecuted_update_medication_dose_event_status_tool_call_does_not_change_dose_event():
     with build_session() as session:
         ensure_base_data(session)
         create_medication_plan(
@@ -1359,7 +1359,7 @@ def test_unexecuted_mark_dose_taken_tool_call_does_not_change_dose_event():
             decision_type="tool_call",
             structured_payload={
                 "tool_call": {
-                    "name": "mark_dose_taken",
+                    "name": "update_medication_dose_event_status",
                     "arguments": {
                         "dose_event_id": event.id,
                         "reason": "patient_reported_taken",
@@ -1424,7 +1424,7 @@ def test_policy_tool_call_with_tool_results_still_requires_confirmation():
             structured_payload={
                 "tool_calls": [
                     {
-                        "name": "apply_notification_policy",
+                        "name": "propose_notification_policy",
                         "arguments": {
                             "slot_label": "아침 08:00",
                             "extra_reminders": 2,
@@ -1436,7 +1436,7 @@ def test_policy_tool_call_with_tool_results_still_requires_confirmation():
                         },
                     },
                     {
-                        "name": "apply_notification_policy",
+                        "name": "propose_notification_policy",
                         "arguments": {
                             "slot_label": "점심 13:00",
                             "extra_reminders": 2,
@@ -1448,7 +1448,7 @@ def test_policy_tool_call_with_tool_results_still_requires_confirmation():
                         },
                     },
                     {
-                        "name": "apply_notification_policy",
+                        "name": "propose_notification_policy",
                         "arguments": {
                             "slot_label": "야간 21:00",
                             "extra_reminders": 2,
@@ -1462,7 +1462,7 @@ def test_policy_tool_call_with_tool_results_still_requires_confirmation():
                 ],
                 "tool_results": [
                     {
-                        "tool_name": "apply_notification_policy",
+                        "tool_name": "propose_notification_policy",
                         "status": "success",
                         "response": {"results": [{"slot_label": "아침 08:00", "applied": True, "message": "정책이 적용되었습니다."}]},
                     }
@@ -1583,7 +1583,7 @@ def test_policy_confirmation_keep_current_does_not_apply_policy():
             decision_type="tool_call",
             structured_payload={
                 "tool_call": {
-                    "name": "apply_notification_policy",
+                    "name": "propose_notification_policy",
                     "arguments": {
                         "slot_label": "아침 08:00",
                         "extra_reminders": 2,
@@ -1619,7 +1619,7 @@ def test_policy_confirmation_ambiguous_policy_offer_three_options():
             decision_type="tool_call",
             structured_payload={
                 "tool_call": {
-                    "name": "apply_notification_policy",
+                    "name": "propose_notification_policy",
                     "arguments": {
                         "slot_label": "아침 08:00",
                             "extra_reminders": 2,
@@ -1668,7 +1668,7 @@ def test_policy_confirmation_decrease_recommendation_applies_candidate_policy():
             decision_type="tool_call",
             structured_payload={
                 "tool_call": {
-                    "name": "apply_notification_policy",
+                    "name": "propose_notification_policy",
                     "arguments": {
                         "slot_label": "아침 08:00",
                         "extra_reminders": 2,

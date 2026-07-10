@@ -8,6 +8,7 @@ from shared.schemas import AgentNotificationRequest, AgentResponse, ToolCallResu
 from system_app.models import AgentDecisionAudit, ChatMessage, Notification
 from system_app.services.agent_callback_service import process_agent_notification_callback
 from system_app.services.audit_service import create_agent_decision_audit, record_agent_audit
+from agent_app.tool_names import CREATE_NUTRITION_MEAL_RECORD, UPDATE_MEDICATION_DOSE_EVENT_STATUS
 from agent_app.tool_protocol import mcp_result_from_json_rpc_response, mcp_result_from_tool_result, tool_result_from_mcp_result
 from agent_app.tool_results import tool_calls_payload, tool_result_summary
 from tests.helpers import build_session
@@ -146,11 +147,11 @@ def test_tool_result_summary_redacts_raw_tool_error_but_keeps_error_codes():
     raw_error = "pytest private tool error for peanut allergy and lunch preference"
 
     summary = tool_result_summary(
-        [ToolCallResult(tool_name="record_meal", status="error", error=raw_error)],
+        [ToolCallResult(tool_name=CREATE_NUTRITION_MEAL_RECORD, status="error", error=raw_error)],
         "fallback",
     )
     code_summary = tool_result_summary(
-        [ToolCallResult(tool_name="mark_dose_taken", status="error", error="tool_permission_denied")],
+        [ToolCallResult(tool_name=UPDATE_MEDICATION_DOSE_EVENT_STATUS, status="error", error="tool_permission_denied")],
         "fallback",
     )
 
@@ -162,15 +163,15 @@ def test_tool_result_summary_redacts_raw_tool_error_but_keeps_error_codes():
 def test_mcp_error_tool_result_sanitizes_response_and_content():
     raw_detail = "pytest private MCP detail about peanut allergy and phone 010-2222-3333"
     result = ToolCallResult(
-        tool_name="record_meal",
+        tool_name=CREATE_NUTRITION_MEAL_RECORD,
         status="error",
         response={"detail": raw_detail, "source_event_type": "mcp", "elapsed_ms": 12},
         error=raw_detail,
-        idempotency_key="trace:record_meal",
+        idempotency_key=f"trace:{CREATE_NUTRITION_MEAL_RECORD}",
     )
 
     mcp_result = mcp_result_from_tool_result(result)
-    restored = tool_result_from_mcp_result("record_meal", mcp_result)
+    restored = tool_result_from_mcp_result(CREATE_NUTRITION_MEAL_RECORD, mcp_result)
     rendered = json.dumps(mcp_result, ensure_ascii=False)
 
     assert mcp_result["isError"] is True
@@ -207,13 +208,13 @@ def test_agent_tool_calls_payload_redacts_error_response_but_keeps_success_respo
         [],
         [
             ToolCallResult(
-                tool_name="record_meal",
+                tool_name=CREATE_NUTRITION_MEAL_RECORD,
                 status="error",
                 response={"detail": raw_error, "source_event_type": "multiturn_chat"},
                 error=raw_error,
             ),
             ToolCallResult(
-                tool_name="mark_dose_taken",
+                tool_name=UPDATE_MEDICATION_DOSE_EVENT_STATUS,
                 status="success",
                 response={"status": "taken", "message": "복용 완료로 기록했습니다."},
             ),
@@ -239,7 +240,7 @@ def test_record_agent_audit_persists_redacted_summary_and_payload():
             decision_type="tool_call",
             structured_payload={
                 "tool_call": {
-                    "name": "record_nutrition_preference",
+                    "name": "upsert_nutrition_preference_fact",
                     "arguments": {
                         "patient_id": "patient-redaction-001",
                         "message": "pytest private nausea and peanut allergy",

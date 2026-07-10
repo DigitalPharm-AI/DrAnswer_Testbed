@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_app.tool_names import POLICY_TOOLS, SIDE_EFFECT_TOOLS
+
 
 def async_continuation_type(tool_calls: list[dict[str, Any]]) -> str:
     names = {str(call.get("name") or "") for call in tool_calls}
-    if names.intersection({"lookup_side_effect_info", "AE_pro_ctcae"}):
+    if names.intersection(SIDE_EFFECT_TOOLS):
         return "side_effect_assessment"
-    if names.intersection({"apply_notification_policy", "apply_system_policy"}):
+    if names.intersection(POLICY_TOOLS):
         return "policy_change_request"
     return ""
 

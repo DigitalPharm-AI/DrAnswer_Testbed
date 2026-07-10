@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from agent_app.tool_names import PROPOSE_NOTIFICATION_POLICY, PROPOSE_SYSTEM_POLICY
 from shared.json_utils import parse_json_object
 from shared.schemas import AgentResponse, NotificationPolicyDelta, SystemPolicyDelta
 from shared.time_utils import utc_now
@@ -116,7 +117,7 @@ def handle_policy_confirmation_reply(session: Session, notification: Notificatio
             "action": action,
             "tool_calls": [
                 {
-                    "name": "apply_notification_policy",
+                    "name": PROPOSE_NOTIFICATION_POLICY,
                     "arguments": delta.model_dump(mode="json"),
                 }
                 for delta in selected_deltas
@@ -132,7 +133,7 @@ def handle_policy_confirmation_reply(session: Session, notification: Notificatio
             "patient_reply": message,
             "action": action,
             "tool_call": {
-                "name": "apply_notification_policy",
+                "name": PROPOSE_NOTIFICATION_POLICY,
                 "arguments": delta.model_dump(mode="json"),
             },
         },
@@ -163,7 +164,7 @@ def _handle_system_policy_confirmation_reply(session: Session, metadata: dict, m
                 "patient_reply": message,
                 "action": action,
                 "tool_call": {
-                    "name": "apply_system_policy",
+                    "name": PROPOSE_SYSTEM_POLICY,
                     "arguments": delta.model_dump(mode="json"),
                 },
             },

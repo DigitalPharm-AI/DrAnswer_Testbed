@@ -8,6 +8,7 @@ from agent_app.providers import BaseLLMProvider
 from agent_app.response_builders import missed_dose_hybrid_payload, string_list
 from agent_app.tool_calling import normalize_tool_calls
 from agent_app.tool_catalog import ToolCatalog
+from agent_app.tool_names import GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE
 from agent_app.tool_results import tool_calls_payload, tool_result_summary
 from agent_app.tool_runtime import ToolRuntime
 from shared.schemas import AgentResponse, MissedDoseEventPayload
@@ -33,7 +34,7 @@ class MissedDoseAgent:
                 {
                     **event_payload,
                     "response_mode": "missed_dose_coaching",
-                    "available_tools": ToolCatalog.tools_for("lookup_side_effect_info", "AE_pro_ctcae"),
+                    "available_tools": ToolCatalog.tools_for(GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE),
                 },
             )
             tool_calls = normalize_tool_calls(output)
@@ -43,7 +44,7 @@ class MissedDoseAgent:
 
         questions = string_list(output.get("follow_up_questions")) or ["현재 복용 가능한 상태인지 알려주세요."]
         side_effect_signal = bool(output.get("side_effect_signal")) or any(
-            result.tool_name == "lookup_side_effect_info" and result.status == "success" and result.response.get("suspected") for result in results
+            result.tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT and result.status == "success" and result.response.get("suspected") for result in results
         )
         structured_payload = {
             "dose_event_id": event.dose_event_id,

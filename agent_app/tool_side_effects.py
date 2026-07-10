@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_app.tool_names import GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE
 from shared.schemas import ToolCallResult
 
 SYMPTOM_NORMALIZATION_HINTS = (
@@ -17,7 +18,7 @@ SYMPTOM_NORMALIZATION_HINTS = (
 
 
 def positive_side_effect_lookup(result: ToolCallResult) -> bool:
-    return result.tool_name == "lookup_side_effect_info" and result.status == "success" and result.response.get("suspected") is True
+    return result.tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT and result.status == "success" and result.response.get("suspected") is True
 
 
 def ae_tool_call_from_lookup(tool_call: dict[str, Any], result: ToolCallResult, payload: dict[str, Any]) -> dict[str, Any]:
@@ -26,7 +27,7 @@ def ae_tool_call_from_lookup(tool_call: dict[str, Any], result: ToolCallResult, 
     matched_effects = result.response.get("matched_effects") if isinstance(result.response.get("matched_effects"), list) else []
     symptom_normalize = _normalize_symptom_candidate(*matched_effects, symptom_text, result.response.get("evidence")) or symptom_text
     return {
-        "name": "AE_pro_ctcae",
+        "name": GET_PRO_CTCAE_QUESTIONNAIRE,
         "arguments": {
             "symptom_text": symptom_text,
             "symptom_normalize": symptom_normalize,
@@ -39,7 +40,7 @@ def side_effect_pro_ctcae_summary(results: list[ToolCallResult]) -> str:
         (
             result
             for result in reversed(results)
-            if result.tool_name == "lookup_side_effect_info" and result.status == "success" and result.response.get("suspected") is True
+            if result.tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT and result.status == "success" and result.response.get("suspected") is True
         ),
         None,
     )

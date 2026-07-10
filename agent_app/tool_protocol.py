@@ -3,27 +3,11 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
+from agent_app.tool_names import ALL_TOOL_NAMES
 from shared.redaction import redact_for_logging, redacted_clinical_text_label
 from shared.schemas import ToolCallResult
 
-ALLOWED_TOOL_NAMES = {
-    "AE_pro_ctcae",
-    "lookup_side_effect_info",
-    "mark_dose_taken",
-    "search_food_nutrition",
-    "record_meal",
-    "update_nutrition_meal",
-    "delete_nutrition_meal",
-    "update_nutrition_food",
-    "delete_nutrition_food",
-    "list_meals",
-    "get_daily_nutrition_summary",
-    "record_nutrition_preference",
-    "get_nutrition_preferences",
-    "recommend_diet",
-    "apply_notification_policy",
-    "apply_system_policy",
-}
+ALLOWED_TOOL_NAMES = set(ALL_TOOL_NAMES)
 
 MCP_JSONRPC_VERSION = "2.0"
 MCP_METHOD_TOOLS_LIST = "tools/list"

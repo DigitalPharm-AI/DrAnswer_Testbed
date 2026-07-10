@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
+
+from agent_app.tool_names import MODEL_VISIBLE_TOOL_METADATA, canonical_tool_name, replace_legacy_tool_names
 
 
 class ToolCatalog:
     @staticmethod
     def available_tools_payload() -> list[dict[str, Any]]:
-        return [
+        tools = [
             {
                 "name": "AE_pro_ctcae",
                 "title": "PRO-CTCAE Symptom Matcher",
@@ -489,6 +492,7 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
         ]
+        return [_canonical_tool_payload(tool) for tool in tools]
 
     @staticmethod
     def tools_for(*names: str) -> list[dict[str, Any]]:
@@ -516,3 +520,16 @@ def _tool_result_schema() -> dict[str, Any]:
         },
         ["tool_name", "status"],
     )
+
+
+def _canonical_tool_payload(tool: dict[str, Any]) -> dict[str, Any]:
+    payload = replace_legacy_tool_names(deepcopy(tool))
+    name = canonical_tool_name(str(tool.get("name") or ""))
+    payload["name"] = name
+    args_schema = payload.get("inputSchema") if isinstance(payload.get("inputSchema"), dict) else _object_schema({}, [])
+    payload["args_schema"] = args_schema
+    metadata = MODEL_VISIBLE_TOOL_METADATA.get(name, {})
+    payload.update(metadata)
+    meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
+    payload["_meta"] = {**meta, **metadata}
+    return payload
