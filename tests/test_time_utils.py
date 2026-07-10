@@ -22,7 +22,8 @@ def test_project_does_not_call_deprecated_datetime_utcnow_directly():
     needle = "datetime." + "utcnow"
     offenders = []
     for path in PROJECT_ROOT.rglob("*.py"):
-        if any(part in IGNORED_SCAN_DIRS for part in path.relative_to(PROJECT_ROOT).parts):
+        relative_directories = path.relative_to(PROJECT_ROOT).parts[:-1]
+        if any(part in IGNORED_SCAN_DIRS or part.startswith(".conda") for part in relative_directories):
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         if needle in text:

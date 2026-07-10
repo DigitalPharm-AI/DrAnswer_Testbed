@@ -339,6 +339,38 @@ MIGRATIONS: list[tuple[str, str]] = [
         "20260701_0002_nutrition_food_ref_index",
         "CREATE INDEX IF NOT EXISTS ix_nutrition_food_ref_name ON nutrition_food_ref (food_name)",
     ),
+    (
+        "20260710_0001_side_effect_records",
+        """
+        CREATE TABLE IF NOT EXISTS side_effect_records (
+            id INTEGER NOT NULL PRIMARY KEY,
+            patient_id VARCHAR(100) NOT NULL DEFAULT 'demo-patient',
+            phr_patient_key VARCHAR(160) NOT NULL DEFAULT '',
+            medication_name VARCHAR(255) NOT NULL DEFAULT '',
+            symptom_text TEXT NOT NULL DEFAULT '',
+            suspected BOOLEAN NOT NULL DEFAULT 0,
+            severity VARCHAR(40) NOT NULL DEFAULT 'none',
+            matched_effects_json TEXT NOT NULL DEFAULT '[]',
+            matched_items_json TEXT NOT NULL DEFAULT '[]',
+            evidence TEXT NOT NULL DEFAULT '',
+            recommendation TEXT NOT NULL DEFAULT '',
+            source_trace_id VARCHAR(120) NOT NULL DEFAULT '',
+            source_event_type VARCHAR(80) NOT NULL DEFAULT 'agent_tool',
+            related_dose_event_id INTEGER,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at DATETIME,
+            FOREIGN KEY(related_dose_event_id) REFERENCES dose_events (id)
+        )
+        """,
+    ),
+    (
+        "20260710_0002_side_effect_records_patient_created",
+        "CREATE INDEX IF NOT EXISTS ix_side_effect_records_patient_created ON side_effect_records (patient_id, created_at)",
+    ),
+    (
+        "20260710_0003_side_effect_records_suspected_medication",
+        "CREATE INDEX IF NOT EXISTS ix_side_effect_records_suspected_medication ON side_effect_records (suspected, medication_name)",
+    ),
 ]
 
 

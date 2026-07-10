@@ -21,6 +21,7 @@ import agent_app.main as native_agent_main
 from agent_app.agent_delegation import delegation_tools_payload
 from agent_app.agents.tool_chat import SPECIALIST_TOOL_LOOP_LIMIT, run_tool_chat_agent
 from agent_app.async_tasks import DEAD, enqueue_async_task
+from agent_app.continuation_policy import async_continuation_type
 from agent_app.chat_tooling import (
     ai_message_from_tool_calls,
     human_payload_from_messages,
@@ -42,6 +43,8 @@ from agent_app.tool_permissions import permission_denied_result, validate_tool_p
 from agent_app.tool_mcp_server import http_status_tool_error_result
 from agent_app.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
+    GET_MEDICATION_DOSE_EVENT_RECORD_LIST,
+    GET_MEDICATION_SIDE_EFFECT_RECORD_LIST,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
     LEGACY_TOOL_NAMES,
     SOURCE_MEDICATION_AGENT,
@@ -1096,6 +1099,16 @@ def test_specialist_source_event_types_enforce_tool_boundaries():
         == f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} is not allowed for {SOURCE_MULTITURN_CHAT}"
     )
     assert validate_tool_permission(dose_call, source_event_type=SOURCE_MEDICATION_AGENT, payload=dose_payload) is None
+
+    for query_tool_name in (GET_MEDICATION_DOSE_EVENT_RECORD_LIST, GET_MEDICATION_SIDE_EFFECT_RECORD_LIST):
+        query_call = {"name": query_tool_name, "arguments": {}}
+        assert (
+            validate_tool_permission(query_call, source_event_type=SOURCE_MULTITURN_CHAT, payload={})
+            == f"{query_tool_name} is not allowed for {SOURCE_MULTITURN_CHAT}"
+        )
+        assert validate_tool_permission(query_call, source_event_type=SOURCE_MEDICATION_AGENT, payload={}) is None
+        assert async_continuation_type([query_call]) == ""
+
     assert (
         validate_tool_permission(dose_call, source_event_type=SOURCE_NUTRITION_MANAGEMENT_AGENT, payload=dose_payload)
         == f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} is not allowed for {SOURCE_NUTRITION_MANAGEMENT_AGENT}"
@@ -1314,6 +1327,8 @@ def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_perm
         "update_medication_dose_event_status",
         "get_medication_side_effect_assessment",
         "get_pro_ctcae_questionnaire",
+        "get_medication_dose_event_record_list",
+        "get_medication_side_effect_record_list",
     } <= specialist_tools
     assert "get_nutrition_recommendation_candidates" not in specialist_tools
 

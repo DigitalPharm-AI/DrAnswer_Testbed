@@ -7,12 +7,14 @@ from agent_app.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
+    GET_MEDICATION_DOSE_EVENT_RECORD_LIST,
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     GET_NUTRITION_DAILY_SUMMARY,
     GET_NUTRITION_MEAL_RECORD_LIST,
     GET_NUTRITION_PREFERENCE_SUMMARY,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
     GET_PRO_CTCAE_QUESTIONNAIRE,
+    GET_MEDICATION_SIDE_EFFECT_RECORD_LIST,
     POLICY_TOOLS,
     PROPOSE_NOTIFICATION_POLICY,
     PROPOSE_SYSTEM_POLICY,
@@ -42,6 +44,11 @@ def tool_calls_payload(tool_calls: list[dict[str, Any]], results: list[ToolCallR
         elif result.tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT:
             payload["side_effect_lookup"] = result.model_dump(mode="json")
             payload["side_effect_status"] = _side_effect_status(result)
+        elif result.tool_name == GET_MEDICATION_SIDE_EFFECT_RECORD_LIST and result.status == "success":
+            payload["side_effect_history"] = result.response.get("records", [])
+            payload["side_effect_history_total"] = result.response.get("total", 0)
+        elif result.tool_name == GET_MEDICATION_DOSE_EVENT_RECORD_LIST and result.status == "success":
+            payload["medication_dose_status"] = result.response
         elif result.tool_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS and result.status == "success":
             payload["dose_taken_result"] = result.response
         elif result.tool_name == CREATE_NUTRITION_MEAL_RECORD and result.status == "success":
@@ -134,6 +141,23 @@ def tool_result_summary(results: list[ToolCallResult], fallback: str) -> str:
         if last.status == "success":
             return "현재 PHR 기준으로 직접 일치하는 대표 부작용은 확인되지 않았습니다."
         return "부작용 정보를 조회하지 못했습니다. 증상이 심하거나 지속되면 의료진 또는 약사에게 확인하세요."
+    if last.tool_name == GET_MEDICATION_SIDE_EFFECT_RECORD_LIST:
+        if last.status != "success":
+            return _safe_result_error(last.error) or "부작용 이력을 조회하지 못했습니다."
+        records = last.response.get("records") if isinstance(last.response.get("records"), list) else []
+        suspected_count = sum(1 for item in records if isinstance(item, dict) and item.get("suspected") is True)
+        return f"부작용 이력 {len(records)}건을 확인했습니다. 의심 기록은 {suspected_count}건입니다."
+    if last.tool_name == GET_MEDICATION_DOSE_EVENT_RECORD_LIST:
+        if last.status != "success":
+            return _safe_result_error(last.error) or "복약 상태를 조회하지 못했습니다."
+        events = last.response.get("dose_events") if isinstance(last.response.get("dose_events"), list) else []
+        counts = {"scheduled": 0, "taken": 0, "missed": 0}
+        for item in events:
+            if isinstance(item, dict):
+                status = str(item.get("status") or "")
+                counts[status] = counts.get(status, 0) + 1
+        date_label = _date_range_label(last.response)
+        return f"{date_label} 복약 일정은 총 {len(events)}건이고, 완료 {counts.get('taken', 0)}건, 미복용 {counts.get('missed', 0)}건, 예정 {counts.get('scheduled', 0)}건입니다."
     if last.tool_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
         return str(last.response.get("message") or _safe_result_error(last.error) or fallback)
     if last.tool_name == CREATE_NUTRITION_MEAL_RECORD:
@@ -228,6 +252,16 @@ def _safe_result_error(error: str) -> str:
     if len(text) <= 80 and all(char.isascii() and (char.isalnum() or char in "_:-.") for char in text):
         return text
     return redacted_clinical_text_label(text, key="error")
+
+
+def _date_range_label(response: dict[str, Any]) -> str:
+    if response.get("target_date"):
+        return str(response["target_date"])
+    start_date = str(response.get("start_date") or "")
+    end_date = str(response.get("end_date") or "")
+    if start_date and end_date:
+        return start_date if start_date == end_date else f"{start_date}~{end_date}"
+    return "해당 기간"
 
 
 def _safe_tool_result_payload(result: ToolCallResult) -> dict[str, Any]:

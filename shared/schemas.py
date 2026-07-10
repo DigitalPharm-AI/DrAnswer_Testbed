@@ -324,6 +324,56 @@ class SideEffectAssessmentResult(BaseModel):
     recommendation: str
 
 
+class SideEffectRecordRequest(BaseModel):
+    patient_id: str | None = None
+    phr_patient_key: str | None = None
+    medication_name: str | None = None
+    symptom_text: str
+    suspected: bool
+    severity: Literal["none", "low", "moderate", "high"] = "none"
+    matched_effects: list[str] = Field(default_factory=list)
+    matched_items: list[str] = Field(default_factory=list)
+    evidence: str = ""
+    recommendation: str = ""
+    source_trace_id: str | None = None
+    source_event_type: str = "agent_tool"
+    related_dose_event_id: int | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SideEffectRecordView(BaseModel):
+    id: int
+    patient_id: str
+    phr_patient_key: str = ""
+    medication_name: str = ""
+    symptom_text: str = ""
+    suspected: bool
+    severity: str = "none"
+    matched_effects: list[str] = Field(default_factory=list)
+    matched_items: list[str] = Field(default_factory=list)
+    evidence: str = ""
+    recommendation: str = ""
+    source_trace_id: str = ""
+    source_event_type: str = ""
+    related_dose_event_id: int | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class SideEffectRecordResult(BaseModel):
+    success: bool = True
+    record: SideEffectRecordView
+
+
+class SideEffectHistoryResult(BaseModel):
+    success: bool = True
+    target_date: date | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    records: list[SideEffectRecordView] = Field(default_factory=list)
+    total: int = 0
+
+
 class AEProCtcaeAssessmentRequest(BaseModel):
     symptom_text: str
     symptom_normalize: str = ""
@@ -369,6 +419,29 @@ class DoseTakenToolResult(BaseModel):
     status: Literal["taken", "not_found"]
     taken_at: datetime | None = None
     message: str
+
+
+class MedicationDoseEventView(BaseModel):
+    dose_event_id: int
+    patient_id: str
+    medication_name: str
+    slot_label: str
+    scheduled_for: datetime
+    status: str
+    taken_at: datetime | None = None
+    note: str = ""
+
+
+class MedicationDoseStatusResult(BaseModel):
+    success: bool = True
+    patient_id: str
+    target_date: date | None = None
+    start_date: date
+    end_date: date
+    dose_events: list[MedicationDoseEventView] = Field(default_factory=list)
+    total: int = 0
+    summary_by_date: list[dict[str, Any]] = Field(default_factory=list)
+    totals_by_status: dict[str, int] = Field(default_factory=dict)
 
 
 class NutritionFoodPayload(BaseModel):

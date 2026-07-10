@@ -22,8 +22,9 @@ def test_agent_client_sends_internal_api_token(monkeypatch):
     captured: dict[str, object] = {}
 
     class DummyAsyncClient:
-        def __init__(self, *, timeout: float) -> None:
+        def __init__(self, *, timeout: float, trust_env: bool = True) -> None:
             self.timeout = timeout
+            captured["trust_env"] = trust_env
 
         async def __aenter__(self):
             return self
@@ -47,3 +48,4 @@ def test_agent_client_sends_internal_api_token(monkeypatch):
     assert captured["url"] == "http://agent.test/agent/model-config"
     assert captured["headers"] == {"X-Internal-Api-Token": "agent-client-token"}
     assert captured["timeout"] == 3.0
+    assert captured["trust_env"] is False

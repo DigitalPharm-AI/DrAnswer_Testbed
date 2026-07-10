@@ -45,6 +45,9 @@ def test_run_migrations_tracks_agent_jobs_version():
         "20260622_0005_nutrition_patient_preference_indexes",
         "20260701_0001_nutrition_food_ref",
         "20260701_0002_nutrition_food_ref_index",
+        "20260710_0001_side_effect_records",
+        "20260710_0002_side_effect_records_patient_created",
+        "20260710_0003_side_effect_records_suspected_medication",
     ]
     assert second_run == []
 
@@ -74,6 +77,9 @@ def test_run_migrations_tracks_agent_jobs_version():
             "20260622_0005_nutrition_patient_preference_indexes",
             "20260701_0001_nutrition_food_ref",
             "20260701_0002_nutrition_food_ref_index",
+        "20260710_0001_side_effect_records",
+        "20260710_0002_side_effect_records_patient_created",
+        "20260710_0003_side_effect_records_suspected_medication",
         ]
 
 

@@ -22,6 +22,7 @@ from system_app.models import (
     NutritionFood,
     NutritionMeal,
     ReminderPolicy,
+    SideEffectRecord,
     SimulationPatientProfile,
     SystemPolicyOverride,
 )
@@ -81,6 +82,7 @@ def reset_simulation_state(session: Session) -> None:
     session.execute(delete(AgentDecisionAudit))
     session.execute(delete(AgentJob))
     session.execute(delete(MissedDoseFlag))
+    session.execute(delete(SideEffectRecord))
     session.execute(delete(DailyNutritionCheck))
     session.execute(delete(NutritionFood))
     session.execute(delete(NutritionMeal))

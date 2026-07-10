@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime, time
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from shared.schemas import (
     AgentNotificationRequest,
     DoseTakenToolRequest,
     DoseTakenToolResult,
+    MedicationDoseEventView,
+    MedicationDoseStatusResult,
     NutritionDailySummaryResult,
     NutritionFoodDeleteRequest,
     NutritionFoodDeleteResult,
@@ -30,12 +33,17 @@ from shared.schemas import (
     NutritionRecommendRequest,
     NutritionRecommendResult,
     PolicyApplyRequest,
+    SideEffectHistoryResult,
+    SideEffectRecordRequest,
+    SideEffectRecordResult,
     SystemPolicyApplyRequest,
 )
+from shared.settings import get_settings
 from system_app.db import get_session
 from system_app.routes.public_errors import public_error_code
 from system_app.runtime import SystemRuntime
 from system_app.security import require_internal_api_token
+from system_app.models import DoseEvent
 from system_app.services.agent_callback_service import (
     apply_agent_dose_taken_request,
     process_agent_notification_callback,
@@ -53,6 +61,8 @@ from system_app.services.nutrition_service import (
 )
 from system_app.services.nutrition_preference_service import nutrition_preference_summary, record_preference_fact
 from system_app.services.policy_service import reload_policy_workbook
+from system_app.services.clock_service import ensure_clock
+from system_app.services.side_effect_record_service import list_side_effect_history, record_side_effect, side_effect_record_view
 
 AGENT_NUTRITION_ERROR_CODES = {
     "food_name_required",
@@ -66,6 +76,10 @@ AGENT_NUTRITION_ERROR_CODES = {
     "nutrition_food_update_empty",
     "unsupported_meal_type",
 }
+MEDICATION_DOSE_STATUS_RANGE_MAX_DAYS = 31
+SIDE_EFFECT_HISTORY_RANGE_MAX_DAYS = 366
+DoseStatus = {"scheduled", "taken", "missed"}
+SideEffectSeverity = {"none", "low", "moderate", "high"}
 
 
 def create_agent_api_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
@@ -83,6 +97,107 @@ def create_agent_api_router(get_runtime: Callable[[], SystemRuntime]) -> APIRout
     async def agent_dose_taken(payload: DoseTakenToolRequest, session: Session = Depends(get_session)) -> DoseTakenToolResult:
         with get_runtime().write_lock:
             return apply_agent_dose_taken_request(session, payload)
+
+    @router.get("/api/agent/dose-events", response_model=MedicationDoseStatusResult)
+    async def agent_medication_dose_status(
+        target_date: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        patient_id: str | None = None,
+        status: str | None = None,
+        medication_name: str | None = None,
+        session: Session = Depends(get_session),
+    ) -> MedicationDoseStatusResult:
+        with get_runtime().write_lock:
+            range_start, range_end, resolved_target_date = _resolve_query_date_range(
+                target_date=target_date,
+                start_date=start_date,
+                end_date=end_date,
+                default_date=ensure_clock(session).current_time.date(),
+                max_days=MEDICATION_DOSE_STATUS_RANGE_MAX_DAYS,
+                error_prefix="dose_status",
+            )
+            resolved_patient_id = patient_id or get_settings().patient_id
+            if status and status not in DoseStatus:
+                raise HTTPException(status_code=422, detail="invalid_dose_status_filter")
+            stmt = (
+                select(DoseEvent)
+                .where(
+                    DoseEvent.patient_id == resolved_patient_id,
+                    DoseEvent.scheduled_for >= datetime.combine(range_start, time.min),
+                    DoseEvent.scheduled_for <= datetime.combine(range_end, time.max),
+                )
+                .order_by(DoseEvent.scheduled_for.asc(), DoseEvent.medication_name.asc(), DoseEvent.id.asc())
+            )
+            if status:
+                stmt = stmt.where(DoseEvent.status == status)
+            if medication_name:
+                stmt = stmt.where(DoseEvent.medication_name == medication_name)
+            events = list(session.scalars(stmt).all())
+            result = MedicationDoseStatusResult(
+                success=True,
+                patient_id=resolved_patient_id,
+                target_date=resolved_target_date,
+                start_date=range_start,
+                end_date=range_end,
+                dose_events=[
+                    _dose_event_view(event) for event in events
+                ],
+                total=len(events),
+                summary_by_date=_dose_summary_by_date(events, range_start, range_end),
+                totals_by_status=_dose_status_totals(events),
+            )
+            session.commit()
+            return result
+
+    @router.post("/api/agent/side-effects/records", response_model=SideEffectRecordResult)
+    async def agent_side_effect_record(payload: SideEffectRecordRequest, session: Session = Depends(get_session)) -> SideEffectRecordResult:
+        with get_runtime().write_lock:
+            record = record_side_effect(session, payload)
+            result = SideEffectRecordResult.model_validate({"success": True, "record": side_effect_record_view(record)})
+            session.commit()
+            return result
+
+    @router.get("/api/agent/side-effects/history", response_model=SideEffectHistoryResult)
+    async def agent_side_effect_history(
+        patient_id: str | None = None,
+        limit: int = 20,
+        suspected: bool | None = None,
+        medication_name: str | None = None,
+        severity: str | None = None,
+        target_date: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        session: Session = Depends(get_session),
+    ) -> SideEffectHistoryResult:
+        range_start, range_end, resolved_target_date = _resolve_query_date_range(
+            target_date=target_date,
+            start_date=start_date,
+            end_date=end_date,
+            default_date=None,
+            max_days=SIDE_EFFECT_HISTORY_RANGE_MAX_DAYS,
+            error_prefix="side_effect_history",
+        )
+        if severity and severity not in SideEffectSeverity:
+            raise HTTPException(status_code=422, detail="invalid_side_effect_history_severity")
+        records = list_side_effect_history(
+            session,
+            patient_id=patient_id,
+            limit=limit,
+            suspected=suspected,
+            medication_name=medication_name,
+            severity=severity,
+            start_date=range_start,
+            end_date=range_end,
+        )
+        return SideEffectHistoryResult(
+            success=True,
+            target_date=resolved_target_date,
+            start_date=range_start,
+            end_date=range_end,
+            records=[side_effect_record_view(record) for record in records],
+            total=len(records),
+        )
 
     @router.post("/api/agent/nutrition/food/search", response_model=NutritionFoodSearchResult)
     async def agent_nutrition_food_search(
@@ -300,3 +415,76 @@ def create_agent_api_router(get_runtime: Callable[[], SystemRuntime]) -> APIRout
         return result.model_dump(mode="json")
 
     return router
+
+
+def _resolve_query_date_range(
+    *,
+    target_date: str | None,
+    start_date: str | None,
+    end_date: str | None,
+    default_date: date | None,
+    max_days: int,
+    error_prefix: str,
+) -> tuple[date | None, date | None, date | None]:
+    target_text = str(target_date or "").strip()
+    start_text = str(start_date or "").strip()
+    end_text = str(end_date or "").strip()
+    if target_text and (start_text or end_text):
+        raise HTTPException(status_code=422, detail=f"ambiguous_{error_prefix}_date_filter")
+    if target_text:
+        resolved = _parse_query_date(target_text, error_prefix)
+        return resolved, resolved, resolved
+    if start_text or end_text:
+        if not start_text or not end_text:
+            raise HTTPException(status_code=422, detail=f"{error_prefix}_date_range_required")
+        range_start = _parse_query_date(start_text, error_prefix)
+        range_end = _parse_query_date(end_text, error_prefix)
+        if range_end < range_start:
+            raise HTTPException(status_code=422, detail=f"invalid_{error_prefix}_date_range")
+        if (range_end - range_start).days + 1 > max_days:
+            raise HTTPException(status_code=422, detail=f"{error_prefix}_date_range_too_large")
+        return range_start, range_end, None
+    if default_date is None:
+        return None, None, None
+    return default_date, default_date, default_date
+
+
+def _parse_query_date(value: str, error_prefix: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid_{error_prefix}_date") from exc
+
+
+def _dose_event_view(event: DoseEvent) -> MedicationDoseEventView:
+    return MedicationDoseEventView(
+        dose_event_id=event.id,
+        patient_id=event.patient_id,
+        medication_name=event.medication_name,
+        slot_label=event.slot_label,
+        scheduled_for=event.scheduled_for,
+        status=event.status,
+        taken_at=event.taken_at,
+        note=event.note,
+    )
+
+
+def _dose_status_totals(events: list[DoseEvent]) -> dict[str, int]:
+    totals = {"scheduled": 0, "taken": 0, "missed": 0}
+    for event in events:
+        totals[event.status] = totals.get(event.status, 0) + 1
+    return totals
+
+
+def _dose_summary_by_date(events: list[DoseEvent], start_date: date, end_date: date) -> list[dict[str, int | str]]:
+    summary: dict[date, dict[str, int | str]] = {}
+    cursor = start_date
+    while cursor <= end_date:
+        summary[cursor] = {"date": cursor.isoformat(), "total": 0, "scheduled": 0, "taken": 0, "missed": 0}
+        cursor = date.fromordinal(cursor.toordinal() + 1)
+    for event in events:
+        event_date = event.scheduled_for.date()
+        row = summary.setdefault(event_date, {"date": event_date.isoformat(), "total": 0, "scheduled": 0, "taken": 0, "missed": 0})
+        row["total"] = int(row.get("total", 0)) + 1
+        row[event.status] = int(row.get(event.status, 0)) + 1
+    return [summary[key] for key in sorted(summary)]

@@ -219,6 +219,27 @@ class DoseEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class SideEffectRecord(Base):
+    __tablename__ = "side_effect_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
+    phr_patient_key: Mapped[str] = mapped_column(String(160), index=True, default="")
+    medication_name: Mapped[str] = mapped_column(String(255), index=True, default="")
+    symptom_text: Mapped[str] = mapped_column(Text, default="")
+    suspected: Mapped[bool] = mapped_column(Boolean, index=True, default=False)
+    severity: Mapped[str] = mapped_column(String(40), default="none")
+    matched_effects_json: Mapped[str] = mapped_column(Text, default="[]")
+    matched_items_json: Mapped[str] = mapped_column(Text, default="[]")
+    evidence: Mapped[str] = mapped_column(Text, default="")
+    recommendation: Mapped[str] = mapped_column(Text, default="")
+    source_trace_id: Mapped[str] = mapped_column(String(120), index=True, default="")
+    source_event_type: Mapped[str] = mapped_column(String(80), default="agent_tool")
+    related_dose_event_id: Mapped[int | None] = mapped_column(ForeignKey("dose_events.id"), nullable=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class MissedDoseFlag(Base):
     __tablename__ = "missed_dose_flags"
     __table_args__ = (UniqueConstraint("patient_id", "flag_date", name="uq_missed_dose_flag_patient_date"),)
