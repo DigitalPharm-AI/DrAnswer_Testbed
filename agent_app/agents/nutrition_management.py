@@ -6,6 +6,7 @@ from agent_app.agents.tool_chat import run_tool_chat_agent
 from agent_app.prompt_builders import nutrition_management_agent_prompt
 from agent_app.providers import BaseLLMProvider
 from agent_app.tool_permissions import NUTRITION_MANAGEMENT_TOOLS
+from agent_app.tool_names import SOURCE_NUTRITION_MANAGEMENT_AGENT
 from agent_app.tool_runtime import ToolRuntime
 from shared.schemas import AgentResponse
 
@@ -26,6 +27,6 @@ class NutritionManagementAgent:
             response_mode="nutrition_management_chat",
             decision_type="tool_call",
             tool_names=tuple(NUTRITION_MANAGEMENT_TOOLS),
-            source_event_type="multiturn_chat",
+            source_event_type=SOURCE_NUTRITION_MANAGEMENT_AGENT,
             forced_tool_calls=forced_tool_calls,
         )

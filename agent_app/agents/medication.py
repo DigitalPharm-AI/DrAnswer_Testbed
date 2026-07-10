@@ -6,6 +6,7 @@ from agent_app.agents.tool_chat import run_tool_chat_agent
 from agent_app.prompt_builders import medication_agent_prompt
 from agent_app.providers import BaseLLMProvider
 from agent_app.tool_permissions import MEDICATION_CHAT_TOOLS
+from agent_app.tool_names import SOURCE_MEDICATION_AGENT
 from agent_app.tool_runtime import ToolRuntime
 from shared.schemas import AgentResponse
 
@@ -26,7 +27,7 @@ class MedicationAgent:
             response_mode="medication_chat",
             decision_type="tool_call",
             tool_names=tuple(MEDICATION_CHAT_TOOLS),
-            source_event_type="multiturn_chat",
+            source_event_type=SOURCE_MEDICATION_AGENT,
             forced_tool_calls=forced_tool_calls,
             force_ae_after_positive_lookup=True,
         )

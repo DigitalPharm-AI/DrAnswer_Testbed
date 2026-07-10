@@ -20,6 +20,14 @@ from agent_app.tool_names import (
     PROPOSE_NOTIFICATION_POLICY,
     SEARCH_NUTRITION_FOOD_CANDIDATES,
     SIDE_EFFECT_TOOLS,
+    SOURCE_DAILY_PATTERN,
+    SOURCE_MANUAL_DAILY_PATTERN,
+    SOURCE_MCP,
+    SOURCE_MEDICATION_AGENT,
+    SOURCE_MISSED_DOSE,
+    SOURCE_MULTITURN_CHAT,
+    SOURCE_NUTRITION_MANAGEMENT_AGENT,
+    SOURCE_NUTRITION_RECOMMENDATION_AGENT,
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
     UPDATE_NUTRITION_FOOD_RECORD,
     UPDATE_NUTRITION_MEAL_RECORD,
@@ -30,16 +38,19 @@ from shared.schemas import ToolCallResult
 HIGH_RISK_HUMAN_HANDOFF_TOOLS = POLICY_TOOLS
 
 TOOL_ALLOWLIST: dict[str, set[str]] = {
-    "daily_pattern": {PROPOSE_NOTIFICATION_POLICY},
-    "manual_daily_pattern": {PROPOSE_NOTIFICATION_POLICY},
-    "missed_dose": SIDE_EFFECT_TOOLS,
-    "multiturn_chat": {UPDATE_MEDICATION_DOSE_EVENT_STATUS, *SIDE_EFFECT_TOOLS, *POLICY_TOOLS, *NUTRITION_TOOLS},
-    "mcp": {GET_PRO_CTCAE_QUESTIONNAIRE, *NUTRITION_TOOLS},
+    SOURCE_DAILY_PATTERN: {PROPOSE_NOTIFICATION_POLICY},
+    SOURCE_MANUAL_DAILY_PATTERN: {PROPOSE_NOTIFICATION_POLICY},
+    SOURCE_MISSED_DOSE: SIDE_EFFECT_TOOLS,
+    SOURCE_MULTITURN_CHAT: {UPDATE_MEDICATION_DOSE_EVENT_STATUS, *SIDE_EFFECT_TOOLS, *POLICY_TOOLS},
+    SOURCE_MEDICATION_AGENT: MEDICATION_CHAT_TOOLS,
+    SOURCE_NUTRITION_MANAGEMENT_AGENT: NUTRITION_MANAGEMENT_TOOLS,
+    SOURCE_NUTRITION_RECOMMENDATION_AGENT: NUTRITION_RECOMMENDATION_TOOLS,
+    SOURCE_MCP: {GET_PRO_CTCAE_QUESTIONNAIRE, *NUTRITION_TOOLS},
 }
 
 
 def allowed_tool_names_for_source(source_event_type: str) -> set[str]:
-    return set(TOOL_ALLOWLIST.get(source_event_type, TOOL_ALLOWLIST.get("mcp", set())))
+    return set(TOOL_ALLOWLIST.get(source_event_type, TOOL_ALLOWLIST.get(SOURCE_MCP, set())))
 
 
 def permission_denied_result(
@@ -70,7 +81,7 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
     arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
     if tool_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
         return _validate_mark_dose_taken(arguments, source_event_type=source_event_type, payload=payload)
-    if tool_name in POLICY_TOOLS and source_event_type not in {"daily_pattern", "manual_daily_pattern", "multiturn_chat"}:
+    if tool_name in POLICY_TOOLS and source_event_type not in {SOURCE_DAILY_PATTERN, SOURCE_MANUAL_DAILY_PATTERN, SOURCE_MULTITURN_CHAT}:
         return f"{tool_name} is only allowed as a deferred confirmation candidate"
     if tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT and not str(arguments.get("symptom_text") or "").strip():
         return f"{GET_MEDICATION_SIDE_EFFECT_ASSESSMENT} requires symptom_text"
@@ -139,8 +150,8 @@ def requires_human_handoff(tool_name: str) -> bool:
 
 
 def _validate_mark_dose_taken(arguments: dict[str, Any], *, source_event_type: str, payload: dict[str, Any]) -> str | None:
-    if source_event_type != "multiturn_chat":
-        return f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} is only allowed in multiturn_chat"
+    if source_event_type not in {SOURCE_MULTITURN_CHAT, SOURCE_MEDICATION_AGENT}:
+        return f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} is only allowed in multiturn_chat or medication_agent"
     dose_event_id = arguments.get("dose_event_id")
     if not isinstance(dose_event_id, int):
         return f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} requires integer dose_event_id"

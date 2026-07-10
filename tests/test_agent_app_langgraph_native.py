@@ -40,7 +40,17 @@ from agent_app.tool_executor import McpAgentToolExecutor
 from agent_app.tool_policy import _notification_policy_deltas, deferred_policy_tool_result, is_deferred_policy_tool_call
 from agent_app.tool_permissions import permission_denied_result, validate_tool_permission
 from agent_app.tool_mcp_server import http_status_tool_error_result
-from agent_app.tool_names import CREATE_NUTRITION_MEAL_RECORD, LEGACY_TOOL_NAMES, replace_legacy_tool_names
+from agent_app.tool_names import (
+    CREATE_NUTRITION_MEAL_RECORD,
+    GET_NUTRITION_RECOMMENDATION_CANDIDATES,
+    LEGACY_TOOL_NAMES,
+    SOURCE_MEDICATION_AGENT,
+    SOURCE_MULTITURN_CHAT,
+    SOURCE_NUTRITION_MANAGEMENT_AGENT,
+    SOURCE_NUTRITION_RECOMMENDATION_AGENT,
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+    replace_legacy_tool_names,
+)
 from agent_app.tool_protocol import (
     MCP_METHOD_TOOLS_CALL,
     MCP_METHOD_TOOLS_LIST,
@@ -416,7 +426,7 @@ class NativeFakeToolExecutor:
             return permission_denied_result(tool_call, trace_id=trace_id, source_event_type=source_event_type, reason=denial_reason)
         if is_deferred_policy_tool_call(tool_call):
             return deferred_policy_tool_result(tool_call, trace_id=trace_id, source_event_type=source_event_type)
-        self.calls.append(tool_call)
+        self.calls.append({**tool_call, "_source_event_type": source_event_type})
         if name == "update_medication_dose_event_status":
             return ToolCallResult(
                 tool_name=name,
@@ -1034,6 +1044,38 @@ def test_agent_app_mcp_direct_call_enforces_default_tool_allowlist():
     assert result["structuredContent"]["response"]["source_event_type"] == "mcp"
 
 
+def test_specialist_source_event_types_enforce_tool_boundaries():
+    meal_call = {
+        "name": CREATE_NUTRITION_MEAL_RECORD,
+        "arguments": {"meal_type": "lunch", "foods": [{"food_name": "rice"}]},
+    }
+    supervisor_denial = validate_tool_permission(meal_call, source_event_type=SOURCE_MULTITURN_CHAT, payload={})
+
+    assert supervisor_denial == f"{CREATE_NUTRITION_MEAL_RECORD} is not allowed for {SOURCE_MULTITURN_CHAT}"
+    assert validate_tool_permission(meal_call, source_event_type=SOURCE_NUTRITION_MANAGEMENT_AGENT, payload={}) is None
+
+    recommendation_call = {
+        "name": GET_NUTRITION_RECOMMENDATION_CANDIDATES,
+        "arguments": {"constraints": {"sodium": "low"}},
+    }
+
+    assert validate_tool_permission(recommendation_call, source_event_type=SOURCE_NUTRITION_RECOMMENDATION_AGENT, payload={}) is None
+    assert (
+        validate_tool_permission(recommendation_call, source_event_type=SOURCE_NUTRITION_MANAGEMENT_AGENT, payload={})
+        == f"{GET_NUTRITION_RECOMMENDATION_CANDIDATES} is not allowed for {SOURCE_NUTRITION_MANAGEMENT_AGENT}"
+    )
+
+    dose_call = {"name": UPDATE_MEDICATION_DOSE_EVENT_STATUS, "arguments": {"dose_event_id": 12}}
+    dose_payload = {"context": {"today_dose_events": [{"dose_event_id": 12}]}}
+
+    assert validate_tool_permission(dose_call, source_event_type=SOURCE_MULTITURN_CHAT, payload=dose_payload) is None
+    assert validate_tool_permission(dose_call, source_event_type=SOURCE_MEDICATION_AGENT, payload=dose_payload) is None
+    assert (
+        validate_tool_permission(dose_call, source_event_type=SOURCE_NUTRITION_MANAGEMENT_AGENT, payload=dose_payload)
+        == f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} is not allowed for {SOURCE_NUTRITION_MANAGEMENT_AGENT}"
+    )
+
+
 def test_agent_app_mcp_allows_nutrition_tools():
     denial = validate_tool_permission(
         {
@@ -1234,6 +1276,7 @@ def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_perm
     assert payload["structured_payload"]["tool_results"][0]["status"] == "success"
     assert payload["structured_payload"]["tool_results"][0]["response"]["status"] == "taken"
     assert tool_executor.calls[0]["name"] == "update_medication_dose_event_status"
+    assert tool_executor.calls[0]["_source_event_type"] == SOURCE_MEDICATION_AGENT
     assert [seen["response_mode"] for seen in provider.seen_payloads] == ["multiturn_chat", "medication_chat"]
     assert {"update_medication_dose_event_status", "get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"} <= set(provider.bound_tool_names)
     assert "get_nutrition_recommendation_candidates" not in provider.bound_tool_names
@@ -1266,6 +1309,7 @@ def test_agent_app_multiturn_delegates_nutrition_management_tools(monkeypatch):
     assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "delegate_to_nutrition_management_agent"
     assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "search_nutrition_food_candidates"
     assert tool_executor.calls[0]["name"] == "search_nutrition_food_candidates"
+    assert tool_executor.calls[0]["_source_event_type"] == SOURCE_NUTRITION_MANAGEMENT_AGENT
     assert {"delegate_to_nutrition_management_agent", "delegate_to_nutrition_recommendation_agent"} <= supervisor_tools
     assert not {
         "search_nutrition_food_candidates",
@@ -1354,6 +1398,7 @@ def test_agent_app_multiturn_delegates_nutrition_recommendation_tools(monkeypatc
     assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "delegate_to_nutrition_recommendation_agent"
     assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "get_nutrition_recommendation_candidates"
     assert tool_executor.calls[0]["name"] == "get_nutrition_recommendation_candidates"
+    assert tool_executor.calls[0]["_source_event_type"] == SOURCE_NUTRITION_RECOMMENDATION_AGENT
     assert not {
         "search_nutrition_food_candidates",
         "create_nutrition_meal_record",
@@ -1394,7 +1439,7 @@ def test_specialist_state_graph_stops_at_common_tool_loop_limit():
             response_mode="nutrition_management_chat",
             decision_type="tool_call",
             tool_names=("search_nutrition_food_candidates",),
-            source_event_type="multiturn_chat",
+            source_event_type=SOURCE_NUTRITION_MANAGEMENT_AGENT,
         )
     )
 

@@ -26,6 +26,15 @@ GET_NUTRITION_RECOMMENDATION_CANDIDATES = "get_nutrition_recommendation_candidat
 PROPOSE_NOTIFICATION_POLICY = "propose_notification_policy"
 PROPOSE_SYSTEM_POLICY = "propose_system_policy"
 
+SOURCE_DAILY_PATTERN = "daily_pattern"
+SOURCE_MANUAL_DAILY_PATTERN = "manual_daily_pattern"
+SOURCE_MISSED_DOSE = "missed_dose"
+SOURCE_MULTITURN_CHAT = "multiturn_chat"
+SOURCE_MEDICATION_AGENT = "medication_agent"
+SOURCE_NUTRITION_MANAGEMENT_AGENT = "nutrition_management_agent"
+SOURCE_NUTRITION_RECOMMENDATION_AGENT = "nutrition_recommendation_agent"
+SOURCE_MCP = "mcp"
+
 LEGACY_TO_CANONICAL_TOOL_NAMES = {
     "call_medication_agent": DELEGATE_TO_MEDICATION_AGENT,
     "call_nutrition_management_agent": DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT,
