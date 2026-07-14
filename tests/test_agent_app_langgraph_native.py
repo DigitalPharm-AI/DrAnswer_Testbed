@@ -19,7 +19,7 @@ from pydantic import ConfigDict, Field
 
 import agent_app.main as native_agent_main
 from agent_app.agent_delegation import delegation_tools_payload
-from agent_app.agents.tool_chat import SPECIALIST_TOOL_LOOP_LIMIT, run_tool_chat_agent
+from agent_app.agents.tool_chat import SPECIALIST_TOOL_LOOP_LIMIT, ToolChatAgentGraph
 from agent_app.async_tasks import DEAD, enqueue_async_task
 from agent_app.continuation_policy import async_continuation_type
 from agent_app.chat_tooling import (
@@ -388,8 +388,10 @@ class NativeSideEffectLookupProvider(NativeChatProvider):
 class NativeLoopLimitProvider(NativeChatProvider):
     def __init__(self) -> None:
         self.bound_tool_names: list[str] = []
+        self.chat_model_call_count = 0
 
     def chat_model(self):
+        self.chat_model_call_count += 1
         return NativeLoopLimitChatModel(provider=self)
 
     async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
@@ -1502,31 +1504,34 @@ def test_specialist_state_graph_stops_at_common_tool_loop_limit():
     provider = NativeLoopLimitProvider()
     tool_executor = NativeFakeToolExecutor()
 
+    graph_runner = ToolChatAgentGraph(
+        provider=provider,
+        tool_runtime=ToolRuntime(tool_executor),
+        agent_name="nutrition_management_agent",
+        prompt=nutrition_management_agent_prompt(),
+        response_mode="nutrition_management_chat",
+        decision_type="tool_call",
+        tool_names=("search_nutrition_food_candidates",),
+        source_event_type=SOURCE_NUTRITION_MANAGEMENT_AGENT,
+    )
+
     response = asyncio.run(
-        run_tool_chat_agent(
-            provider=provider,
-            tool_runtime=ToolRuntime(tool_executor),
-            trace_id="trace-specialist-loop-limit",
-            request_payload={
+        graph_runner.invoke(
+            "trace-specialist-loop-limit",
+            {
                 "patient_id": "demo-patient",
                 "phr_patient_key": "phr-demo",
                 "message": "계란 정보를 확인해줘",
                 "context": {},
             },
-            agent_name="nutrition_management_agent",
-            prompt=nutrition_management_agent_prompt(),
-            response_mode="nutrition_management_chat",
-            decision_type="tool_call",
-            tool_names=("search_nutrition_food_candidates",),
-            source_event_type=SOURCE_NUTRITION_MANAGEMENT_AGENT,
         )
     )
-
     structured = response.structured_payload
     assert structured["routing_mode"] == "specialist_max_iterations"
     assert structured["tool_loop_mode"] == "langgraph_state_graph"
     assert len(structured["tool_calls"]) == SPECIALIST_TOOL_LOOP_LIMIT
     assert len(tool_executor.calls) == SPECIALIST_TOOL_LOOP_LIMIT
+    assert provider.chat_model_call_count == 1
     assert structured["pending_tool_calls"][0]["name"] == "search_nutrition_food_candidates"
     assert "도구 실행 단계" in response.human_summary
 
