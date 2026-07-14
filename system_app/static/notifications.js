@@ -1,4 +1,4 @@
-import { installChatLogScrollPreserver } from "./notifications/chat_scroll.js?v=20260619b";
+import { installChatLogScrollPreserver } from "./notifications/chat_scroll.js?v=20260714c";
 import { createPanelRefresher } from "./notifications/panels.js?v=20260619b";
 import { createPolicyConfirmationRenderer } from "./notifications/policy_confirmation.js?v=20260619b";
 import { createButton, escapeHtml, fetchNotification, postAction, postFormAction, showNativeNotification } from "./notifications/shared.js?v=20260619b";

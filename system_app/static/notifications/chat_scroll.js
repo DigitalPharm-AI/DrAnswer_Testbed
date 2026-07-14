@@ -2,20 +2,39 @@ function getChatLogElement() {
   return document.querySelector("[data-chat-scroll-region]");
 }
 
-function getChatLogRegion() {
-  return document.getElementById("chat-log-region");
-}
-
-function getChatLogSignature() {
-  const region = getChatLogRegion();
-  if (!region) {
-    return "";
-  }
-  return `${region.dataset.chatMessageCount || "0"}:${region.dataset.chatLastMessageId || ""}`;
-}
-
 function isNearChatBottom(element) {
   return element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+}
+
+function captureTopVisibleMessage(chatLog) {
+  const chatLogTop = chatLog.getBoundingClientRect().top;
+  const messages = chatLog.querySelectorAll("[data-chat-message-id]");
+  for (const message of messages) {
+    const bounds = message.getBoundingClientRect();
+    if (bounds.bottom > chatLogTop) {
+      return {
+        messageId: message.dataset.chatMessageId,
+        offsetTop: bounds.top - chatLogTop,
+      };
+    }
+  }
+  return null;
+}
+
+function restoreTopVisibleMessage(chatLog, anchor) {
+  if (!anchor || !anchor.messageId) {
+    return false;
+  }
+  const message = Array.from(chatLog.querySelectorAll("[data-chat-message-id]")).find(
+    (candidate) => candidate.dataset.chatMessageId === anchor.messageId,
+  );
+  if (!message) {
+    return false;
+  }
+  const chatLogTop = chatLog.getBoundingClientRect().top;
+  const currentOffsetTop = message.getBoundingClientRect().top - chatLogTop;
+  chatLog.scrollTop += currentOffsetTop - anchor.offsetTop;
+  return true;
 }
 
 function captureChatLogScroll(state) {
@@ -27,10 +46,9 @@ function captureChatLogScroll(state) {
   const hadOverflow = chatLog.scrollHeight > chatLog.clientHeight;
   state.chatScroll = {
     scrollTop: chatLog.scrollTop,
-    bottomOffset: chatLog.scrollHeight - chatLog.scrollTop,
     wasAtBottom: isNearChatBottom(chatLog),
     hadOverflow,
-    signature: getChatLogSignature(),
+    anchor: captureTopVisibleMessage(chatLog),
   };
 }
 
@@ -39,9 +57,7 @@ function restoreChatLogScroll(state) {
   if (!chatLog) {
     return;
   }
-  const currentSignature = getChatLogSignature();
-  const chatLogChanged = Boolean(state.chatScroll && state.chatScroll.signature && currentSignature !== state.chatScroll.signature);
-  if (state.chatScrollForceBottom || chatLogChanged) {
+  if (state.chatScrollForceBottom) {
     state.chatScrollForceBottom = false;
     chatLog.scrollTop = chatLog.scrollHeight;
     return;
@@ -56,8 +72,12 @@ function restoreChatLogScroll(state) {
     return;
   }
 
-  const restoredTop = chatLog.scrollHeight - state.chatScroll.bottomOffset;
-  chatLog.scrollTop = Math.max(0, restoredTop || state.chatScroll.scrollTop);
+  if (restoreTopVisibleMessage(chatLog, state.chatScroll.anchor)) {
+    return;
+  }
+
+  const maxScrollTop = Math.max(0, chatLog.scrollHeight - chatLog.clientHeight);
+  chatLog.scrollTop = Math.min(Math.max(0, state.chatScroll.scrollTop), maxScrollTop);
 }
 
 function scrollChatLogToBottom() {
@@ -69,12 +89,9 @@ function scrollChatLogToBottom() {
 }
 
 function restoreChatLogScrollAfterLayout(state) {
-  const before = getChatLogElement();
-  const currentSignature = getChatLogSignature();
   const shouldStickToBottom = Boolean(
     state.chatScrollForceBottom ||
       !state.chatScroll ||
-      (state.chatScroll.signature && currentSignature !== state.chatScroll.signature) ||
       state.chatScroll.wasAtBottom ||
       !state.chatScroll.hadOverflow,
   );
@@ -87,7 +104,7 @@ function restoreChatLogScrollAfterLayout(state) {
     }
     restoreChatLogScroll(state);
   });
-  if (shouldStickToBottom || (before && before.isConnected === false)) {
+  if (shouldStickToBottom) {
     window.setTimeout(scrollChatLogToBottom, 80);
   }
 }

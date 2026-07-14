@@ -273,6 +273,8 @@ def test_chat_log_partial_uses_js_controlled_refresh_to_preserve_scroll():
 
     assert response.status_code == 200
     assert "data-chat-scroll-region" in response.text
+    chat_log_template = open("system_app/templates/partials/chat_log.html", encoding="utf-8").read()
+    assert 'data-chat-message-id="{{ message.id }}"' in chat_log_template
     assert "live-header" not in response.text
     assert 'hx-trigger="load, every 3s"' not in response.text
     assert 'hx-trigger="load, every 2s"' not in response.text
@@ -1014,8 +1016,11 @@ def test_styles_make_top_time_value_larger_and_lock_submitted_replies():
     chat_scroll_script = open("system_app/static/notifications/chat_scroll.js", encoding="utf-8").read()
     assert "chatScrollForceBottom" in chat_scroll_script
     assert "getChatComposerFromRequestEvent" in chat_scroll_script
-    assert "getChatLogSignature" in chat_scroll_script
-    assert "chatLogChanged" in chat_scroll_script
+    assert "captureTopVisibleMessage" in chat_scroll_script
+    assert "restoreTopVisibleMessage" in chat_scroll_script
+    assert "state.chatScroll.anchor" in chat_scroll_script
+    assert "chatLogChanged" not in chat_scroll_script
+    assert "bottomOffset" not in chat_scroll_script
     assert "restoreChatLogScrollAfterLayout" in chat_scroll_script
     assert "setTimeout" in chat_scroll_script
     assert "form.reset()" in chat_scroll_script

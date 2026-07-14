@@ -10,7 +10,7 @@
   {% endif %}>
   <div class="chat-log agent-chat-window" data-chat-scroll-region>
     {% for message in chat_messages %}
-      <article class="chat-message {{ message.classes }}">
+      <article class="chat-message {{ message.classes }}" data-chat-message-id="{{ message.id }}">
         <div class="chat-role">
           <span>{{ message.role_label }}</span>
           <span class="chat-category">{{ message.category_label }}</span>
