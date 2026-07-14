@@ -1033,6 +1033,11 @@ def test_styles_make_top_time_value_larger_and_lock_submitted_replies():
     assert "localChatPendingActive" in script
     assert "syncLocalPending" in script
     assert "createPolicyConfirmationRenderer" in script
+    assert "refreshChangedNotificationsLoop" in script
+    assert "window.setTimeout(refreshChangedNotificationsLoop, 3000)" in script
+    assert "window.setInterval(refreshChangedNotifications, 3000)" not in script
+    assert "window.setInterval(refreshChatLogPanel, 3000)" not in script
+    assert "window.setInterval(refreshChatHistoryPanel, 3000)" not in script
     assert "after_id=${state.lastSeenId}&_=${Date.now()}" in script
     assert "policyChoicePayload" in policy_script
     assert "createPolicyChangeTable" in policy_script
@@ -1059,12 +1064,16 @@ def test_styles_make_top_time_value_larger_and_lock_submitted_replies():
     assert "dispatchLifecycleEvent" in panel_refresher
     assert "htmx:beforeSwap" in panel_refresher
     assert "htmx:afterSwap" in panel_refresher
+    assert "inFlightByTarget" in panel_refresher
+    assert "replacePanelOnce" in panel_refresher
+    assert "changedRefreshPromise" in panel_refresher
+    assert "await Promise.all([popupRefresh, refreshPanels()])" in panel_refresher
     assert 'replacePanel("/partials/chat", "#chat-panel")' in panel_refresher
     assert 'replacePanel("/partials/chat-log", "#chat-log-region")' in panel_refresher
     assert "return Promise.all" in panel_refresher
     assert 'fetch(url, { headers: { "HX-Request": "true" } })' in panel_refresher
     assert "function refreshChangedNotifications()" in panel_refresher
-    assert "refreshActiveConversationPopups();" in panel_refresher
+    assert "const popupRefresh = refreshActiveConversationPopups();" in panel_refresher
 
 
 def test_logs_partial_renders_observability_sections():

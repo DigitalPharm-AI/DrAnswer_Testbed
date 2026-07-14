@@ -27,6 +27,9 @@ function dispatchLifecycleEvent(name, element, detail) {
 }
 
 export function createPanelRefresher({ stack, updatePopup }) {
+  const inFlightByTarget = new Map();
+  let changedRefreshPromise = null;
+
   function chatComposerSnapshot(targetSelector) {
     if (targetSelector !== "#chat-panel") {
       return null;
@@ -60,7 +63,7 @@ export function createPanelRefresher({ stack, updatePopup }) {
     }
   }
 
-  async function replacePanel(path, targetSelector) {
+  async function replacePanelOnce(path, targetSelector) {
     const target = document.querySelector(targetSelector);
     if (!target) {
       return false;
@@ -92,6 +95,23 @@ export function createPanelRefresher({ stack, updatePopup }) {
     );
     restoreChatComposer(composerSnapshot);
     return true;
+  }
+
+  async function replacePanel(path, targetSelector) {
+    const inFlight = inFlightByTarget.get(targetSelector);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const request = replacePanelOnce(path, targetSelector);
+    inFlightByTarget.set(targetSelector, request);
+    try {
+      return await request;
+    } finally {
+      if (inFlightByTarget.get(targetSelector) === request) {
+        inFlightByTarget.delete(targetSelector);
+      }
+    }
   }
 
   function refreshPanels() {
@@ -133,12 +153,24 @@ export function createPanelRefresher({ stack, updatePopup }) {
     return replacePanel("/partials/chat-history", "#conversation-history-region").catch(() => false);
   }
 
-  function refreshChangedNotifications() {
-    refreshActiveConversationPopups();
+  async function refreshChangedNotificationsOnce() {
+    const popupRefresh = refreshActiveConversationPopups();
     if (isReplyingInAlert()) {
-      return;
+      await popupRefresh;
+      return false;
     }
-    refreshPanels();
+    await Promise.all([popupRefresh, refreshPanels()]);
+    return true;
+  }
+
+  function refreshChangedNotifications() {
+    if (changedRefreshPromise) {
+      return changedRefreshPromise;
+    }
+    changedRefreshPromise = refreshChangedNotificationsOnce().finally(() => {
+      changedRefreshPromise = null;
+    });
+    return changedRefreshPromise;
   }
 
   async function refreshActiveConversationPopups() {

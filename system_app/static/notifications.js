@@ -1,5 +1,5 @@
 import { installChatLogScrollPreserver } from "./notifications/chat_scroll.js?v=20260714c";
-import { createPanelRefresher } from "./notifications/panels.js?v=20260619b";
+import { createPanelRefresher } from "./notifications/panels.js?v=20260714d";
 import { createPolicyConfirmationRenderer } from "./notifications/policy_confirmation.js?v=20260619b";
 import { createButton, escapeHtml, fetchNotification, postAction, postFormAction, showNativeNotification } from "./notifications/shared.js?v=20260619b";
 
@@ -26,16 +26,21 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
     return panelRefresher.refreshChangedNotifications();
   }
 
-  function refreshChatLogPanel() {
-    return panelRefresher.refreshChatLogPanel();
-  }
-
   function refreshChatPanel() {
     return panelRefresher.refreshChatPanel();
   }
 
   function refreshChatHistoryPanel() {
     return panelRefresher.refreshChatHistoryPanel();
+  }
+
+  async function refreshChangedNotificationsLoop() {
+    try {
+      await refreshChangedNotifications();
+    } catch (_error) {
+      // Periodic panel refresh is best-effort and retries after the delay.
+    }
+    window.setTimeout(refreshChangedNotificationsLoop, 3000);
   }
 
   function openPage(targetId, updateHash = true) {
@@ -766,7 +771,5 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
   installReplyFormSubmitLock();
   pollNotifications();
   window.setInterval(pollNotifications, 1000);
-  window.setInterval(refreshChangedNotifications, 3000);
-  window.setInterval(refreshChatLogPanel, 3000);
-  window.setInterval(refreshChatHistoryPanel, 3000);
+  window.setTimeout(refreshChangedNotificationsLoop, 3000);
 })();
