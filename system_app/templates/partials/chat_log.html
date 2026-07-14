@@ -2,12 +2,7 @@
   id="chat-log-region"
   class="live-section agent-conversation-region"
   data-chat-message-count="{{ chat_messages | length }}"
-  data-chat-last-message-id="{{ (chat_messages | last).id if chat_messages else '' }}"
-  {% if chat_messages | selectattr("pending") | list | length > 0 %}
-  hx-get="/partials/chat-log"
-  hx-trigger="every 2s"
-  hx-swap="outerHTML"
-  {% endif %}>
+  data-chat-last-message-id="{{ (chat_messages | last).id if chat_messages else '' }}">
   <div class="chat-log agent-chat-window" data-chat-scroll-region>
     {% for message in chat_messages %}
       <article class="chat-message {{ message.classes }}" data-chat-message-id="{{ message.id }}">

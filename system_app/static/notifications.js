@@ -1,5 +1,5 @@
 import { installChatLogScrollPreserver } from "./notifications/chat_scroll.js?v=20260714c";
-import { createPanelRefresher } from "./notifications/panels.js?v=20260714d";
+import { createPanelRefresher } from "./notifications/panels.js?v=20260714f";
 import { createPolicyConfirmationRenderer } from "./notifications/policy_confirmation.js?v=20260619b";
 import { createButton, escapeHtml, fetchNotification, postAction, postFormAction, showNativeNotification } from "./notifications/shared.js?v=20260619b";
 
@@ -17,13 +17,18 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
   };
   let panelRefresher = null;
   let policyConfirmationRenderer = null;
+  let changedRefreshTimer = null;
+
+  function getActiveTabName() {
+    return document.body.dataset.activeTab || "home";
+  }
 
   function refreshPanels() {
-    return panelRefresher.refreshPanels();
+    return panelRefresher.refreshActiveTabPanels(getActiveTabName());
   }
 
   function refreshChangedNotifications() {
-    return panelRefresher.refreshChangedNotifications();
+    return panelRefresher.refreshChangedNotifications(getActiveTabName());
   }
 
   function refreshChatPanel() {
@@ -34,13 +39,45 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
     return panelRefresher.refreshChatHistoryPanel();
   }
 
+  function getPanelRefreshInterval() {
+    return getActiveTabName() === "logs" ? 10000 : 3000;
+  }
+
+  function scheduleChangedNotificationsRefresh(delay = getPanelRefreshInterval()) {
+    if (changedRefreshTimer !== null) {
+      window.clearTimeout(changedRefreshTimer);
+    }
+    changedRefreshTimer = window.setTimeout(() => {
+      changedRefreshTimer = null;
+      refreshChangedNotificationsLoop();
+    }, delay);
+  }
+
   async function refreshChangedNotificationsLoop() {
     try {
-      await refreshChangedNotifications();
+      if (!document.hidden) {
+        await refreshChangedNotifications();
+      }
     } catch (_error) {
       // Periodic panel refresh is best-effort and retries after the delay.
     }
-    window.setTimeout(refreshChangedNotificationsLoop, 3000);
+    scheduleChangedNotificationsRefresh();
+  }
+
+  async function pollNotificationsLoop() {
+    if (!document.hidden) {
+      await pollNotifications();
+    }
+    window.setTimeout(pollNotificationsLoop, 1000);
+  }
+
+  function installVisibilityRefresh() {
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        Promise.all([pollNotifications(), refreshChangedNotifications()]).catch(() => false);
+        scheduleChangedNotificationsRefresh();
+      }
+    });
   }
 
   function openPage(targetId, updateHash = true) {
@@ -53,6 +90,7 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
       tab.classList.toggle("is-active", tab.dataset.tabTarget === targetId);
     }
     document.body.dataset.activeTab = targetId.replace("-page", "");
+    scheduleChangedNotificationsRefresh();
     if (updateHash) {
       const hash = targetId === "chat-page" ? "#chat" : targetId === "logs-page" ? "#logs" : "#home";
       window.history.replaceState(null, "", hash);
@@ -95,6 +133,7 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
           return;
         }
         openPage(tab.dataset.tabTarget);
+        refreshPanels().catch(() => false);
       });
     }
     document.body.addEventListener("click", (event) => {
@@ -123,6 +162,7 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
       openChatPage(false);
     } else if (window.location.hash === "#logs") {
       openPage("logs-page", false);
+      refreshPanels().catch(() => false);
     } else {
       openPage("home-page", false);
     }
@@ -768,8 +808,8 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
   installChatComposerPendingIndicator();
   installNutritionScenarioRefresh();
   installChatLogScrollPreserver(state);
+  installVisibilityRefresh();
   installReplyFormSubmitLock();
-  pollNotifications();
-  window.setInterval(pollNotifications, 1000);
-  window.setTimeout(refreshChangedNotificationsLoop, 3000);
+  pollNotificationsLoop();
+  scheduleChangedNotificationsRefresh();
 })();

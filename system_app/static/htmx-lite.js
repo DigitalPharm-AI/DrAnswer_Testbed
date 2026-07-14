@@ -148,24 +148,42 @@
     return match ? Number(match[1]) * 1000 : 0;
   }
 
+  function isPollingEligible(elt) {
+    if (document.hidden || !elt.isConnected) {
+      return false;
+    }
+    const tabPanel = elt.closest(".page-tab-panel");
+    return !tabPanel || tabPanel.classList.contains("is-active");
+  }
+
   function bindTriggers(root = document, options = {}) {
     const runLoad = options.runLoad !== false;
     root.querySelectorAll("[hx-get][hx-trigger]").forEach((elt) => {
       const trigger = elt.getAttribute("hx-trigger") || "";
-      if (runLoad && trigger.includes("load") && !elt.hasAttribute(LOAD_MARK)) {
+      let loadRequest = Promise.resolve();
+      if (runLoad && trigger.includes("load") && !elt.hasAttribute(LOAD_MARK) && isPollingEligible(elt)) {
         elt.setAttribute(LOAD_MARK, "true");
-        requestFromElement(elt).catch(() => {});
+        loadRequest = requestFromElement(elt).catch(() => {});
       }
       const everyMs = parseEvery(trigger);
       if (everyMs > 0 && !elt.hasAttribute(EVERY_MARK)) {
         elt.setAttribute(EVERY_MARK, "true");
-        const everyTimer = window.setInterval(() => {
-          if (!elt.isConnected) {
-            window.clearInterval(everyTimer);
-            return;
+        const pollAfterCompletion = () => {
+          window.setTimeout(async () => {
+            if (!elt.isConnected) {
+              return;
+            }
+            if (isPollingEligible(elt)) {
+              await requestFromElement(elt).catch(() => {});
+            }
+            pollAfterCompletion();
+          }, everyMs);
+        };
+        loadRequest.finally(() => {
+          if (elt.isConnected) {
+            pollAfterCompletion();
           }
-          requestFromElement(elt).catch(() => {});
-        }, everyMs);
+        });
       }
     });
   }

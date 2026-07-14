@@ -1,9 +1,6 @@
 <section
   id="logs-panel"
-  class="logs-shell"
-  hx-get="/partials/logs"
-  hx-trigger="every 10s"
-  hx-swap="outerHTML">
+  class="logs-shell">
   {% set async_status = observability.async_status %}
   {% set workers = observability.workers %}
   {% set local_jobs = observability.local_jobs %}

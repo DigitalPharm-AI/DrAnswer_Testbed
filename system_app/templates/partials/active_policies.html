@@ -1,9 +1,6 @@
 <section
   id="active-policies-panel"
-  class="panel policy-panel"
-  hx-get="/partials/active-policies"
-  hx-trigger="load, every 3s"
-  hx-swap="outerHTML">
+  class="panel policy-panel">
   <div class="panel-header">
     <h2>활성 알림 정책</h2>
     <span class="badge neutral">{{ active_policies|length }}개 정책</span>

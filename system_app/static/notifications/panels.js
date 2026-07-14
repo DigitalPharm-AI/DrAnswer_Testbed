@@ -125,6 +125,24 @@ export function createPanelRefresher({ stack, updatePopup }) {
     ]);
   }
 
+  function refreshActiveTabPanels(activeTab) {
+    if (activeTab === "logs") {
+      return Promise.all([refreshLogsPanel()]);
+    }
+    if (activeTab === "chat") {
+      return Promise.all([refreshChatLogPanel(), refreshChatHistoryPanel()]);
+    }
+    if (activeTab === "home") {
+      return Promise.all([
+        refreshNotificationsPanel(),
+        refreshTimelinePanel(),
+        refreshNutritionPanel(),
+        refreshActivePoliciesPanel(),
+      ]);
+    }
+    return Promise.resolve([]);
+  }
+
   function refreshNotificationsPanel() {
     return replacePanel("/partials/notifications", "#notifications-panel").catch(() => false);
   }
@@ -153,21 +171,25 @@ export function createPanelRefresher({ stack, updatePopup }) {
     return replacePanel("/partials/chat-history", "#conversation-history-region").catch(() => false);
   }
 
-  async function refreshChangedNotificationsOnce() {
+  function refreshLogsPanel() {
+    return replacePanel("/partials/logs", "#logs-panel").catch(() => false);
+  }
+
+  async function refreshChangedNotificationsOnce(activeTab) {
     const popupRefresh = refreshActiveConversationPopups();
     if (isReplyingInAlert()) {
       await popupRefresh;
       return false;
     }
-    await Promise.all([popupRefresh, refreshPanels()]);
+    await Promise.all([popupRefresh, refreshActiveTabPanels(activeTab)]);
     return true;
   }
 
-  function refreshChangedNotifications() {
+  function refreshChangedNotifications(activeTab) {
     if (changedRefreshPromise) {
       return changedRefreshPromise;
     }
-    changedRefreshPromise = refreshChangedNotificationsOnce().finally(() => {
+    changedRefreshPromise = refreshChangedNotificationsOnce(activeTab).finally(() => {
       changedRefreshPromise = null;
     });
     return changedRefreshPromise;
@@ -209,6 +231,7 @@ export function createPanelRefresher({ stack, updatePopup }) {
 
   return {
     refreshPanels,
+    refreshActiveTabPanels,
     refreshNotificationsPanel,
     refreshTimelinePanel,
     refreshNutritionPanel,
@@ -216,6 +239,7 @@ export function createPanelRefresher({ stack, updatePopup }) {
     refreshChatLogPanel,
     refreshChatPanel,
     refreshChatHistoryPanel,
+    refreshLogsPanel,
     refreshChangedNotifications,
     refreshActiveConversationPopups,
     isReplyingInAlert,

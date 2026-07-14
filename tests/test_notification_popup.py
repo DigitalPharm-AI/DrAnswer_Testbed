@@ -427,7 +427,7 @@ def test_notifications_partial_keeps_acknowledged_today_history_and_excludes_oth
     assert "2건" in response_text
 
 
-def test_active_policies_partial_auto_refreshes_and_displays_policy_period():
+def test_active_policies_partial_uses_js_refresh_and_displays_policy_period():
     client = TestClient(app)
 
     with SessionLocal() as session:
@@ -458,8 +458,8 @@ def test_active_policies_partial_auto_refreshes_and_displays_policy_period():
         session.commit()
 
     assert response.status_code == 200
-    assert 'hx-get="/partials/active-policies"' in response_text
-    assert 'hx-trigger="load, every 3s"' in response_text
+    assert 'hx-get="/partials/active-policies"' not in response_text
+    assert all("hx-trigger=" not in line for line in response_text.splitlines()[0:6])
     assert "아침 08:00" in response_text
     assert "2회 추가 / 10분 간격" in response_text
     assert "적용 기간: 2026-04-20 ~ 2026-04-27" in response_text

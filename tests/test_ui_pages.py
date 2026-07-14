@@ -276,8 +276,8 @@ def test_chat_log_partial_uses_js_controlled_refresh_to_preserve_scroll():
     chat_log_template = open("system_app/templates/partials/chat_log.html", encoding="utf-8").read()
     assert 'data-chat-message-id="{{ message.id }}"' in chat_log_template
     assert "live-header" not in response.text
-    assert 'hx-trigger="load, every 3s"' not in response.text
-    assert 'hx-trigger="load, every 2s"' not in response.text
+    assert 'hx-get="/partials/chat-log"' not in response.text
+    assert "hx-trigger=" not in response.text
 
 
 def test_chat_log_keeps_missed_dose_messages_in_chat_flow():
@@ -806,8 +806,8 @@ def test_chat_log_partial_shows_pending_agent_response_indicator():
         assert response.text.index("속이 메스꺼운데 약 때문일까요?") < response.text.index("응답 생성 중")
         assert "progress-round" in response.text
         assert "pending-response" in response.text
-        assert 'hx-get="/partials/chat-log"' in response.text
-        assert 'hx-trigger="every 2s"' in response.text
+        assert 'hx-get="/partials/chat-log"' not in response.text
+        assert "hx-trigger=" not in response.text
     finally:
         with SessionLocal() as session:
             if created_notification_id is not None:
@@ -869,7 +869,8 @@ def test_chat_log_partial_keeps_pending_indicator_during_async_continuation():
         assert "응답 생성 중" in response.text
         assert "progress-round" in response.text
         assert "pending-response" in response.text
-        assert 'hx-get="/partials/chat-log"' in response.text
+        assert 'hx-get="/partials/chat-log"' not in response.text
+        assert "hx-trigger=" not in response.text
     finally:
         with SessionLocal() as session:
             if created_notification_id is not None:
@@ -970,15 +971,47 @@ def test_add_chat_message_uses_simulation_clock_timestamp():
             session.commit()
 
 
-def test_htmx_lite_rebinds_polling_after_outer_html_swap():
+def test_htmx_lite_rebinds_non_overlapping_visible_polling_after_outer_html_swap():
     script = open("system_app/static/htmx-lite.js", encoding="utf-8").read()
 
     assert "bindTriggers(document, { runLoad: false })" in script
-    assert "if (!elt.isConnected)" in script
-    assert "window.clearInterval(everyTimer)" in script
+    assert "function isPollingEligible(elt)" in script
+    assert "document.hidden || !elt.isConnected" in script
+    assert 'elt.closest(".page-tab-panel")' in script
+    assert 'tabPanel.classList.contains("is-active")' in script
+    assert "let loadRequest = Promise.resolve()" in script
+    assert "loadRequest.finally" in script
+    assert "const pollAfterCompletion" in script
+    assert "window.setTimeout(async () =>" in script
+    assert "await requestFromElement(elt)" in script
+    assert "window.setInterval" not in script
     assert 'document.body.classList.add("htmx-request")' in script
     assert "target.replaceWith(replacement)" in script
     assert 'dispatch("htmx:afterSwap", swappedTarget || target || source' in script
+
+
+def test_dashboard_polling_is_owned_by_active_tab_javascript():
+    script = open("system_app/static/notifications.js", encoding="utf-8").read()
+    panel_script = open("system_app/static/notifications/panels.js", encoding="utf-8").read()
+    index_template = open("system_app/templates/index.html", encoding="utf-8").read()
+    timeline_template = open("system_app/templates/partials/timeline.html", encoding="utf-8").read()
+    policies_template = open("system_app/templates/partials/active_policies.html", encoding="utf-8").read()
+    chat_log_template = open("system_app/templates/partials/chat_log.html", encoding="utf-8").read()
+    logs_template = open("system_app/templates/partials/logs.html", encoding="utf-8").read()
+
+    assert 'getActiveTabName() === "logs" ? 10000 : 3000' in script
+    assert "scheduleChangedNotificationsRefresh" in script
+    assert "pollNotificationsLoop" in script
+    assert "window.setInterval(pollNotifications, 1000)" not in script
+    assert 'activeTab === "home"' in panel_script
+    assert 'activeTab === "chat"' in panel_script
+    assert 'activeTab === "logs"' in panel_script
+    assert 'replacePanel("/partials/logs", "#logs-panel")' in panel_script
+    assert 'hx-get="/partials/logs"' not in index_template
+    assert "hx-trigger=" not in timeline_template.splitlines()[0]
+    assert all("hx-trigger=" not in line for line in policies_template.splitlines()[0:6])
+    assert all("hx-trigger=" not in line for line in chat_log_template.splitlines()[0:10])
+    assert all("hx-trigger=" not in line for line in logs_template.splitlines()[0:6])
 
 
 def test_htmx_lite_does_not_treat_polling_containers_as_click_triggers():
@@ -1034,10 +1067,19 @@ def test_styles_make_top_time_value_larger_and_lock_submitted_replies():
     assert "syncLocalPending" in script
     assert "createPolicyConfirmationRenderer" in script
     assert "refreshChangedNotificationsLoop" in script
-    assert "window.setTimeout(refreshChangedNotificationsLoop, 3000)" in script
+    assert "scheduleChangedNotificationsRefresh" in script
+    assert "getPanelRefreshInterval" in script
+    assert "pollNotificationsLoop" in script
+    assert "window.setInterval(pollNotifications, 1000)" not in script
     assert "window.setInterval(refreshChangedNotifications, 3000)" not in script
     assert "window.setInterval(refreshChatLogPanel, 3000)" not in script
     assert "window.setInterval(refreshChatHistoryPanel, 3000)" not in script
+    assert "getActiveTabName" in script
+    assert "document.hidden" in script
+    assert 'document.addEventListener("visibilitychange"' in script
+    assert "installVisibilityRefresh()" in script
+    assert "return panelRefresher.refreshActiveTabPanels(getActiveTabName())" in script
+    assert "return panelRefresher.refreshChangedNotifications(getActiveTabName())" in script
     assert "after_id=${state.lastSeenId}&_=${Date.now()}" in script
     assert "policyChoicePayload" in policy_script
     assert "createPolicyChangeTable" in policy_script
@@ -1067,12 +1109,18 @@ def test_styles_make_top_time_value_larger_and_lock_submitted_replies():
     assert "inFlightByTarget" in panel_refresher
     assert "replacePanelOnce" in panel_refresher
     assert "changedRefreshPromise" in panel_refresher
-    assert "await Promise.all([popupRefresh, refreshPanels()])" in panel_refresher
+    assert "refreshActiveTabPanels" in panel_refresher
+    assert 'activeTab === "home"' in panel_refresher
+    assert 'activeTab === "chat"' in panel_refresher
+    assert 'activeTab === "logs"' in panel_refresher
+    assert 'replacePanel("/partials/logs", "#logs-panel")' in panel_refresher
+    assert "return Promise.resolve([])" in panel_refresher
+    assert "await Promise.all([popupRefresh, refreshActiveTabPanels(activeTab)])" in panel_refresher
     assert 'replacePanel("/partials/chat", "#chat-panel")' in panel_refresher
     assert 'replacePanel("/partials/chat-log", "#chat-log-region")' in panel_refresher
     assert "return Promise.all" in panel_refresher
     assert 'fetch(url, { headers: { "HX-Request": "true" } })' in panel_refresher
-    assert "function refreshChangedNotifications()" in panel_refresher
+    assert "function refreshChangedNotifications(activeTab)" in panel_refresher
     assert "const popupRefresh = refreshActiveConversationPopups();" in panel_refresher
 
 
@@ -1083,6 +1131,7 @@ def test_logs_partial_renders_observability_sections():
 
     assert response.status_code == 200
     assert 'id="logs-panel"' in response.text
+    assert all("hx-trigger=" not in line for line in response.text.splitlines()[0:6])
     assert "logs-hero-panel" not in response.text
     assert "<h2>Observability</h2>" not in response.text
     for marker in LOGS_SECTION_MARKERS:
