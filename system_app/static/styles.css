@@ -212,15 +212,79 @@ body[data-active-tab="logs"] .hero h1 {
   font-size: 1.28rem;
 }
 
+.app-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 18px;
+}
+
 .app-tabs {
   display: inline-flex;
   gap: 6px;
-  margin: 0 0 18px;
+  margin: 0;
   padding: 4px;
   border: 1px solid rgba(210, 215, 222, 0.84);
   border-radius: 8px;
   background: rgba(248, 249, 250, 0.9);
   box-shadow: 0 8px 20px rgba(31, 35, 40, 0.06);
+}
+
+.qa-feedback-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.qa-feedback-link {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 16px;
+  border: 1px solid rgba(95, 102, 112, 0.34);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--accent);
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1;
+  text-decoration: none;
+  transition: transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+}
+
+.qa-feedback-link:hover,
+.qa-feedback-link:focus-visible {
+  background: rgba(248, 249, 250, 0.98);
+  box-shadow: 0 8px 18px rgba(31, 35, 40, 0.1);
+  transform: translateY(-1px);
+}
+
+.qa-feedback-form-link {
+  border-color: #efbe86;
+  background: #e58a24;
+  color: white;
+  box-shadow: 0 8px 18px rgba(154, 86, 19, 0.16);
+}
+
+.qa-feedback-form-link:hover,
+.qa-feedback-form-link:focus-visible {
+  background: #9a5613;
+  color: white;
+}
+
+.qa-feedback-sheet-link {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
+.qa-feedback-sheet-link:hover,
+.qa-feedback-sheet-link:focus-visible {
+  background: #4f555e;
+  color: white;
 }
 
 .app-tab {
@@ -2024,6 +2088,25 @@ button:disabled {
 }
 
 @media (max-width: 1100px) {
+  .app-navigation {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .app-tabs {
+    align-self: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .qa-feedback-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .qa-feedback-link {
+    flex: 1 1 180px;
+  }
+
   .top-time-inner,
   .page-shell {
     width: min(100%, calc(100% - 20px));

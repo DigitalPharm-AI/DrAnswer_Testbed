@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     system_base_url: str = "http://127.0.0.1:8000"
     agent_base_url: str = "http://127.0.0.1:8001"
     phr_base_url: str = "http://127.0.0.1:8002"
+    qa_feedback_form_url: str = ""
+    qa_feedback_sheet_url: str = ""
     internal_api_token: str | None = None
     prompt_workbook_path: Path = Field(default=Path("data/prompt_registry.xlsx"))
     policy_workbook_path: Path = Field(default=Path("data/default_notification_policies.xlsx"))

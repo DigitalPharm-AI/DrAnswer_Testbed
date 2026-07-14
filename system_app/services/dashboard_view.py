@@ -806,6 +806,8 @@ def build_dashboard_context(request: Request, session: Session, agent_model_conf
     notification_metadata_map = {notification.id: parse_metadata_json(notification.metadata_json) for notification in notifications}
     return {
         "request": request,
+        "qa_feedback_form_url": settings.qa_feedback_form_url.strip(),
+        "qa_feedback_sheet_url": settings.qa_feedback_sheet_url.strip(),
         "clock": clock,
         "schedule_preset_options": SCHEDULE_PRESET_OPTIONS,
         "medication_form_options": MEDICATION_FORM_OPTIONS,

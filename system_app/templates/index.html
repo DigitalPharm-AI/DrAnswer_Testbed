@@ -34,11 +34,23 @@
       </div>
     </header>
 
-    <nav class="app-tabs" aria-label="주요 화면">
-      <button class="app-tab is-active" type="button" data-tab-target="home-page">HOME</button>
-      <button class="app-tab" type="button" data-tab-target="chat-page">Chat</button>
-      <button class="app-tab" type="button" data-tab-target="logs-page">LOGS</button>
-    </nav>
+    <div class="app-navigation">
+      <nav class="app-tabs" aria-label="주요 화면">
+        <button class="app-tab is-active" type="button" data-tab-target="home-page">HOME</button>
+        <button class="app-tab" type="button" data-tab-target="chat-page">Chat</button>
+        <button class="app-tab" type="button" data-tab-target="logs-page">LOGS</button>
+      </nav>
+      {% if qa_feedback_form_url or qa_feedback_sheet_url %}
+        <div class="qa-feedback-actions" aria-label="QA 피드백">
+          {% if qa_feedback_form_url %}
+            <a class="qa-feedback-link qa-feedback-form-link" href="{{ qa_feedback_form_url }}" target="_blank" rel="noopener noreferrer">QA 의견 남기기</a>
+          {% endif %}
+          {% if qa_feedback_sheet_url %}
+            <a class="qa-feedback-link qa-feedback-sheet-link" href="{{ qa_feedback_sheet_url }}" target="_blank" rel="noopener noreferrer">QA 시트 보기</a>
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
 
     <main>
       <section id="home-page" class="page-tab-panel is-active">

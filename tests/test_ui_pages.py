@@ -1,9 +1,11 @@
 import json
 from datetime import datetime, timedelta
+from html import escape
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from shared.settings import get_settings
 from shared.time_utils import utc_now
 from system_app.db import SessionLocal
 from system_app.main import app
@@ -13,7 +15,6 @@ from system_app.services.dashboard_view import chat_message_view, sorted_chat_vi
 from system_app.services.notification_service import create_notification
 from system_app.services.patient_profile_service import ensure_base_data
 from system_app.services.timeline_service import add_chat_message
-
 
 LOGS_SECTION_MARKERS = (
     "비동기 연동 상태",
@@ -62,6 +63,7 @@ LOGS_ACTION_MARKERS = (
 
 def test_dashboard_uses_home_chat_tabs():
     client = TestClient(app)
+    settings = get_settings()
 
     response = client.get("/")
 
@@ -72,6 +74,20 @@ def test_dashboard_uses_home_chat_tabs():
     assert "HOME" in response.text
     assert "Chat" in response.text
     assert "LOGS" in response.text
+    assert 'class="app-navigation"' in response.text
+    feedback_links = (
+        ("QA 의견 남기기", settings.qa_feedback_form_url.strip()),
+        ("QA 시트 보기", settings.qa_feedback_sheet_url.strip()),
+    )
+    assert ('class="qa-feedback-actions"' in response.text) is any(url for _, url in feedback_links)
+    if settings.qa_feedback_form_url.strip():
+        assert 'class="qa-feedback-link qa-feedback-form-link"' in response.text
+    for label, url in feedback_links:
+        if url:
+            assert label in response.text
+            assert f'href="{escape(url, quote=True)}"' in response.text
+        else:
+            assert label not in response.text
     assert "알림 센터" in response.text
     assert "에이전트와의 대화" in response.text
     assert "대화 이력" in response.text
