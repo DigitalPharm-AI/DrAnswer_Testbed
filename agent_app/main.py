@@ -25,7 +25,7 @@ from agent_app.async_tasks import (
     retry_dead_async_task,
 )
 from agent_app.async_worker import async_task_worker
-from agent_app.db import engine, get_session
+from agent_app.db import SessionLocal, engine
 from agent_app.errors import AgentExecutionError
 from agent_app.migrations import run_migrations
 from agent_app.models import Base
@@ -34,6 +34,7 @@ from agent_app.providers import describe_model_config, set_runtime_model_tier
 from agent_app.runtime import create_runtime_components
 from agent_app.security import require_internal_api_token
 from agent_app.worker_status import worker_status_payload
+from shared.redaction import safe_exception_summary
 from shared.schemas import (
     AgentAsyncAccepted,
     AgentAsyncClinicianAlertRequest,
@@ -46,7 +47,6 @@ from shared.schemas import (
     MissedDoseEventPayload,
     MultiturnChatRequest,
 )
-from shared.redaction import safe_exception_summary
 from shared.settings import get_settings
 
 runtime_components = create_runtime_components()
@@ -127,36 +127,43 @@ async def multiturn_chat(payload: MultiturnChatRequest) -> AgentResponse:
     return await orchestrator.invoke("multiturn_chat", payload.model_dump(mode="json"))
 
 
+# Keep each synchronous SQLAlchemy session inside one worker-thread call so
+# connection checkin cannot be starved by FastAPI dependency cleanup.
 @app.post("/agent/async/daily-patterns", response_model=AgentAsyncAccepted, dependencies=[Depends(require_internal_api_token)])
-async def async_daily_patterns(payload: DailyMedicationPattern, session: Session = Depends(get_session)) -> AgentAsyncAccepted:
-    trace_logging.log_info("agent_api_call", path="/agent/async/daily-patterns", mode="async_submit", task_type="daily_pattern")
-    return _enqueue_agent_task(session, "daily_pattern", payload.model_dump(mode="json"), _request_id("daily_pattern", payload.callback_context))
+def async_daily_patterns(payload: DailyMedicationPattern) -> AgentAsyncAccepted:
+    with SessionLocal() as session:
+        trace_logging.log_info("agent_api_call", path="/agent/async/daily-patterns", mode="async_submit", task_type="daily_pattern")
+        return _enqueue_agent_task(session, "daily_pattern", payload.model_dump(mode="json"), _request_id("daily_pattern", payload.callback_context))
 
 
 @app.post("/agent/async/missed-dose-events", response_model=AgentAsyncAccepted, dependencies=[Depends(require_internal_api_token)])
-async def async_missed_dose_events(payload: MissedDoseEventPayload, session: Session = Depends(get_session)) -> AgentAsyncAccepted:
-    trace_logging.log_info("agent_api_call", path="/agent/async/missed-dose-events", mode="async_submit", task_type="missed_dose")
-    return _enqueue_agent_task(session, "missed_dose", payload.model_dump(mode="json"), _request_id("missed_dose", payload.callback_context))
+def async_missed_dose_events(payload: MissedDoseEventPayload) -> AgentAsyncAccepted:
+    with SessionLocal() as session:
+        trace_logging.log_info("agent_api_call", path="/agent/async/missed-dose-events", mode="async_submit", task_type="missed_dose")
+        return _enqueue_agent_task(session, "missed_dose", payload.model_dump(mode="json"), _request_id("missed_dose", payload.callback_context))
 
 
 @app.post("/agent/async/chat-continuations", response_model=AgentAsyncAccepted, dependencies=[Depends(require_internal_api_token)])
-async def async_chat_continuations(payload: MultiturnChatRequest, session: Session = Depends(get_session)) -> AgentAsyncAccepted:
-    trace_logging.log_info("agent_api_call", path="/agent/async/chat-continuations", mode="async_submit", task_type="chat_continuation")
-    return _enqueue_agent_task(session, "chat_continuation", payload.model_dump(mode="json"), _request_id("chat_continuation", payload.callback_context))
+def async_chat_continuations(payload: MultiturnChatRequest) -> AgentAsyncAccepted:
+    with SessionLocal() as session:
+        trace_logging.log_info("agent_api_call", path="/agent/async/chat-continuations", mode="async_submit", task_type="chat_continuation")
+        return _enqueue_agent_task(session, "chat_continuation", payload.model_dump(mode="json"), _request_id("chat_continuation", payload.callback_context))
 
 
 @app.post("/agent/async/push-messages", response_model=AgentAsyncAccepted, dependencies=[Depends(require_internal_api_token)])
-async def async_push_messages(payload: AgentAsyncPushMessageRequest, session: Session = Depends(get_session)) -> AgentAsyncAccepted:
-    trace_logging.log_info("agent_api_call", path="/agent/async/push-messages", mode="async_submit", task_type="push_message")
-    request_id = payload.request_id or payload.idempotency_key or f"push_message:{uuid.uuid4().hex}"
-    return _enqueue_agent_task(session, "push_message", payload.model_dump(mode="json", by_alias=True), request_id)
+def async_push_messages(payload: AgentAsyncPushMessageRequest) -> AgentAsyncAccepted:
+    with SessionLocal() as session:
+        trace_logging.log_info("agent_api_call", path="/agent/async/push-messages", mode="async_submit", task_type="push_message")
+        request_id = payload.request_id or payload.idempotency_key or f"push_message:{uuid.uuid4().hex}"
+        return _enqueue_agent_task(session, "push_message", payload.model_dump(mode="json", by_alias=True), request_id)
 
 
 @app.post("/agent/async/clinician-alerts", response_model=AgentAsyncAccepted, dependencies=[Depends(require_internal_api_token)])
-async def async_clinician_alerts(payload: AgentAsyncClinicianAlertRequest, session: Session = Depends(get_session)) -> AgentAsyncAccepted:
-    trace_logging.log_info("agent_api_call", path="/agent/async/clinician-alerts", mode="async_submit", task_type="clinician_alert")
-    request_id = payload.request_id or payload.idempotency_key or f"clinician_alert:{uuid.uuid4().hex}"
-    return _enqueue_agent_task(session, "clinician_alert", payload.model_dump(mode="json"), request_id)
+def async_clinician_alerts(payload: AgentAsyncClinicianAlertRequest) -> AgentAsyncAccepted:
+    with SessionLocal() as session:
+        trace_logging.log_info("agent_api_call", path="/agent/async/clinician-alerts", mode="async_submit", task_type="clinician_alert")
+        request_id = payload.request_id or payload.idempotency_key or f"clinician_alert:{uuid.uuid4().hex}"
+        return _enqueue_agent_task(session, "clinician_alert", payload.model_dump(mode="json"), request_id)
 
 
 @app.post("/agent/mcp", dependencies=[Depends(require_internal_api_token)])
@@ -174,82 +181,85 @@ async def agent_mcp(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.get("/agent/async/tasks/status", dependencies=[Depends(require_internal_api_token)])
-async def async_task_status(session: Session = Depends(get_session)) -> dict:
-    counts = async_task_status_counts(session)
-    active_count = sum(counts.get(status, 0) for status in ACTIVE_STATUSES)
-    return {
-        "status": "ok",
-        "counts": counts,
-        "active_count": active_count,
-        "active_statuses": sorted(ACTIVE_STATUSES),
-        "workers": worker_status_payload(session),
-    }
+def async_task_status() -> dict:
+    with SessionLocal() as session:
+        counts = async_task_status_counts(session)
+        active_count = sum(counts.get(status, 0) for status in ACTIVE_STATUSES)
+        return {
+            "status": "ok",
+            "counts": counts,
+            "active_count": active_count,
+            "active_statuses": sorted(ACTIVE_STATUSES),
+            "workers": worker_status_payload(session),
+        }
 
 
 @app.get("/agent/ops/readiness", dependencies=[Depends(require_internal_api_token)])
-async def agent_ops_readiness(session: Session = Depends(get_session)) -> dict:
-    return agent_ops_readiness_payload(session)
+def agent_ops_readiness() -> dict:
+    with SessionLocal() as session:
+        return agent_ops_readiness_payload(session)
 
 
 @app.get("/agent/async/tasks", dependencies=[Depends(require_internal_api_token)])
-async def async_tasks(
+def async_tasks(
     status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
-    session: Session = Depends(get_session),
 ) -> dict:
-    tasks = async_task_rows(session, status=status, limit=limit)
-    return {
-        "status": "ok",
-        "count": len(tasks),
-        "tasks": [async_task_observability_payload(task) for task in tasks],
-    }
+    with SessionLocal() as session:
+        tasks = async_task_rows(session, status=status, limit=limit)
+        return {
+            "status": "ok",
+            "count": len(tasks),
+            "tasks": [async_task_observability_payload(task) for task in tasks],
+        }
 
 
 @app.get("/agent/async/tasks/dead", dependencies=[Depends(require_internal_api_token)])
-async def dead_async_tasks(
+def dead_async_tasks(
     limit: int = Query(default=50, ge=1, le=200),
-    session: Session = Depends(get_session),
 ) -> dict:
-    tasks = async_task_rows(session, status=DEAD, limit=limit)
-    return {
-        "status": "ok",
-        "count": len(tasks),
-        "tasks": [async_task_observability_payload(task) for task in tasks],
-    }
+    with SessionLocal() as session:
+        tasks = async_task_rows(session, status=DEAD, limit=limit)
+        return {
+            "status": "ok",
+            "count": len(tasks),
+            "tasks": [async_task_observability_payload(task) for task in tasks],
+        }
 
 
 @app.post("/agent/async/tasks/{request_id}/actions", dependencies=[Depends(require_internal_api_token)])
-async def async_task_action(
+def async_task_action(
     request_id: str,
     payload: AgentAsyncTaskActionRequest,
-    session: Session = Depends(get_session),
 ) -> dict:
-    task = async_task_by_request_id(session, request_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="agent_async_task_not_found")
-    if task.status != DEAD:
-        raise HTTPException(status_code=409, detail="agent_async_task_not_dead")
-    if payload.action == "retry":
-        task = retry_dead_async_task(session, task, reason=payload.reason)
-    else:
-        task = dismiss_dead_async_task(session, task, reason=payload.reason)
-    session.commit()
-    return {
-        "status": "ok",
-        "action": payload.action,
-        "task": async_task_observability_payload(task),
-    }
+    with SessionLocal() as session:
+        task = async_task_by_request_id(session, request_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="agent_async_task_not_found")
+        if task.status != DEAD:
+            raise HTTPException(status_code=409, detail="agent_async_task_not_dead")
+        if payload.action == "retry":
+            task = retry_dead_async_task(session, task, reason=payload.reason)
+        else:
+            task = dismiss_dead_async_task(session, task, reason=payload.reason)
+        session.commit()
+        return {
+            "status": "ok",
+            "action": payload.action,
+            "task": async_task_observability_payload(task),
+        }
 
 
 @app.get("/agent/async/tasks/{request_id}", dependencies=[Depends(require_internal_api_token)])
-async def async_task_detail(request_id: str, session: Session = Depends(get_session)) -> dict:
-    task = async_task_by_request_id(session, request_id)
-    if task is None:
-        raise HTTPException(status_code=404, detail="agent_async_task_not_found")
-    return {
-        "status": "ok",
-        "task": async_task_observability_payload(task),
-    }
+def async_task_detail(request_id: str) -> dict:
+    with SessionLocal() as session:
+        task = async_task_by_request_id(session, request_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="agent_async_task_not_found")
+        return {
+            "status": "ok",
+            "task": async_task_observability_payload(task),
+        }
 
 
 def _request_id(task_type: str, callback_context) -> str:
