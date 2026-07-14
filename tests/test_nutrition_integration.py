@@ -88,6 +88,36 @@ def test_simulation_reset_clears_nutrition_runtime_rows():
         assert session.query(DailyNutritionCheck).count() == 0
 
 
+def test_simulation_reset_clears_nutrition_preferences_and_allergies():
+    patient_id = "reset-preferences-patient"
+    with build_session() as session:
+        record_preference_fact(
+            session,
+            patient_id=patient_id,
+            predicate="likes",
+            object_label="preferred-food",
+        )
+        record_preference_fact(
+            session,
+            patient_id=patient_id,
+            predicate="allergic_to",
+            object_label="soy-allergen",
+            object_type="allergen",
+        )
+        session.commit()
+
+        assert session.query(NutritionPatientPreferenceTriple).count() == 2
+
+        reset_simulation_state(session)
+
+        assert session.query(NutritionPatientPreferenceTriple).count() == 0
+        assert nutrition_preference_summary(session, patient_id=patient_id)["counts"] == {
+            "hard": 0,
+            "soft": 0,
+            "total": 0,
+        }
+
+
 def test_nutrition_views_are_scoped_by_patient_id():
     foods = [
         {

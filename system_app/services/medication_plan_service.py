@@ -21,6 +21,7 @@ from system_app.models import (
     Notification,
     NutritionFood,
     NutritionMeal,
+    NutritionPatientPreferenceTriple,
     ReminderPolicy,
     SideEffectRecord,
     SimulationPatientProfile,
@@ -86,6 +87,7 @@ def reset_simulation_state(session: Session) -> None:
     session.execute(delete(DailyNutritionCheck))
     session.execute(delete(NutritionFood))
     session.execute(delete(NutritionMeal))
+    session.execute(delete(NutritionPatientPreferenceTriple))
     session.execute(delete(DoseEvent))
     session.execute(delete(DoseSchedule))
     session.execute(delete(ReminderPolicy))
