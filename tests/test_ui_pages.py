@@ -988,6 +988,11 @@ def test_htmx_lite_rebinds_non_overlapping_visible_polling_after_outer_html_swap
     assert 'document.body.classList.add("htmx-request")' in script
     assert "target.replaceWith(replacement)" in script
     assert 'dispatch("htmx:afterSwap", swappedTarget || target || source' in script
+    assert "DEFAULT_REQUEST_TIMEOUT_MS = 15000" in script
+    assert "const controller = new AbortController()" in script
+    assert "signal: controller.signal" in script
+    assert "failed: true, successful: false" in script
+    assert "window.clearTimeout(timeoutId)" in script
 
 
 def test_dashboard_polling_is_owned_by_active_tab_javascript():
@@ -1002,6 +1007,7 @@ def test_dashboard_polling_is_owned_by_active_tab_javascript():
     assert 'getActiveTabName() === "logs" ? 10000 : 3000' in script
     assert "scheduleChangedNotificationsRefresh" in script
     assert "pollNotificationsLoop" in script
+    assert "finally {\n      window.setTimeout(pollNotificationsLoop, 1000);" in script
     assert "window.setInterval(pollNotifications, 1000)" not in script
     assert 'activeTab === "home"' in panel_script
     assert 'activeTab === "chat"' in panel_script
@@ -1109,6 +1115,10 @@ def test_styles_make_top_time_value_larger_and_lock_submitted_replies():
     assert "inFlightByTarget" in panel_refresher
     assert "replacePanelOnce" in panel_refresher
     assert "changedRefreshPromise" in panel_refresher
+    assert "PANEL_REQUEST_TIMEOUT_MS = 8000" in panel_refresher
+    assert "timeoutMs: PANEL_REQUEST_TIMEOUT_MS" in panel_refresher
+    assert "signal: controller.signal" in panel_refresher
+    assert 'if (activeTab === "home" && isReplyingInAlert())' in panel_refresher
     assert "refreshActiveTabPanels" in panel_refresher
     assert 'activeTab === "home"' in panel_refresher
     assert 'activeTab === "chat"' in panel_refresher
@@ -1119,7 +1129,7 @@ def test_styles_make_top_time_value_larger_and_lock_submitted_replies():
     assert 'replacePanel("/partials/chat", "#chat-panel")' in panel_refresher
     assert 'replacePanel("/partials/chat-log", "#chat-log-region")' in panel_refresher
     assert "return Promise.all" in panel_refresher
-    assert 'fetch(url, { headers: { "HX-Request": "true" } })' in panel_refresher
+    assert 'headers: { "HX-Request": "true" }' in panel_refresher
     assert "function refreshChangedNotifications(activeTab)" in panel_refresher
     assert "const popupRefresh = refreshActiveConversationPopups();" in panel_refresher
 

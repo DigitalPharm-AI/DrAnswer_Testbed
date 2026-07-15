@@ -15,13 +15,13 @@ from system_app.services.clock_service import ensure_clock
 from system_app.services.conversation_service import acknowledge_notification as acknowledge_notification_record
 from system_app.services.conversation_service import handle_policy_confirmation_message
 from system_app.services.dashboard_view import build_dashboard_context
+from system_app.services.food_search_service import english_to_korean_nutrients, scale_nutrients
 from system_app.services.missed_dose_flag_service import is_active_missed_dose_flag_for_event
 from system_app.services.missed_dose_reply_understanding import (
     annotate_missed_dose_reply,
     build_rule_based_missed_dose_reply_understanding,
     missed_dose_reply_request_metadata,
 )
-from system_app.services.food_search_service import english_to_korean_nutrients, scale_nutrients
 from system_app.services.nutrition_service import MEAL_TYPE_LABELS, record_meal
 from system_app.services.side_effect_reminder_safety import create_side_effect_reminder_safety_prompt, handle_side_effect_reminder_safety_reply
 from system_app.services.system_request_service import create_system_event_request
@@ -85,7 +85,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
     router = APIRouter()
 
     @router.post("/chat/policy-confirmation")
-    async def policy_confirmation_chat(
+    def policy_confirmation_chat(
         request: Request,
         message: str = Form(...),
         notification_id: int | None = Form(None),
@@ -97,7 +97,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
         return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
 
     @router.post("/chat/ae-response")
-    async def ae_response(
+    def ae_response(
         request: Request,
         chat_message_id: int = Form(...),
         response_text: str = Form(...),
@@ -154,7 +154,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
         return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
 
     @router.post("/chat/side-effect-reminder-safety")
-    async def side_effect_reminder_safety_chat(
+    def side_effect_reminder_safety_chat(
         request: Request,
         action: str = Form(...),
         notification_id: int | None = Form(None),
@@ -167,7 +167,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
         return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
 
     @router.post("/chat/system")
-    async def system_chat(
+    def system_chat(
         request: Request,
         event_type: str = Form("multiturn_chat"),
         message: str = Form(...),
@@ -201,7 +201,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
         return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
 
     @router.post("/chat/food-select")
-    async def food_select(
+    def food_select(
         request: Request,
         chat_message_id: int = Form(...),
         food_ref_id: str = Form(...),
@@ -222,7 +222,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
         return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
 
     @router.post("/chat/food-grams")
-    async def food_grams(
+    def food_grams(
         request: Request,
         chat_message_id: int = Form(...),
         portion_g: float = Form(...),
@@ -249,7 +249,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
         return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
 
     @router.post("/chat/food-confirm")
-    async def food_confirm(
+    def food_confirm(
         request: Request,
         chat_message_id: int = Form(...),
         session: Session = Depends(get_session),

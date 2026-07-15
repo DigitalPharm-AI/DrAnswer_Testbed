@@ -65,10 +65,15 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
   }
 
   async function pollNotificationsLoop() {
-    if (!document.hidden) {
-      await pollNotifications();
+    try {
+      if (!document.hidden) {
+        await pollNotifications();
+      }
+    } catch (_error) {
+      // Notification polling is best-effort and must continue after transient failures.
+    } finally {
+      window.setTimeout(pollNotificationsLoop, 1000);
     }
-    window.setTimeout(pollNotificationsLoop, 1000);
   }
 
   function installVisibilityRefresh() {

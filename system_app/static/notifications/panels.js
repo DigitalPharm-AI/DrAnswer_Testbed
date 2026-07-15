@@ -1,5 +1,7 @@
 import { fetchNotification } from "./shared.js";
 
+const PANEL_REQUEST_TIMEOUT_MS = 8000;
+
 function cacheBustedUrl(path) {
   const separator = path.includes("?") ? "&" : "?";
   return `${path}${separator}_=${Date.now()}`;
@@ -71,11 +73,25 @@ export function createPanelRefresher({ stack, updatePopup }) {
     const url = cacheBustedUrl(path);
     if (window.htmx && targetSelector !== "#chat-panel") {
       const composerSnapshot = chatComposerSnapshot(targetSelector);
-      await window.htmx.ajax("GET", url, { target: targetSelector, swap: "outerHTML" });
+      await window.htmx.ajax("GET", url, {
+        target: targetSelector,
+        swap: "outerHTML",
+        timeoutMs: PANEL_REQUEST_TIMEOUT_MS,
+      });
       restoreChatComposer(composerSnapshot);
       return true;
     }
-    const response = await fetch(url, { headers: { "HX-Request": "true" } });
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), PANEL_REQUEST_TIMEOUT_MS);
+    let response;
+    try {
+      response = await fetch(url, {
+        headers: { "HX-Request": "true" },
+        signal: controller.signal,
+      });
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
     if (!response.ok) {
       return false;
     }
@@ -177,7 +193,7 @@ export function createPanelRefresher({ stack, updatePopup }) {
 
   async function refreshChangedNotificationsOnce(activeTab) {
     const popupRefresh = refreshActiveConversationPopups();
-    if (isReplyingInAlert()) {
+    if (activeTab === "home" && isReplyingInAlert()) {
       await popupRefresh;
       return false;
     }

@@ -34,7 +34,7 @@ def create_agent_async_api_router(get_runtime: Callable[[], SystemRuntime]) -> A
     router = APIRouter(prefix="/api/agent/async", dependencies=[Depends(require_internal_api_token)])
 
     @router.get("/traces")
-    async def agent_async_traces(
+    def agent_async_traces(
         trace_id: str | None = None,
         request_id: str | None = None,
         patient_id: str | None = None,
@@ -58,7 +58,7 @@ def create_agent_async_api_router(get_runtime: Callable[[], SystemRuntime]) -> A
         return {"status": "ok", "count": len(rows), "traces": [agent_trace_payload(row) for row in rows]}
 
     @router.get("/traces/{trace_id}")
-    async def agent_async_trace_detail(trace_id: str, session: Session = Depends(get_session)) -> dict:
+    def agent_async_trace_detail(trace_id: str, session: Session = Depends(get_session)) -> dict:
         trace = session.scalar(select(AgentRunTrace).where(AgentRunTrace.trace_id == trace_id))
         if trace is None:
             raise HTTPException(status_code=404, detail="agent_trace_not_found")
@@ -68,32 +68,32 @@ def create_agent_async_api_router(get_runtime: Callable[[], SystemRuntime]) -> A
         return {"status": "ok", "trace": agent_trace_payload(trace, steps)}
 
     @router.post("/job-results")
-    async def agent_async_job_results(payload: AgentAsyncJobResultRequest, session: Session = Depends(get_session)) -> dict:
+    def agent_async_job_results(payload: AgentAsyncJobResultRequest, session: Session = Depends(get_session)) -> dict:
         with get_runtime().write_lock:
             return process_async_job_result_callback(session, payload)
 
     @router.post("/chat-results")
-    async def agent_async_chat_results(payload: AgentAsyncChatResultRequest, session: Session = Depends(get_session)) -> dict:
+    def agent_async_chat_results(payload: AgentAsyncChatResultRequest, session: Session = Depends(get_session)) -> dict:
         with get_runtime().write_lock:
             return process_async_chat_result_callback(session, payload)
 
     @router.post("/policy-change-requests")
-    async def agent_async_policy_change_requests(payload: AgentAsyncPolicyChangeRequest, session: Session = Depends(get_session)) -> dict:
+    def agent_async_policy_change_requests(payload: AgentAsyncPolicyChangeRequest, session: Session = Depends(get_session)) -> dict:
         with get_runtime().write_lock:
             return process_async_policy_change_callback(session, payload)
 
     @router.post("/push-messages")
-    async def agent_async_push_messages(payload: AgentAsyncPushMessageRequest, session: Session = Depends(get_session)) -> dict:
+    def agent_async_push_messages(payload: AgentAsyncPushMessageRequest, session: Session = Depends(get_session)) -> dict:
         with get_runtime().write_lock:
             return process_async_push_message_callback(session, payload)
 
     @router.post("/clinician-alerts")
-    async def agent_async_clinician_alerts(payload: AgentAsyncClinicianAlertRequest, session: Session = Depends(get_session)) -> dict:
+    def agent_async_clinician_alerts(payload: AgentAsyncClinicianAlertRequest, session: Session = Depends(get_session)) -> dict:
         with get_runtime().write_lock:
             return process_async_clinician_alert_callback(session, payload)
 
     @router.post("/failures")
-    async def agent_async_failures(payload: AgentAsyncFailureRequest, session: Session = Depends(get_session)) -> dict:
+    def agent_async_failures(payload: AgentAsyncFailureRequest, session: Session = Depends(get_session)) -> dict:
         with get_runtime().write_lock:
             return process_async_failure_callback(session, payload)
 

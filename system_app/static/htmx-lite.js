@@ -1,6 +1,7 @@
 (() => {
   const LOAD_MARK = "data-hx-lite-load-bound";
   const EVERY_MARK = "data-hx-lite-every-bound";
+  const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
 
   function detail(elt, target, xhr, extra = {}) {
     return {
@@ -60,9 +61,13 @@
 
     source.classList.add("htmx-request");
     document.body.classList.add("htmx-request");
+    const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : DEFAULT_REQUEST_TIMEOUT_MS;
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const fetchOptions = {
         method,
+        signal: controller.signal,
         headers: {
           "HX-Request": "true",
           ...(options.headers || {}),
@@ -97,7 +102,15 @@
         bindTriggers(document, { runLoad: false });
       }
       return response;
+    } catch (error) {
+      const xhr = {
+        status: 0,
+        getResponseHeader: () => null,
+      };
+      dispatch("htmx:afterRequest", source, detail(source, target, xhr, { failed: true, successful: false, error }));
+      throw error;
     } finally {
+      window.clearTimeout(timeoutId);
       source.classList.remove("htmx-request");
       document.body.classList.remove("htmx-request");
     }
@@ -224,6 +237,7 @@
         source,
         target: options.target,
         swap: options.swap,
+        timeoutMs: options.timeoutMs,
       });
     },
   };
