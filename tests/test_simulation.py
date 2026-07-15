@@ -36,8 +36,8 @@ class PolicyChangeSystemAgentClient:
     async def send_multiturn_chat(self, request):
         return AgentResponse(
             trace_id="trace-system-policy",
-            agent_name="system_event_agent",
-            prompt_version_id="system_event_agent_v11",
+            agent_name="multiturn_chat_agent",
+            prompt_version_id="multiturn_chat_agent_v11",
             decision_type="tool_call",
             structured_payload={
                 "tool_call": {
@@ -79,8 +79,8 @@ class SideEffectSystemAgentClient:
     async def send_multiturn_chat(self, request):
         return AgentResponse(
             trace_id="trace-side-effect",
-            agent_name="system_event_agent",
-            prompt_version_id="system_event_agent_v11",
+            agent_name="multiturn_chat_agent",
+            prompt_version_id="multiturn_chat_agent_v11",
             decision_type="side_effect_assessment",
             structured_payload={
                 "tool_call": {
@@ -1252,7 +1252,7 @@ def test_system_policy_tool_call_creates_confirmation_then_applies_reply():
         ensure_base_data(session)
         response = AgentResponse(
             trace_id="trace-system-policy-confirmation",
-            agent_name="system_event_agent",
+            agent_name="multiturn_chat_agent",
             prompt_version_id="agent_app_v2_tool_runtime",
             decision_type="tool_call",
             structured_payload={
@@ -1311,7 +1311,7 @@ def test_system_policy_confirmation_keep_current_does_not_apply_override():
         ensure_base_data(session)
         response = AgentResponse(
             trace_id="trace-system-policy-keep",
-            agent_name="system_event_agent",
+            agent_name="multiturn_chat_agent",
             prompt_version_id="agent_app_v2_tool_runtime",
             decision_type="tool_call",
             structured_payload={
@@ -1354,7 +1354,7 @@ def test_unexecuted_update_medication_dose_event_status_tool_call_does_not_chang
         event = session.query(DoseEvent).one()
         response = AgentResponse(
             trace_id="trace-unexecuted-dose-tool",
-            agent_name="system_event_agent",
+            agent_name="multiturn_chat_agent",
             prompt_version_id="agent_app_v2_tool_runtime",
             decision_type="tool_call",
             structured_payload={

@@ -212,7 +212,7 @@ def system_event_worker(
                 session.commit()
 
         trace_logging.log_info(
-            "system_event_agent_call_started",
+            "system_event_multiturn_chat_agent_call_started",
             event_type=event_type,
             notification_id=notification_id,
             phr_registered=bool(request.phr_patient_key),
@@ -242,7 +242,7 @@ def system_event_worker(
 
         response = asyncio.run(agent_client.send_multiturn_chat(request))
         trace_logging.log_info(
-            "system_event_agent_call_completed",
+            "system_event_multiturn_chat_agent_call_completed",
             event_type=event_type,
             notification_id=notification_id,
             trace_id=response.trace_id,

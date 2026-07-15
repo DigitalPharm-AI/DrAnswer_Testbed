@@ -146,7 +146,7 @@ def test_tool_runtime_logs_routing_context(monkeypatch):
             routing_context={
                 "routing_mode": "delegated_agent",
                 "executed_by": "medication_agent",
-                "supervisor_agent": "system_event_agent",
+                "supervisor_agent": "multiturn_chat_agent",
                 "specialist_agent": "medication_agent",
                 "tool_loop_mode": "langgraph_state_graph",
                 "supervisor_tool_names": ["delegate_to_medication_agent"],

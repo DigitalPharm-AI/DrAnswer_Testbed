@@ -515,7 +515,7 @@ def test_async_chat_result_preserves_llm_food_selection_message():
         session.flush()
         response = AgentResponse(
             trace_id="trace-food-async",
-            agent_name="system_event_agent",
+            agent_name="multiturn_chat_agent",
             prompt_version_id="v1",
             decision_type="tool_call",
             structured_payload={
@@ -566,7 +566,7 @@ def test_async_chat_result_skips_food_selection_after_nutrition_write():
         session.flush()
         response = AgentResponse(
             trace_id="trace-food-update-async",
-            agent_name="system_event_agent",
+            agent_name="multiturn_chat_agent",
             prompt_version_id="v1",
             decision_type="tool_call",
             structured_payload={
@@ -624,7 +624,7 @@ def test_async_chat_result_preserves_diet_recommendation_cards():
         session.flush()
         response = AgentResponse(
             trace_id="trace-diet-recommendation-async",
-            agent_name="system_event_agent",
+            agent_name="multiturn_chat_agent",
             prompt_version_id="v1",
             decision_type="tool_call",
             structured_payload={
@@ -672,7 +672,7 @@ def test_async_chat_worker_executes_required_continuation_before_callback(monkey
             if len(self.payloads) == 1:
                 return AgentResponse(
                     trace_id="trace-first",
-                    agent_name="system_event_agent",
+                    agent_name="multiturn_chat_agent",
                     prompt_version_id="v1",
                     decision_type="async_continuation_requested",
                     structured_payload={

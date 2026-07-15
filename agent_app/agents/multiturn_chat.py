@@ -45,7 +45,7 @@ from shared.redaction import safe_exception_summary
 from shared.schemas import AgentResponse, MultiturnChatRequest, ToolCallResult
 
 SUPERVISOR_DIRECT_TOOLS = tuple(sorted(POLICY_TOOLS))
-SUPERVISOR_AGENT_NAME = "system_event_agent"
+MULTITURN_CHAT_AGENT_NAME = "multiturn_chat_agent"
 
 
 class MultiturnGraphState(TypedDict, total=False):
@@ -97,7 +97,7 @@ class MultiturnChatAgent:
             )
             return final_state["response"]
         except Exception as exc:
-            raise agent_error(trace_id, SUPERVISOR_AGENT_NAME, "system_guidance", exc) from exc
+            raise agent_error(trace_id, MULTITURN_CHAT_AGENT_NAME, "system_guidance", exc) from exc
 
     def _build_graph(self):
         graph = StateGraph(MultiturnGraphState)
@@ -260,8 +260,8 @@ class MultiturnChatAgent:
             payload=state["request_payload"],
             routing_context={
                 "routing_mode": "direct_async_continuation" if context.get("execute_async_continuation") is True else "direct_tool",
-                "executed_by": SUPERVISOR_AGENT_NAME,
-                "supervisor_agent": SUPERVISOR_AGENT_NAME,
+                "executed_by": MULTITURN_CHAT_AGENT_NAME,
+                "supervisor_agent": MULTITURN_CHAT_AGENT_NAME,
                 "agent_graph_mode": AGENT_GRAPH_MODE,
                 "tool_execution_mode": SINGLE_ROUND_TOOL_EXECUTION_MODE,
                 "supervisor_tool_names": [str(call.get("name") or "") for call in tool_calls],
@@ -328,13 +328,13 @@ class MultiturnChatAgent:
         return {
             "response": AgentResponse(
                 trace_id=state["trace_id"],
-                agent_name=SUPERVISOR_AGENT_NAME,
+                agent_name=MULTITURN_CHAT_AGENT_NAME,
                 prompt_version_id=PROMPT_VERSION_ID,
                 decision_type="system_guidance",
                 structured_payload={
                     "routing_mode": "direct_answer",
-                    "supervisor_agent": SUPERVISOR_AGENT_NAME,
-                    "executed_by": SUPERVISOR_AGENT_NAME,
+                    "supervisor_agent": MULTITURN_CHAT_AGENT_NAME,
+                    "executed_by": MULTITURN_CHAT_AGENT_NAME,
                     "supervisor_tool_calls": [],
                     "observations": string_list(output.get("observations")),
                     "model_output": output,
@@ -358,13 +358,13 @@ class MultiturnChatAgent:
         return {
             "response": AgentResponse(
                 trace_id=state["trace_id"],
-                agent_name=SUPERVISOR_AGENT_NAME,
+                agent_name=MULTITURN_CHAT_AGENT_NAME,
                 prompt_version_id=PROMPT_VERSION_ID,
                 decision_type="async_continuation_requested",
                 structured_payload={
                     "routing_mode": "direct_async_continuation",
-                    "supervisor_agent": SUPERVISOR_AGENT_NAME,
-                    "executed_by": SUPERVISOR_AGENT_NAME,
+                    "supervisor_agent": MULTITURN_CHAT_AGENT_NAME,
+                    "executed_by": MULTITURN_CHAT_AGENT_NAME,
                     "model_output": state.get("decision_model_output", {}),
                     "tool_calls": tool_calls,
                     "supervisor_tool_calls": tool_calls,
@@ -392,8 +392,8 @@ class MultiturnChatAgent:
         final_model_output = state.get("final_model_output", {})
         structured_payload = {
             "routing_mode": "direct_tool",
-            "supervisor_agent": SUPERVISOR_AGENT_NAME,
-            "executed_by": SUPERVISOR_AGENT_NAME,
+            "supervisor_agent": MULTITURN_CHAT_AGENT_NAME,
+            "executed_by": MULTITURN_CHAT_AGENT_NAME,
             "supervisor_tool_calls": executed_calls,
             "model_output": output,
             **tool_calls_payload(executed_calls, results),
@@ -424,7 +424,7 @@ class MultiturnChatAgent:
             trace_logging.log_info(
                 "agent_final_answer_fallback_used",
                 trace_id=state["trace_id"],
-                agent_name=SUPERVISOR_AGENT_NAME,
+                agent_name=MULTITURN_CHAT_AGENT_NAME,
                 routing_mode=structured_payload["routing_mode"],
                 fallback_source=final_answer_source,
                 tool_names=[str(call.get("name") or "") for call in executed_calls],
@@ -432,7 +432,7 @@ class MultiturnChatAgent:
         return {
             "response": AgentResponse(
                 trace_id=state["trace_id"],
-                agent_name=SUPERVISOR_AGENT_NAME,
+                agent_name=MULTITURN_CHAT_AGENT_NAME,
                 prompt_version_id=PROMPT_VERSION_ID,
                 decision_type="tool_call",
                 structured_payload=structured_payload,
@@ -464,12 +464,12 @@ class MultiturnChatAgent:
         ):
             response_decision_type = "side_effect_assessment"
         structured["routing_mode"] = "delegated_agent"
-        structured["supervisor_agent"] = SUPERVISOR_AGENT_NAME
+        structured["supervisor_agent"] = MULTITURN_CHAT_AGENT_NAME
         structured["specialist_agent"] = delegated_response.agent_name
-        structured["executed_by"] = SUPERVISOR_AGENT_NAME
+        structured["executed_by"] = MULTITURN_CHAT_AGENT_NAME
         structured["delegated_agent"] = delegated_response.agent_name
         structured["delegation_reason"] = delegation_reason(delegated_call)
-        structured["delegated_by"] = SUPERVISOR_AGENT_NAME
+        structured["delegated_by"] = MULTITURN_CHAT_AGENT_NAME
         structured["supervisor_tool_calls"] = [delegated_call]
         structured["specialist_tool_calls"] = specialist_tool_calls
         structured["delegation_tool_result"] = state["delegated_tool_result"].model_dump(mode="json")
@@ -488,7 +488,7 @@ class MultiturnChatAgent:
         return {
             "response": AgentResponse(
                 trace_id=delegated_response.trace_id,
-                agent_name=SUPERVISOR_AGENT_NAME,
+                agent_name=MULTITURN_CHAT_AGENT_NAME,
                 prompt_version_id=delegated_response.prompt_version_id,
                 decision_type=response_decision_type,
                 structured_payload=structured,
@@ -507,7 +507,7 @@ class MultiturnChatAgent:
             trace_logging.log_info(
                 "agent_llm_output_validation_failed",
                 trace_id=trace_id,
-                agent_name=SUPERVISOR_AGENT_NAME,
+                agent_name=MULTITURN_CHAT_AGENT_NAME,
                 decision_type="system_guidance",
                 error=safe_exception_summary(exc, limit=300),
                 output_keys=sorted(str(key) for key in output.keys()),
@@ -516,7 +516,7 @@ class MultiturnChatAgent:
                 str(exc),
                 error_type="llm_output_validation_failed",
                 trace_id=trace_id,
-                agent_name=SUPERVISOR_AGENT_NAME,
+                agent_name=MULTITURN_CHAT_AGENT_NAME,
                 decision_type="system_guidance",
             ) from exc
 

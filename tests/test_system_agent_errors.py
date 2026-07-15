@@ -53,8 +53,8 @@ class LockCheckingSystemEventAgentClient:
             self.write_lock.release()
         return AgentResponse(
             trace_id="trace-system-worker",
-            agent_name="system_event_agent",
-            prompt_version_id="system_event_agent_v11",
+            agent_name="multiturn_chat_agent",
+            prompt_version_id="multiturn_chat_agent_v11",
             decision_type="side_effect_assessment",
             structured_payload={
                 "tool_call": {

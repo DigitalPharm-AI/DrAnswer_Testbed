@@ -409,7 +409,7 @@ def log_agent_tool_trace(notification_id: int, response: AgentResponse) -> None:
     if not tool_calls and not tool_results:
         return
     trace_logging.log_info(
-        "system_event_agent_tool_trace",
+        "system_event_multiturn_chat_agent_tool_trace",
         notification_id=notification_id,
         trace_id=response.trace_id,
         tool_count=len(tool_calls),

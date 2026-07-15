@@ -1029,8 +1029,8 @@ def test_system_chat_partial_reflects_background_completion_without_restart(monk
         release_worker.wait(timeout=2)
         response = AgentResponse(
             trace_id="trace-system-complete",
-            agent_name="system_event_agent",
-            prompt_version_id="system_event_agent_v11",
+            agent_name="multiturn_chat_agent",
+            prompt_version_id="multiturn_chat_agent_v11",
             decision_type="side_effect_assessment",
             structured_payload={"advice": "백그라운드 완료 답변입니다."},
             human_summary="백그라운드 완료 답변입니다.",

@@ -1404,7 +1404,7 @@ def test_logs_online_eval_scan_action_records_artifact(tmp_path, monkeypatch):
                 workflow_name="multiturn_chat",
                 source_event_type="multiturn_chat",
                 status="failed",
-                agent_name="system_event_agent",
+                agent_name="multiturn_chat_agent",
                 decision_type="system_guidance",
                 error_message="provider timeout",
             )

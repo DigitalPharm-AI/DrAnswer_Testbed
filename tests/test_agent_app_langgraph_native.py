@@ -1302,6 +1302,7 @@ def test_agent_app_multiturn_blocks_direct_medication_tool_call(monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     structured = payload["structured_payload"]
+    assert payload["agent_name"] == "multiturn_chat_agent"
     assert payload["decision_type"] == "tool_call"
     assert structured["routing_mode"] == "direct_tool"
     assert structured["tool_call"]["name"] == "update_medication_dose_event_status"
@@ -1326,15 +1327,15 @@ def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_perm
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["agent_name"] == "system_event_agent"
+    assert payload["agent_name"] == "multiturn_chat_agent"
     assert payload["decision_type"] == "tool_call"
     assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
     assert payload["structured_payload"]["tool_loop_mode"] == "langgraph_state_graph"
     assert payload["structured_payload"]["delegated_agent"] == "medication_agent"
-    assert payload["structured_payload"]["delegated_by"] == "system_event_agent"
-    assert payload["structured_payload"]["supervisor_agent"] == "system_event_agent"
+    assert payload["structured_payload"]["delegated_by"] == "multiturn_chat_agent"
+    assert payload["structured_payload"]["supervisor_agent"] == "multiturn_chat_agent"
     assert payload["structured_payload"]["specialist_agent"] == "medication_agent"
-    assert payload["structured_payload"]["executed_by"] == "system_event_agent"
+    assert payload["structured_payload"]["executed_by"] == "multiturn_chat_agent"
     assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "delegate_to_medication_agent"
     assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "update_medication_dose_event_status"
     assert payload["structured_payload"]["tool_call"]["name"] == "update_medication_dose_event_status"
@@ -1383,7 +1384,7 @@ def test_agent_app_multiturn_delegates_nutrition_management_tools(monkeypatch):
     payload = response.json()
     supervisor_tools = set(provider.bound_tool_history[0])
     specialist_tools = set(provider.bound_tool_history[1])
-    assert payload["agent_name"] == "system_event_agent"
+    assert payload["agent_name"] == "multiturn_chat_agent"
     assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
     assert payload["structured_payload"]["tool_loop_mode"] == "langgraph_state_graph"
     assert payload["structured_payload"]["specialist_agent"] == "nutrition_management_agent"
@@ -1431,7 +1432,7 @@ def test_agent_app_multiturn_delegated_nutrition_food_update_reaches_supervisor_
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["agent_name"] == "system_event_agent"
+    assert payload["agent_name"] == "multiturn_chat_agent"
     assert payload["human_summary"] == "점심 식사 기록에서 탕수육을 꿔바로우로 수정했어요."
     assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
     assert payload["structured_payload"]["tool_loop_mode"] == "langgraph_state_graph"
@@ -1472,7 +1473,7 @@ def test_agent_app_multiturn_delegates_nutrition_recommendation_tools(monkeypatc
     payload = response.json()
     supervisor_tools = set(provider.bound_tool_history[0])
     specialist_tools = set(provider.bound_tool_history[1])
-    assert payload["agent_name"] == "system_event_agent"
+    assert payload["agent_name"] == "multiturn_chat_agent"
     assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
     assert payload["structured_payload"]["tool_loop_mode"] == "langgraph_state_graph"
     assert payload["structured_payload"]["specialist_agent"] == "nutrition_recommendation_agent"
@@ -1625,6 +1626,7 @@ def test_agent_app_multiturn_uses_provider_for_general_recent_chat_reply(monkeyp
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["agent_name"] == "multiturn_chat_agent"
     assert payload["decision_type"] == "system_guidance"
     assert payload["structured_payload"]["final_answer_source"] == "model_output"
     assert "요청을 확인했습니다" not in payload["human_summary"]

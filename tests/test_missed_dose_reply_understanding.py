@@ -55,7 +55,7 @@ def test_agent_understanding_merge_updates_request_alert_and_user_message_metada
         )
         response = AgentResponse(
             trace_id="trace-understanding",
-            agent_name="system_event_agent",
+            agent_name="multiturn_chat_agent",
             prompt_version_id="v",
             decision_type="system_guidance",
             structured_payload={
