@@ -107,7 +107,7 @@ def test_daily_pattern_state_graph_uses_one_tool_round_and_unbound_finalizer():
     ]
 
 
-def test_missed_dose_state_graph_finalizer_preserves_required_patient_payload():
+def test_missed_dose_state_graph_iterates_and_preserves_required_patient_payload():
     provider = EventToolFinalizingProvider()
     executor = NativeFakeToolExecutor()
     orchestrator = AgentLangGraphNativeOrchestrator(provider, executor)
@@ -118,12 +118,26 @@ def test_missed_dose_state_graph_finalizer_preserves_required_patient_payload():
         GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
         GET_PRO_CTCAE_QUESTIONNAIRE,
     }
-    assert provider.chat_model_bound_tool_history[1] == []
-    assert provider.finalized_tool_names == [[GET_MEDICATION_SIDE_EFFECT_ASSESSMENT]]
-    assert len(executor.calls) == 1
+    assert set(provider.chat_model_bound_tool_history[1]) == {
+        GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+        GET_PRO_CTCAE_QUESTIONNAIRE,
+    }
+    assert provider.finalized_tool_names == [
+        [
+            GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+            GET_PRO_CTCAE_QUESTIONNAIRE,
+        ]
+    ]
+    assert [call["name"] for call in executor.calls] == [
+        GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+        GET_PRO_CTCAE_QUESTIONNAIRE,
+    ]
     assert response.structured_payload["side_effect_signal"] is True
     assert response.structured_payload["missed_dose_hybrid"]["generated_message"]
-    assert response.structured_payload["finalization_mode"] == "llm_after_tool_result"
+    assert response.structured_payload["tool_loop_mode"] == "langgraph_state_graph"
+    assert response.structured_payload["tool_execution_mode"] == "iterative"
+    assert response.structured_payload["iterations"] == 1
+    assert response.structured_payload["finalization_mode"] == "llm_without_tool_calls"
 
 
 def test_reused_event_graph_keeps_concurrent_invocation_state_isolated():

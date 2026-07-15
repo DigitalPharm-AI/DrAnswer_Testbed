@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from agent_app.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
-    DELETE_NUTRITION_MEAL_RECORD,
     DELEGATE_TO_MEDICATION_AGENT,
     DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT,
     DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT,
+    DELETE_NUTRITION_MEAL_RECORD,
     GET_MEDICATION_DOSE_STATUS,
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     GET_NUTRITION_DAILY_SUMMARY,
@@ -79,8 +79,10 @@ def multiturn_chat_prompt() -> str:
         f"meal deletes, food updates, or food deletes, call {DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT} with a short task and reason. For diet, food, or meal "
         f"recommendation requests, call {DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT} with a short task and reason. Do not call "
         "nutrition CRUD or recommendation tools directly from the supervisor. "
-        "After a delegated agent result is provided, synthesize the final user-facing Korean answer from that result; "
-        "do not call the same delegation tool again unless the specialist explicitly asks for a new task. "
+        "After a delegated agent result is provided, inspect whether the original user request still has unresolved work. "
+        "If another specialist is needed, call the appropriate delegation tool and continue before answering. For dependent "
+        "nutrition tasks, complete preference or record management before requesting a recommendation. Do not repeat a "
+        "delegation tool for work that its specialist already completed. "
         f"For medication taking, medication questions, medication adherence, side-effect symptoms, medication-causality questions, "
         f"or PRO-CTCAE assessment, always call {DELEGATE_TO_MEDICATION_AGENT} with a short task and reason. Do not call medication or "
         "side-effect tools directly from the supervisor. "

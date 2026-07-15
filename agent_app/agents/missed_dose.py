@@ -2,20 +2,24 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_app.agents.single_round_graph import (
-    AGENT_GRAPH_MODE,
-    LLM_AFTER_TOOL_FINALIZATION_MODE,
-    SINGLE_ROUND_TOOL_EXECUTION_MODE,
-    SingleRoundAgentGraphState,
-    SingleRoundToolAgentGraph,
-    single_round_message_flow,
+from agent_app.agents.tool_chat import (
+    ITERATIVE_FINALIZATION_MODE,
+    ITERATIVE_TOOL_EXECUTION_MODE,
+    TOOL_LOOP_MODE,
+    ToolChatAgentGraph,
+    ToolChatGraphState,
+    tool_chat_message_flow,
 )
 from agent_app.chat_tooling import patient_summary_with_source
 from agent_app.generation import PROMPT_VERSION_ID, agent_error
-from agent_app.prompt_builders import missed_dose_final_prompt, missed_dose_prompt
+from agent_app.prompt_builders import missed_dose_prompt
 from agent_app.providers import BaseLLMProvider
 from agent_app.response_builders import missed_dose_hybrid_payload, string_list
-from agent_app.tool_names import GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE
+from agent_app.tool_names import (
+    GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+    GET_PRO_CTCAE_QUESTIONNAIRE,
+    SOURCE_MISSED_DOSE,
+)
 from agent_app.tool_results import tool_calls_payload, tool_result_summary
 from agent_app.tool_runtime import ToolRuntime
 from shared.schemas import AgentResponse, MissedDoseEventPayload
@@ -25,17 +29,20 @@ class MissedDoseAgent:
     def __init__(self, provider: BaseLLMProvider, tool_runtime: ToolRuntime) -> None:
         self.provider = provider
         self.tool_runtime = tool_runtime
-        self.graph_runner = SingleRoundToolAgentGraph(
+        self.graph_runner = ToolChatAgentGraph(
             provider=provider,
             tool_runtime=tool_runtime,
             agent_name="missed_dose_coach",
-            validation_decision_type="missed_dose_assessment",
-            source_event_type="missed_dose",
             prompt=missed_dose_prompt(),
-            final_prompt=missed_dose_final_prompt(),
             response_mode="missed_dose_coaching",
+            decision_type="missed_dose_assessment",
             tool_names=(GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE),
+            source_event_type=SOURCE_MISSED_DOSE,
+            force_ae_after_positive_lookup=True,
+            defer_async_continuation=False,
+            validation_decision_type="missed_dose_assessment",
             response_builder=self._build_response,
+            requires_conversation_alert=True,
         )
 
     async def run(self, trace_id: str, payload: dict[str, Any]) -> AgentResponse:
@@ -46,20 +53,16 @@ class MissedDoseAgent:
         return await self.graph_runner.invoke(trace_id, event.model_dump(mode="json"))
 
     @staticmethod
-    def _build_response(state: SingleRoundAgentGraphState) -> AgentResponse:
+    def _build_response(state: ToolChatGraphState) -> AgentResponse:
         event = MissedDoseEventPayload.model_validate(state["request_payload"])
-        executed_calls = state.get("executed_calls", [])
-        results = state.get("tool_results", [])
-        decision_output = state.get("decision_model_output", {})
-        final_output = state.get("final_model_output", {})
-        response_output = final_output if executed_calls else decision_output
-        response_message = state.get("final_ai_message") if executed_calls else state["decision_ai_message"]
+        executed_calls = state.get("all_executed_calls", [])
+        results = state.get("all_results", [])
+        decision_output = state.get("initial_model_output", {})
+        response_output = state.get("current_model_output", {})
+        response_message = state["current_ai_message"]
         questions = string_list(response_output.get("follow_up_questions")) or ["현재 복용 가능한 상태인지 알려주세요."]
         side_effect_signal = bool(response_output.get("side_effect_signal")) or any(
-            result.tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT
-            and result.status == "success"
-            and result.response.get("suspected")
-            for result in results
+            result.tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT and result.status == "success" and result.response.get("suspected") for result in results
         )
         structured_payload = {
             "dose_event_id": event.dose_event_id,
@@ -72,20 +75,20 @@ class MissedDoseAgent:
             "missed_dose_hybrid": missed_dose_hybrid_payload(response_output),
             "model_output": decision_output,
             **tool_calls_payload(executed_calls, results),
-            "agent_graph_mode": AGENT_GRAPH_MODE,
-            "tool_execution_mode": SINGLE_ROUND_TOOL_EXECUTION_MODE,
-            "message_flow": single_round_message_flow(len(results)),
+            "routing_mode": "event_tool" if executed_calls else "event_answer",
+            "executed_by": "missed_dose_coach",
+            "agent_graph_mode": TOOL_LOOP_MODE,
+            "tool_loop_mode": TOOL_LOOP_MODE,
+            "tool_execution_mode": ITERATIVE_TOOL_EXECUTION_MODE,
+            "iterations": state.get("iterations", 0),
+            "message_flow": tool_chat_message_flow(len(results)),
         }
         if executed_calls:
-            structured_payload["final_model_output"] = final_output
-            structured_payload["finalization_mode"] = LLM_AFTER_TOOL_FINALIZATION_MODE
+            structured_payload["final_model_output"] = response_output
+            structured_payload["finalization_mode"] = ITERATIVE_FINALIZATION_MODE
         fallback_summary = tool_result_summary(
             results,
-            str(
-                response_output.get("patient_message")
-                or response_output.get("message")
-                or f"{event.slot_label} 복약을 놓친 것으로 확인했어요. 현재 상태를 알려주세요."
-            ),
+            str(response_output.get("patient_message") or response_output.get("message") or f"{event.slot_label} 복약을 놓친 것으로 확인했어요. 현재 상태를 알려주세요."),
         )
         human_summary, final_answer_source = patient_summary_with_source(
             response_message,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -15,7 +16,9 @@ from agent_app.chat_tooling import (
     tool_messages_from_results,
 )
 from agent_app.continuation_policy import async_continuation_summary, async_continuation_type
+from agent_app.errors import AgentExecutionError
 from agent_app.generation import PROMPT_VERSION_ID
+from agent_app.output_validation import validate_llm_output
 from agent_app.providers import BaseLLMProvider
 from agent_app.response_builders import natural_chat_summary, string_list
 from agent_app.tool_catalog import ToolCatalog
@@ -23,10 +26,13 @@ from agent_app.tool_names import UPDATE_MEDICATION_DOSE_EVENT_STATUS
 from agent_app.tool_policy import has_deferred_policy_tool_call, normalize_policy_tool_calls
 from agent_app.tool_results import tool_calls_payload, tool_result_summary
 from agent_app.tool_runtime import ToolRuntime
+from shared.redaction import safe_exception_summary
 from shared.schemas import AgentResponse
 
-SPECIALIST_TOOL_LOOP_LIMIT = 6
+AGENT_TOOL_LOOP_LIMIT = 6
 TOOL_LOOP_MODE = "langgraph_state_graph"
+ITERATIVE_TOOL_EXECUTION_MODE = "iterative"
+ITERATIVE_FINALIZATION_MODE = "llm_without_tool_calls"
 
 
 class ToolChatGraphState(TypedDict, total=False):
@@ -48,6 +54,9 @@ class ToolChatGraphState(TypedDict, total=False):
     response: AgentResponse
 
 
+ResponseBuilder = Callable[[ToolChatGraphState], AgentResponse]
+
+
 class ToolChatAgentGraph:
     def __init__(
         self,
@@ -61,6 +70,11 @@ class ToolChatAgentGraph:
         tool_names: tuple[str, ...],
         source_event_type: str,
         force_ae_after_positive_lookup: bool = False,
+        defer_async_continuation: bool = True,
+        validation_decision_type: str | None = None,
+        response_builder: ResponseBuilder | None = None,
+        requires_conversation_alert: bool = False,
+        max_iterations: int = AGENT_TOOL_LOOP_LIMIT,
     ) -> None:
         self.provider = provider
         self.tool_runtime = tool_runtime
@@ -71,6 +85,11 @@ class ToolChatAgentGraph:
         self.tool_names = tool_names
         self.source_event_type = source_event_type
         self.force_ae_after_positive_lookup = force_ae_after_positive_lookup
+        self.defer_async_continuation = defer_async_continuation
+        self.validation_decision_type = validation_decision_type
+        self.response_builder = response_builder
+        self.requires_conversation_alert = requires_conversation_alert
+        self.max_iterations = max_iterations
         self.graph = self._build_graph()
 
     async def invoke(
@@ -165,6 +184,15 @@ class ToolChatAgentGraph:
                 model_output=output,
             )
 
+        validation_output = _model_output_with_tool_calls(output, tool_calls)
+        self._validate_output(
+            state["trace_id"],
+            validation_output,
+            request_payload,
+            allow_tool_only=bool(tool_calls),
+        )
+        output = validation_output
+
         updates: dict[str, Any] = {
             "current_ai_message": ai_message,
             "current_model_output": output,
@@ -176,17 +204,19 @@ class ToolChatAgentGraph:
             updates["initial_model_output"] = dict(output)
         return updates
 
-    @staticmethod
-    def _route_after_llm(state: ToolChatGraphState) -> str:
+    def _route_after_llm(self, state: ToolChatGraphState) -> str:
         tool_calls = state.get("pending_tool_calls", [])
         continuation_type = state.get("continuation_type", "")
-        if continuation_type and state.get("forced_tool_calls") is None and not any(
-            str(call.get("name") or "") == UPDATE_MEDICATION_DOSE_EVENT_STATUS for call in tool_calls
+        if (
+            self.defer_async_continuation
+            and continuation_type
+            and state.get("forced_tool_calls") is None
+            and not any(str(call.get("name") or "") == UPDATE_MEDICATION_DOSE_EVENT_STATUS for call in tool_calls)
         ):
             return "async_continuation_response"
         if not tool_calls:
             return "final_response"
-        if state.get("iterations", 0) >= SPECIALIST_TOOL_LOOP_LIMIT:
+        if state.get("iterations", 0) >= self.max_iterations:
             return "max_iterations_response"
         return "tool_node"
 
@@ -210,11 +240,7 @@ class ToolChatAgentGraph:
                 "tool_names": [str(call.get("name") or "") for call in tool_calls],
             },
         )
-        executed_ai_message = (
-            ai_message_from_tool_calls(executed_calls, content=str(ai_message.content or ""), model_output=output)
-            if executed_calls
-            else ai_message
-        )
+        executed_ai_message = ai_message_from_tool_calls(executed_calls, content=str(ai_message.content or ""), model_output=output) if executed_calls else ai_message
         tool_messages = tool_messages_from_results(executed_ai_message, executed_calls, results)
         return {
             "messages": [*state["messages"], executed_ai_message, *tool_messages],
@@ -249,23 +275,20 @@ class ToolChatAgentGraph:
                     "tool_calls": [*all_executed_calls, *tool_calls],
                     "tool_results": [result.model_dump(mode="json") for result in all_results],
                     "tools_executed": bool(all_executed_calls),
-                    "message_flow": _tool_chat_message_flow(len(all_results), pending_tool_call=True),
+                    "message_flow": tool_chat_message_flow(len(all_results), pending_tool_call=True),
                     "async_continuation_required": True,
                     "async_continuation_type": continuation_type,
                     "policy_confirmation_required": has_deferred_policy_tool_call(tool_calls),
                 },
                 human_summary=summary,
-                requires_conversation_alert=False,
+                requires_conversation_alert=self.requires_conversation_alert,
             )
         }
 
     def _max_iterations_response(self, state: ToolChatGraphState) -> dict[str, AgentResponse]:
         all_executed_calls = state.get("all_executed_calls", [])
         all_results = state.get("all_results", [])
-        summary = (
-            f"전문 에이전트의 도구 실행 단계가 {SPECIALIST_TOOL_LOOP_LIMIT}회를 초과해 "
-            "요청을 완료하지 못했습니다. 요청을 조금 더 구체적으로 나누어 다시 시도해 주세요."
-        )
+        summary = f"전문 에이전트의 도구 실행 단계가 {self.max_iterations}회를 초과해 요청을 완료하지 못했습니다. 요청을 조금 더 구체적으로 나누어 다시 시도해 주세요."
         return {
             "response": AgentResponse(
                 trace_id=state["trace_id"],
@@ -283,11 +306,11 @@ class ToolChatAgentGraph:
                     "model_output": state.get("initial_model_output", {}),
                     "final_model_output": state.get("current_model_output", {}),
                     **tool_calls_payload(all_executed_calls, all_results),
-                    "message_flow": _tool_chat_message_flow(len(all_results), pending_tool_call=True),
+                    "message_flow": tool_chat_message_flow(len(all_results), pending_tool_call=True),
                     "policy_confirmation_required": has_deferred_policy_tool_call(all_executed_calls),
                 },
                 human_summary=summary,
-                requires_conversation_alert=False,
+                requires_conversation_alert=self.requires_conversation_alert,
             )
         }
 
@@ -295,6 +318,9 @@ class ToolChatAgentGraph:
         all_executed_calls = state.get("all_executed_calls", [])
         all_results = state.get("all_results", [])
         all_tool_messages = state.get("all_tool_messages", [])
+        if self.response_builder is not None:
+            return {"response": self.response_builder(state)}
+
         if not all_executed_calls:
             return {"response": self._specialist_answer_response(state)}
 
@@ -319,7 +345,7 @@ class ToolChatAgentGraph:
                 for message in all_tool_messages
             ],
             "final_model_output": final_model_output,
-            "message_flow": _tool_chat_message_flow(len(all_results)),
+            "message_flow": tool_chat_message_flow(len(all_results)),
             "policy_confirmation_required": has_deferred_policy_tool_call(all_executed_calls),
         }
         fallback_summary = tool_result_summary(all_results, natural_chat_summary(initial_model_output) or "도구를 실행했습니다.")
@@ -348,7 +374,7 @@ class ToolChatAgentGraph:
                 decision_type=self.decision_type,
                 structured_payload=structured_payload,
                 human_summary=final_summary,
-                requires_conversation_alert=False,
+                requires_conversation_alert=self.requires_conversation_alert,
             )
         }
 
@@ -381,11 +407,45 @@ class ToolChatAgentGraph:
                 "message_flow": ["HumanMessage", "AIMessage(final_answer)"],
             },
             human_summary=human_summary,
-            requires_conversation_alert=False,
+            requires_conversation_alert=self.requires_conversation_alert,
         )
 
+    def _validate_output(
+        self,
+        trace_id: str,
+        output: dict[str, Any],
+        payload: dict[str, Any],
+        *,
+        allow_tool_only: bool,
+    ) -> None:
+        if self.validation_decision_type is None:
+            return
+        try:
+            validate_llm_output(
+                self.validation_decision_type,
+                output,
+                payload,
+                allow_tool_only=allow_tool_only,
+            )
+        except Exception as exc:
+            trace_logging.log_info(
+                "agent_llm_output_validation_failed",
+                trace_id=trace_id,
+                agent_name=self.agent_name,
+                decision_type=self.validation_decision_type,
+                error=safe_exception_summary(exc, limit=300),
+                output_keys=sorted(str(key) for key in output.keys()),
+            )
+            raise AgentExecutionError(
+                str(exc),
+                error_type="llm_output_validation_failed",
+                trace_id=trace_id,
+                agent_name=self.agent_name,
+                decision_type=self.validation_decision_type,
+            ) from exc
 
-def _tool_chat_message_flow(tool_result_count: int, *, pending_tool_call: bool = False) -> list[str]:
+
+def tool_chat_message_flow(tool_result_count: int, *, pending_tool_call: bool = False) -> list[str]:
     flow = ["HumanMessage"]
     for _ in range(tool_result_count):
         flow.extend(["AIMessage(tool_calls)", "ToolMessage"])
@@ -394,3 +454,14 @@ def _tool_chat_message_flow(tool_result_count: int, *, pending_tool_call: bool =
     else:
         flow.append("AIMessage(final_answer)")
     return flow
+
+
+def _model_output_with_tool_calls(
+    model_output: dict[str, Any],
+    tool_calls: list[dict[str, Any]],
+) -> dict[str, Any]:
+    merged = dict(model_output)
+    if tool_calls:
+        merged.pop("tool_call", None)
+        merged["tool_calls"] = tool_calls
+    return merged

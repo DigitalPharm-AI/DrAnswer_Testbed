@@ -19,9 +19,8 @@ from pydantic import ConfigDict, Field
 
 import agent_app.main as native_agent_main
 from agent_app.agent_delegation import delegation_tools_payload
-from agent_app.agents.tool_chat import SPECIALIST_TOOL_LOOP_LIMIT, ToolChatAgentGraph
+from agent_app.agents.tool_chat import AGENT_TOOL_LOOP_LIMIT, ToolChatAgentGraph
 from agent_app.async_tasks import DEAD, enqueue_async_task
-from agent_app.continuation_policy import async_continuation_type
 from agent_app.chat_tooling import (
     ai_message_from_tool_calls,
     human_payload_from_messages,
@@ -29,6 +28,7 @@ from agent_app.chat_tooling import (
     system_prompt_from_messages,
     tool_results_from_messages,
 )
+from agent_app.continuation_policy import async_continuation_type
 from agent_app.errors import AgentExecutionError
 from agent_app.graph import AgentLangGraphNativeOrchestrator
 from agent_app.output_validation import validate_llm_output
@@ -38,14 +38,12 @@ from agent_app.response_builders import missed_dose_hybrid_payload, natural_chat
 from agent_app.tool_calling import normalize_tool_calls
 from agent_app.tool_catalog import ToolCatalog
 from agent_app.tool_executor import McpAgentToolExecutor
-from agent_app.tool_policy import _notification_policy_deltas, deferred_policy_tool_result, is_deferred_policy_tool_call
-from agent_app.tool_permissions import permission_denied_result, validate_tool_permission
 from agent_app.tool_mcp_server import http_status_tool_error_result
 from agent_app.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
     GET_MEDICATION_DOSE_STATUS,
-    GET_SIDE_EFFECT_HISTORY,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
+    GET_SIDE_EFFECT_HISTORY,
     LEGACY_TOOL_NAMES,
     SOURCE_MEDICATION_AGENT,
     SOURCE_MULTITURN_CHAT,
@@ -54,6 +52,8 @@ from agent_app.tool_names import (
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
     replace_legacy_tool_names,
 )
+from agent_app.tool_permissions import permission_denied_result, validate_tool_permission
+from agent_app.tool_policy import _notification_policy_deltas, deferred_policy_tool_result, is_deferred_policy_tool_call
 from agent_app.tool_protocol import (
     MCP_METHOD_TOOLS_CALL,
     MCP_METHOD_TOOLS_LIST,
@@ -62,8 +62,8 @@ from agent_app.tool_protocol import (
     mcp_tools_list,
     tool_result_from_mcp_result,
 )
-from agent_app.tool_runtime import ToolRuntime
 from agent_app.tool_results import tool_calls_payload, tool_result_summary
+from agent_app.tool_runtime import ToolRuntime
 from agent_app.tool_side_effects import ae_tool_call_from_lookup
 from shared.schemas import AgentCallbackContext, DailyMedicationPattern, DosePatternEvent, MissedDoseEventPayload, MultiturnChatRequest, SlotAdherenceSummary, ToolCallResult
 from shared.settings import get_settings
@@ -85,7 +85,7 @@ class NativeProviderChatModel(BaseChatModel):
         return "native_test_chat_model"
 
     def bind_tools(self, tools, *, tool_choice: str | None = None, **kwargs):
-        setattr(self.provider, "bound_tool_names", [langchain_tool_name(tool) for tool in tools])
+        self.provider.bound_tool_names = [langchain_tool_name(tool) for tool in tools]
         return self.model_copy(update={"bound_tools": list(tools)})
 
     def _generate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager=None, **kwargs: Any) -> ChatResult:
@@ -94,7 +94,7 @@ class NativeProviderChatModel(BaseChatModel):
     async def _agenerate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager=None, **kwargs: Any) -> ChatResult:
         history = getattr(self.provider, "chat_model_bound_tool_history", [])
         history.append([langchain_tool_name(tool) for tool in self.bound_tools])
-        setattr(self.provider, "chat_model_bound_tool_history", history)
+        self.provider.chat_model_bound_tool_history = history
 
         payload = human_payload_from_messages(messages)
         tool_results = tool_results_from_messages(messages)
@@ -104,6 +104,15 @@ class NativeProviderChatModel(BaseChatModel):
                 output = await finalizer(system_prompt_from_messages(messages), payload, tool_results)
                 if not isinstance(output, dict):
                     output = {}
+                next_tool_calls = normalize_tool_calls(output)
+                if next_tool_calls:
+                    return _chat_result(
+                        ai_message_from_tool_calls(
+                            next_tool_calls,
+                            content=natural_chat_summary(output),
+                            model_output=output,
+                        )
+                    )
                 return _chat_result(AIMessage(content=natural_chat_summary(output), response_metadata={"model_output": output}))
             fallback = tool_result_summary(tool_results, "도구 실행 결과를 확인했습니다.")
             return _chat_result(AIMessage(content=fallback, response_metadata={"model_output": {"message": fallback, "fallback": "tool_result_summary"}}))
@@ -385,6 +394,7 @@ class NativeSideEffectLookupProvider(NativeChatProvider):
             }
         return {"advice": "The symptom assessment is complete."}
 
+
 class NativeLoopLimitProvider(NativeChatProvider):
     def __init__(self) -> None:
         self.bound_tool_names: list[str] = []
@@ -578,6 +588,19 @@ class NativeFakeToolExecutor:
                     ],
                 },
                 idempotency_key=f"{trace_id}:get_nutrition_meal_record_list",
+            )
+        if name == "upsert_nutrition_preference_fact":
+            return ToolCallResult(
+                tool_name=name,
+                status="success",
+                response={
+                    "success": True,
+                    "fact": {
+                        "predicate": tool_call["arguments"]["predicate"],
+                        "object_label": tool_call["arguments"]["object_label"],
+                    },
+                },
+                idempotency_key=f"{trace_id}:upsert_nutrition_preference_fact",
             )
         if name == "get_nutrition_recommendation_candidates":
             return ToolCallResult(
@@ -891,11 +914,7 @@ def test_model_visible_tool_contract_does_not_expose_legacy_names():
         ]
     )
     visible_payload = "\n".join([tools_payload, delegation_payload, prompt_payload])
-    violations = [
-        legacy_name
-        for legacy_name in sorted(LEGACY_TOOL_NAMES)
-        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(legacy_name)}(?![A-Za-z0-9_])", visible_payload)
-    ]
+    violations = [legacy_name for legacy_name in sorted(LEGACY_TOOL_NAMES) if re.search(rf"(?<![A-Za-z0-9_]){re.escape(legacy_name)}(?![A-Za-z0-9_])", visible_payload)]
 
     assert violations == []
 
@@ -1055,10 +1074,7 @@ def test_tool_call_validation_accepts_tool_name_alias():
 
 
 def test_tool_calls_payload_keeps_food_search_meal_type_hint():
-    candidates = [
-        {"food_ref_id": f"food-{index}", "food_name": f"food {index}", "nutrients": {}}
-        for index in range(8)
-    ]
+    candidates = [{"food_ref_id": f"food-{index}", "food_name": f"food {index}", "nutrients": {}} for index in range(8)]
 
     payload = tool_calls_payload(
         [
@@ -1132,10 +1148,7 @@ def test_specialist_source_event_types_enforce_tool_boundaries():
 
     for query_tool_name in (GET_MEDICATION_DOSE_STATUS, GET_SIDE_EFFECT_HISTORY):
         query_call = {"name": query_tool_name, "arguments": {}}
-        assert (
-            validate_tool_permission(query_call, source_event_type=SOURCE_MULTITURN_CHAT, payload={})
-            == f"{query_tool_name} is not allowed for {SOURCE_MULTITURN_CHAT}"
-        )
+        assert validate_tool_permission(query_call, source_event_type=SOURCE_MULTITURN_CHAT, payload={}) == f"{query_tool_name} is not allowed for {SOURCE_MULTITURN_CHAT}"
         assert validate_tool_permission(query_call, source_event_type=SOURCE_MEDICATION_AGENT, payload={}) is None
         assert async_continuation_type([query_call]) == ""
 
@@ -1170,26 +1183,38 @@ def test_agent_app_mcp_allows_nutrition_tools():
     )
 
     assert preference_denial is None
-    assert validate_tool_permission(
-        {"name": "update_nutrition_meal_record", "arguments": {"meal_id": 1, "meal_type": "dinner"}},
-        source_event_type="mcp",
-        payload={},
-    ) is None
-    assert validate_tool_permission(
-        {"name": "delete_nutrition_meal_record", "arguments": {"meal_id": 1}},
-        source_event_type="mcp",
-        payload={},
-    ) is None
-    assert validate_tool_permission(
-        {"name": "update_nutrition_food_record", "arguments": {"meal_id": 1, "food_id": 10, "portion": "half"}},
-        source_event_type="mcp",
-        payload={},
-    ) is None
-    assert validate_tool_permission(
-        {"name": "delete_nutrition_food_record", "arguments": {"meal_id": 1, "food_id": 10}},
-        source_event_type="mcp",
-        payload={},
-    ) is None
+    assert (
+        validate_tool_permission(
+            {"name": "update_nutrition_meal_record", "arguments": {"meal_id": 1, "meal_type": "dinner"}},
+            source_event_type="mcp",
+            payload={},
+        )
+        is None
+    )
+    assert (
+        validate_tool_permission(
+            {"name": "delete_nutrition_meal_record", "arguments": {"meal_id": 1}},
+            source_event_type="mcp",
+            payload={},
+        )
+        is None
+    )
+    assert (
+        validate_tool_permission(
+            {"name": "update_nutrition_food_record", "arguments": {"meal_id": 1, "food_id": 10, "portion": "half"}},
+            source_event_type="mcp",
+            payload={},
+        )
+        is None
+    )
+    assert (
+        validate_tool_permission(
+            {"name": "delete_nutrition_food_record", "arguments": {"meal_id": 1, "food_id": 10}},
+            source_event_type="mcp",
+            payload={},
+        )
+        is None
+    )
 
 
 def test_rule_based_provider_splits_explicit_nutrition_preferences_by_entity():
@@ -1317,6 +1342,7 @@ def test_agent_app_multiturn_blocks_direct_medication_tool_call(monkeypatch):
         "get_pro_ctcae_questionnaire",
     }.isdisjoint(provider.bound_tool_names)
 
+
 def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_permission(monkeypatch):
     provider = NativeDelegatingMedicationProvider()
     tool_executor = NativeFakeToolExecutor()
@@ -1393,15 +1419,18 @@ def test_agent_app_multiturn_delegates_nutrition_management_tools(monkeypatch):
     assert tool_executor.calls[0]["name"] == "search_nutrition_food_candidates"
     assert tool_executor.calls[0]["_source_event_type"] == SOURCE_NUTRITION_MANAGEMENT_AGENT
     assert {"delegate_to_nutrition_management_agent", "delegate_to_nutrition_recommendation_agent"} <= supervisor_tools
-    assert not {
-        "search_nutrition_food_candidates",
-        "create_nutrition_meal_record",
-        "update_nutrition_meal_record",
-        "delete_nutrition_meal_record",
-        "update_nutrition_food_record",
-        "delete_nutrition_food_record",
-        "get_nutrition_recommendation_candidates",
-    } & supervisor_tools
+    assert (
+        not {
+            "search_nutrition_food_candidates",
+            "create_nutrition_meal_record",
+            "update_nutrition_meal_record",
+            "delete_nutrition_meal_record",
+            "update_nutrition_food_record",
+            "delete_nutrition_food_record",
+            "get_nutrition_recommendation_candidates",
+        }
+        & supervisor_tools
+    )
     assert {
         "search_nutrition_food_candidates",
         "create_nutrition_meal_record",
@@ -1481,24 +1510,36 @@ def test_agent_app_multiturn_delegates_nutrition_recommendation_tools(monkeypatc
     assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "get_nutrition_recommendation_candidates"
     assert tool_executor.calls[0]["name"] == "get_nutrition_recommendation_candidates"
     assert tool_executor.calls[0]["_source_event_type"] == SOURCE_NUTRITION_RECOMMENDATION_AGENT
-    assert not {
+    assert (
+        not {
+            "search_nutrition_food_candidates",
+            "create_nutrition_meal_record",
+            "update_nutrition_meal_record",
+            "delete_nutrition_meal_record",
+            "update_nutrition_food_record",
+            "delete_nutrition_food_record",
+            "get_nutrition_recommendation_candidates",
+        }
+        & supervisor_tools
+    )
+    assert {
         "search_nutrition_food_candidates",
-        "create_nutrition_meal_record",
-        "update_nutrition_meal_record",
-        "delete_nutrition_meal_record",
-        "update_nutrition_food_record",
-        "delete_nutrition_food_record",
+        "get_nutrition_meal_record_list",
+        "get_nutrition_daily_summary",
+        "get_nutrition_preference_summary",
         "get_nutrition_recommendation_candidates",
-    } & supervisor_tools
-    assert {"search_nutrition_food_candidates", "get_nutrition_meal_record_list", "get_nutrition_daily_summary", "get_nutrition_preference_summary", "get_nutrition_recommendation_candidates"} <= specialist_tools
-    assert not {
-        "create_nutrition_meal_record",
-        "update_nutrition_meal_record",
-        "delete_nutrition_meal_record",
-        "update_nutrition_food_record",
-        "delete_nutrition_food_record",
-        "upsert_nutrition_preference_fact",
-    } & specialist_tools
+    } <= specialist_tools
+    assert (
+        not {
+            "create_nutrition_meal_record",
+            "update_nutrition_meal_record",
+            "delete_nutrition_meal_record",
+            "update_nutrition_food_record",
+            "delete_nutrition_food_record",
+            "upsert_nutrition_preference_fact",
+        }
+        & specialist_tools
+    )
 
 
 def test_specialist_state_graph_stops_at_common_tool_loop_limit():
@@ -1530,8 +1571,8 @@ def test_specialist_state_graph_stops_at_common_tool_loop_limit():
     structured = response.structured_payload
     assert structured["routing_mode"] == "specialist_max_iterations"
     assert structured["tool_loop_mode"] == "langgraph_state_graph"
-    assert len(structured["tool_calls"]) == SPECIALIST_TOOL_LOOP_LIMIT
-    assert len(tool_executor.calls) == SPECIALIST_TOOL_LOOP_LIMIT
+    assert len(structured["tool_calls"]) == AGENT_TOOL_LOOP_LIMIT
+    assert len(tool_executor.calls) == AGENT_TOOL_LOOP_LIMIT
     assert provider.chat_model_call_count == 1
     assert structured["pending_tool_calls"][0]["name"] == "search_nutrition_food_candidates"
     assert "도구 실행 단계" in response.human_summary
@@ -1595,6 +1636,7 @@ def test_agent_app_multiturn_delegates_side_effect_continuation_to_medication_ag
         "get_pro_ctcae_questionnaire",
     ]
     assert all(call["_source_event_type"] == SOURCE_MEDICATION_AGENT for call in tool_executor.calls)
+
 
 def test_agent_app_multiturn_uses_provider_for_general_recent_chat_reply(monkeypatch):
     provider = NativeRecentChatProvider()
@@ -1676,9 +1718,7 @@ def test_rule_based_provider_requires_repeated_daily_pattern_before_policy_tool_
     provider = RuleBasedProvider()
 
     daily_output = asyncio.run(provider.generate_json("", {**build_daily_pattern().model_dump(mode="json"), "response_mode": "daily_pattern_analysis"}))
-    repeated_daily_output = asyncio.run(
-        provider.generate_json("", {**build_repeated_daily_pattern().model_dump(mode="json"), "response_mode": "daily_pattern_analysis"})
-    )
+    repeated_daily_output = asyncio.run(provider.generate_json("", {**build_repeated_daily_pattern().model_dump(mode="json"), "response_mode": "daily_pattern_analysis"}))
     chat_output = asyncio.run(provider.generate_json("", build_taken_chat_request().model_dump(mode="json") | {"response_mode": "multiturn_chat"}))
     side_effect_output = asyncio.run(
         provider.generate_json(
