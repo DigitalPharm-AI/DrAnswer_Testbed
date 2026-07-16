@@ -88,6 +88,21 @@ class NoToolEventProvider(NativeChatProvider):
         }
 
 
+class HybridOnlyMissedDoseProvider(NativeChatProvider):
+    def __init__(self) -> None:
+        self.chat_model_bound_tool_history: list[list[str]] = []
+
+    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "missed_dose_hybrid": {
+                "reason": "routine_support",
+                "generated_message": "\uc810\uc2ec \uc2dc\uac04\uc5d0 \ub193\uce58\uc2e0 \uac83 \uac19\uc544\uc694. \ud3b8\ud558\uc2e4 \ub54c \ud655\uc778\ud574\ubcf4\uc138\uc694.",
+                "tone_key": "",
+                "safety_notes": ["no_medication_name", "no_diagnosis", "non_directive"],
+            }
+        }
+
+
 def test_daily_pattern_state_graph_uses_one_tool_round_and_unbound_finalizer():
     provider = EventToolFinalizingProvider()
     orchestrator = AgentLangGraphNativeOrchestrator(provider, NativeFakeToolExecutor())
@@ -114,14 +129,8 @@ def test_missed_dose_state_graph_iterates_and_preserves_required_patient_payload
 
     response = asyncio.run(orchestrator.invoke("missed_dose", build_missed_payload().model_dump(mode="json")))
 
-    assert set(provider.chat_model_bound_tool_history[0]) == {
-        GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
-        GET_PRO_CTCAE_QUESTIONNAIRE,
-    }
-    assert set(provider.chat_model_bound_tool_history[1]) == {
-        GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
-        GET_PRO_CTCAE_QUESTIONNAIRE,
-    }
+    assert provider.chat_model_bound_tool_history[0] == [GET_MEDICATION_SIDE_EFFECT_ASSESSMENT]
+    assert provider.chat_model_bound_tool_history[1] == [GET_MEDICATION_SIDE_EFFECT_ASSESSMENT]
     assert provider.finalized_tool_names == [
         [
             GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
@@ -138,6 +147,19 @@ def test_missed_dose_state_graph_iterates_and_preserves_required_patient_payload
     assert response.structured_payload["tool_execution_mode"] == "iterative"
     assert response.structured_payload["iterations"] == 1
     assert response.structured_payload["finalization_mode"] == "llm_without_tool_calls"
+
+
+def test_missed_dose_uses_validated_hybrid_message_as_chat_summary():
+    provider = HybridOnlyMissedDoseProvider()
+    orchestrator = AgentLangGraphNativeOrchestrator(provider, NativeFakeToolExecutor())
+
+    response = asyncio.run(orchestrator.invoke("missed_dose", build_missed_payload().model_dump(mode="json")))
+
+    expected = "\uc810\uc2ec \uc2dc\uac04\uc5d0 \ub193\uce58\uc2e0 \uac83 \uac19\uc544\uc694. \ud3b8\ud558\uc2e4 \ub54c \ud655\uc778\ud574\ubcf4\uc138\uc694."
+    assert response.human_summary == expected
+    assert response.structured_payload["missed_dose_hybrid"]["generated_message"] == expected
+    assert response.structured_payload["final_answer_source"] == "missed_dose_hybrid.generated_message"
+    assert provider.chat_model_bound_tool_history == [[GET_MEDICATION_SIDE_EFFECT_ASSESSMENT]]
 
 
 def test_reused_event_graph_keeps_concurrent_invocation_state_isolated():

@@ -15,6 +15,7 @@ from agent_app.chat_tooling import (
     tool_calls_from_ai_message,
     tool_messages_from_results,
 )
+from agent_app.confirmation_actions import ConfirmationActionRegistry
 from agent_app.continuation_policy import async_continuation_summary, async_continuation_type
 from agent_app.errors import AgentExecutionError
 from agent_app.generation import PROMPT_VERSION_ID
@@ -50,6 +51,7 @@ class ToolChatGraphState(TypedDict, total=False):
     all_tool_messages: list[Any]
     iterations: int
     continuation_type: str
+    confirmation_required: bool
     forced_tool_calls_seeded: bool
     response: AgentResponse
 
@@ -132,6 +134,7 @@ class ToolChatAgentGraph:
         graph.add_node("tool_node", self._tool_node)
         graph.add_node("final_response", self._final_response)
         graph.add_node("async_continuation_response", self._async_continuation_response)
+        graph.add_node("confirmation_response", self._confirmation_response)
         graph.add_node("max_iterations_response", self._max_iterations_response)
         graph.set_entry_point("prepare_model")
         graph.add_edge("prepare_model", "llm_call")
@@ -145,9 +148,17 @@ class ToolChatAgentGraph:
                 "max_iterations_response": "max_iterations_response",
             },
         )
-        graph.add_edge("tool_node", "llm_call")
+        graph.add_conditional_edges(
+            "tool_node",
+            self._route_after_tool,
+            {
+                "llm_call": "llm_call",
+                "confirmation_response": "confirmation_response",
+            },
+        )
         graph.add_edge("final_response", END)
         graph.add_edge("async_continuation_response", END)
+        graph.add_edge("confirmation_response", END)
         graph.add_edge("max_iterations_response", END)
         return graph.compile()
 
@@ -242,6 +253,28 @@ class ToolChatAgentGraph:
         )
         executed_ai_message = ai_message_from_tool_calls(executed_calls, content=str(ai_message.content or ""), model_output=output) if executed_calls else ai_message
         tool_messages = tool_messages_from_results(executed_ai_message, executed_calls, results)
+        confirmation_required = any(result.status == "confirmation_required" for result in results)
+        if not confirmation_required:
+            failed_mutation = next(
+                (
+                    result
+                    for result in results
+                    if ConfirmationActionRegistry.requires_confirmation(result.tool_name)
+                    and (
+                        result.status == "skipped"
+                        or str(result.error or "").startswith("mutation_confirmation_")
+                    )
+                ),
+                None,
+            )
+            if failed_mutation is not None:
+                raise AgentExecutionError(
+                    f"mutation_tool_not_applied:{failed_mutation.tool_name}:{failed_mutation.status}",
+                    error_type="mutation_tool_not_applied",
+                    trace_id=state["trace_id"],
+                    agent_name=self.agent_name,
+                    decision_type=self.decision_type,
+                )
         return {
             "messages": [*state["messages"], executed_ai_message, *tool_messages],
             "all_executed_calls": [*state.get("all_executed_calls", []), *executed_calls],
@@ -249,6 +282,49 @@ class ToolChatAgentGraph:
             "all_tool_messages": [*state.get("all_tool_messages", []), *tool_messages],
             "iterations": state.get("iterations", 0) + 1,
             "pending_tool_calls": [],
+            "confirmation_required": confirmation_required,
+        }
+
+    @staticmethod
+    def _route_after_tool(state: ToolChatGraphState) -> str:
+        return "confirmation_response" if state.get("confirmation_required") else "llm_call"
+
+    def _confirmation_response(self, state: ToolChatGraphState) -> dict[str, AgentResponse]:
+        all_executed_calls = state.get("all_executed_calls", [])
+        all_results = state.get("all_results", [])
+        all_tool_messages = state.get("all_tool_messages", [])
+        proposal = _first_mutation_confirmation(all_results)
+        return {
+            "response": AgentResponse(
+                trace_id=state["trace_id"],
+                agent_name=self.agent_name,
+                prompt_version_id=PROMPT_VERSION_ID,
+                decision_type="mutation_confirmation_required",
+                structured_payload={
+                    "routing_mode": "specialist_confirmation_required",
+                    "tool_loop_mode": TOOL_LOOP_MODE,
+                    "agent_graph_mode": TOOL_LOOP_MODE,
+                    "executed_by": self.agent_name,
+                    "specialist_agent": self.agent_name,
+                    "specialist_tool_calls": all_executed_calls,
+                    "model_output": state.get("initial_model_output", {}),
+                    **tool_calls_payload(all_executed_calls, all_results),
+                    "tool_messages": [
+                        {
+                            "name": message.name,
+                            "tool_call_id": message.tool_call_id,
+                            "content": message.content,
+                        }
+                        for message in all_tool_messages
+                    ],
+                    "mutation_confirmation_required": True,
+                    "mutation_confirmation": proposal,
+                    "message_flow": tool_chat_message_flow(len(all_results), pending_confirmation=True),
+                    "iterations": state.get("iterations", 0),
+                },
+                human_summary="?? ??? ???? ?? ??? ??? ?????.",
+                requires_conversation_alert=False,
+            )
         }
 
     def _async_continuation_response(self, state: ToolChatGraphState) -> dict[str, AgentResponse]:
@@ -445,15 +521,31 @@ class ToolChatAgentGraph:
             ) from exc
 
 
-def tool_chat_message_flow(tool_result_count: int, *, pending_tool_call: bool = False) -> list[str]:
+def tool_chat_message_flow(
+    tool_result_count: int,
+    *,
+    pending_tool_call: bool = False,
+    pending_confirmation: bool = False,
+) -> list[str]:
     flow = ["HumanMessage"]
     for _ in range(tool_result_count):
         flow.extend(["AIMessage(tool_calls)", "ToolMessage"])
-    if pending_tool_call:
+    if pending_tool_call or pending_confirmation:
         flow.append("AIMessage(tool_calls)")
     else:
         flow.append("AIMessage(final_answer)")
     return flow
+
+
+def _first_mutation_confirmation(results: list[Any]) -> dict[str, Any]:
+    for result in results:
+        if getattr(result, "status", "") != "confirmation_required":
+            continue
+        response = result.response if isinstance(getattr(result, "response", None), dict) else {}
+        proposal = response.get("mutation_confirmation")
+        if isinstance(proposal, dict):
+            return proposal
+    return {}
 
 
 def _model_output_with_tool_calls(

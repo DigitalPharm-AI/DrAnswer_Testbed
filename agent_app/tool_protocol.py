@@ -20,10 +20,14 @@ class AgentToolExecutorProtocol(Protocol):
 
 
 def mcp_call_params(tool_call: dict[str, Any]) -> dict[str, Any]:
-    return {
+    params = {
         "name": str(tool_call.get("name") or ""),
         "arguments": tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {},
     }
+    tool_call_id = str(tool_call.get("id") or "")
+    if tool_call_id:
+        params["tool_call_id"] = tool_call_id
+    return params
 
 
 def mcp_json_rpc_request(method: str, params: dict[str, Any] | None = None, *, request_id: str | int | None = None) -> dict[str, Any]:
@@ -114,7 +118,15 @@ def tool_result_from_mcp_result(tool_name: str, mcp_result: dict[str, Any], *, i
         error = _safe_tool_error(_first_text_content(mcp_result))
     return ToolCallResult(
         tool_name=str(structured.get("tool_name") or tool_name),
-        status="error" if status == "error" else "skipped" if status == "skipped" else "success",
+        status=(
+            "error"
+            if status == "error"
+            else "skipped"
+            if status == "skipped"
+            else "confirmation_required"
+            if status == "confirmation_required"
+            else "success"
+        ),
         response=_safe_error_response(response) if status == "error" else response,
         error=error,
         idempotency_key=idempotency_key or structured.get("idempotency_key"),

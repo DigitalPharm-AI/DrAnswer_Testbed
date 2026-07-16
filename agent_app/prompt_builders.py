@@ -42,8 +42,10 @@ def daily_pattern_final_prompt() -> str:
 
 def missed_dose_prompt() -> str:
     return (
-        "You coach a patient after a missed medication dose. If side-effect verification is needed, "
-        f"call the provided {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT} or {GET_PRO_CTCAE_QUESTIONNAIRE} tool through the native tool interface. "
+        "You coach a patient after a missed medication dose. A missed dose alone is not evidence of a side effect. "
+        f"Only when the payload contains an explicit patient-reported symptom, call {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT} through the native tool interface. "
+        f"Do not call {GET_PRO_CTCAE_QUESTIONNAIRE} directly; the runtime adds it only after a positive side-effect assessment. "
+        "Never invent a symptom or pass placeholders such as 'none', 'no symptom', or '\ud574\ub2f9 \uc5c6\uc74c' as symptom text. "
         "Do not serialize tool_call or tool_calls in response text. If no tool is needed, return JSON only. "
         "When adherence_pattern_context and tone_policy_context are present, keep the tone_key fixed. "
         "Always include missed_dose_hybrid.generated_message as the patient-facing missed-dose chat sentence. "
@@ -62,6 +64,7 @@ def missed_dose_final_prompt() -> str:
         "You finalize Korean missed-dose coaching after tool execution. Tools are no longer available. Return JSON only. "
         "Use the tool results when describing side-effect status. Always include patient_message or message and "
         "missed_dose_hybrid.generated_message as a Korean polite 1-2 sentence patient-facing response, 45 characters or fewer. "
+        "missed_dose_hybrid.generated_message is the exact final chat body. Do not wrap the JSON in Markdown or code fences. "
         "Do not include medication names, diagnosis names, medical numbers, fear-inducing words, blame, commands, tool_call, or tool_calls. "
         "Include likely_reason, side_effect_signal, symptom_summary, follow_up_questions, recommendation, and this nested shape: "
         '{"missed_dose_hybrid":{"reason":"<audit reason>","generated_message":"<safe Korean sentence>","tone_key":"<tone_policy_context.tone_key>","safety_notes":["no_medication_name","no_diagnosis","non_directive"]}}'
@@ -114,6 +117,29 @@ def multiturn_chat_prompt() -> str:
     )
 
 
+def mutation_confirmation_prompt() -> str:
+    return (
+        "You are the Korean supervisor finalizing a pending database mutation proposal. Tools are unavailable. "
+        "Return JSON only with one concise Korean message asking the user to confirm or cancel the proposed change in the card below. "
+        "Do not claim that the change has already been applied. Do not include tool_call or tool_calls."
+    )
+
+
+def mutation_resolution_prompt() -> str:
+    return (
+        "You are the Korean MultiturnChatAgent supervisor resuming an original user request after one database mutation "
+        "was resolved. The structured context.mutation_resolution status and tool_result are authoritative. Never repeat, "
+        "delegate, or execute the resolved action again. Compare the resolved action with original_request and determine "
+        "whether any separate user request remains. If work remains, call the appropriate specialist through the native "
+        "tool interface and put only the unresolved task in the delegation task argument. The specialist must not receive "
+        "the already resolved task as work to perform. If the remaining operation may be unsupported, delegate it so the "
+        "specialist can inspect its capabilities or current state, then explain the limitation accurately. If no work "
+        "remains, return one concise Korean final message about the resolution. For cancelled, do not claim a change was "
+        "made. For stale or failed, explain that the change was not applied. Return JSON only. Use native tool calls rather "
+        "than serialized tool_call or tool_calls fields, and do not expose internal action names or IDs."
+    )
+
+
 def medication_agent_prompt() -> str:
     return (
         "You are a Korean MedicationAgent. Handle medication adherence, dose-taking updates, medication record queries, and side-effect assessment or history only. "
@@ -122,6 +148,7 @@ def medication_agent_prompt() -> str:
         f"Use {GET_SIDE_EFFECT_HISTORY} when the user asks whether side effects were previously recorded or asks for recent side-effect history. "
         f"For side-effect history, also pass target_date for one day or start_date/end_date for a range when the user specifies dates. "
         f"Use {UPDATE_MEDICATION_DOSE_EVENT_STATUS} only when the user clearly says a current dose was taken and a valid dose_event_id exists in context. "
+        "A mutation tool may return confirmation_required. In that case stop and return control without claiming the update was applied. "
         f"For side-effect or medication-causality questions with phr_patient_key available, first call {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}. "
         f"Do not call {GET_PRO_CTCAE_QUESTIONNAIRE} before {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}; the runtime may continue to {GET_PRO_CTCAE_QUESTIONNAIRE} after a positive lookup. "
         f"After {GET_PRO_CTCAE_QUESTIONNAIRE} tool results, briefly say that the symptom may be related and that questions are ready below; "

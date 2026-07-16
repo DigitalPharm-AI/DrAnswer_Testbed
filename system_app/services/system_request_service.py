@@ -40,6 +40,11 @@ from system_app.services.timeline_service import (
     get_recent_diet_recommendation_groups,
     get_today_dose_events,
 )
+from system_app.services.mutation_confirmation_service import (
+    PENDING,
+    attach_confirmation_chat_message,
+    confirmation_for_response,
+)
 
 settings = get_settings()
 POLICY_CONFIRMATION_CHAT_MESSAGE = "정책 변경 후보를 채팅에 표시했어요. 아래 선택지에서 결정해주시면 그때 반영할게요."
@@ -129,6 +134,13 @@ def update_system_event_request_notification(
     if status == "needs_confirmation":
         notification.title = "정책 변경 확인 대기"
         notification.body = f"정책 적용 전에 환자 확인이 필요합니다: {request_message}"
+    if (
+        status == "needs_confirmation"
+        and response is not None
+        and isinstance(response.structured_payload.get("mutation_confirmation"), dict)
+    ):
+        notification.title = "\ubcc0\uacbd \ud655\uc778 \ub300\uae30"
+        notification.body = f"\ubcc0\uacbd \uc801\uc6a9 \uc804\uc5d0 \ud658\uc790 \ud655\uc778\uc774 \ud544\uc694\ud569\ub2c8\ub2e4: {request_message}"
     if status == "failed":
         notification.title = "에이전트 대화 처리 실패"
         notification.body = f"에이전트가 메시지를 처리하지 못했습니다: {request_message}"
@@ -263,6 +275,39 @@ def apply_system_event_response(
     )
     log_agent_tool_trace(request_notification_id, response)
     merge_missed_dose_reply_understanding_from_agent_response(session, request_notification_id, response)
+    mutation_confirmation = confirmation_for_response(session, response.structured_payload)
+    if mutation_confirmation is not None:
+        if mutation_confirmation.status != PENDING:
+            result_message = "\uc0c8 \ub300\ud654\uac00 \uc2dc\uc791\ub418\uc5b4 \uc774\uc804 \ubcc0\uacbd \uc694\uccad\uc744 \ub354 \uc774\uc0c1 \ud45c\uc2dc\ud558\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4."
+            update_system_event_request_notification(
+                session,
+                request_notification_id,
+                status="answered",
+                request_message=message,
+                result_message=result_message,
+                response=response,
+            )
+            return
+        chat_message = persist_agent_summary(session, response, category="multiturn_chat")
+        if chat_message is not None:
+            attach_confirmation_chat_message(session, mutation_confirmation, chat_message)
+        update_system_event_request_notification(
+            session,
+            request_notification_id,
+            status="needs_confirmation",
+            request_message=message,
+            result_message=response.human_summary,
+            response=response,
+        )
+        trace_logging.log_info(
+            "system_event_mutation_confirmation_pending",
+            notification_id=request_notification_id,
+            trace_id=response.trace_id,
+            confirmation_id=mutation_confirmation.public_id,
+            action_name=mutation_confirmation.action_name,
+            status=mutation_confirmation.status,
+        )
+        return
     policy_tool_response = is_policy_tool_response(response)
     if not policy_tool_response:
         persist_agent_summary(session, response, category="multiturn_chat")

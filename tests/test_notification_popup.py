@@ -1,7 +1,7 @@
 import json
 import threading
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
@@ -989,10 +989,11 @@ def test_system_chat_does_not_attach_to_stale_missed_dose_alert_after_later_take
         )
         prompt_id = prompt.id
         lunch_event_id = lunch_event.id
+        lunch_taken_at = clock.current_time + timedelta(minutes=5)
         session.commit()
 
     with SessionLocal() as session:
-        mark_dose_taken(session, lunch_event_id, taken_at=datetime(2026, 4, 20, 12, 5))
+        mark_dose_taken(session, lunch_event_id, taken_at=lunch_taken_at)
 
     response = client.post(
         "/chat/system",

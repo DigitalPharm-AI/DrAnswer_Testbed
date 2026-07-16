@@ -331,6 +331,37 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class MutationConfirmation(Base):
+    __tablename__ = "mutation_confirmations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    patient_id: Mapped[str] = mapped_column(String(100), index=True)
+    origin_request_notification_id: Mapped[int | None] = mapped_column(ForeignKey("notifications.id"), nullable=True, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(180), default="", index=True)
+    origin_trace_id: Mapped[str] = mapped_column(String(120), default="", index=True)
+    origin_agent: Mapped[str] = mapped_column(String(120), default="")
+    source_event_type: Mapped[str] = mapped_column(String(80), default="")
+    action_type: Mapped[str] = mapped_column(String(40))
+    action_name: Mapped[str] = mapped_column(String(160), index=True)
+    tool_call_id: Mapped[str] = mapped_column(String(180), default="")
+    arguments_json: Mapped[str] = mapped_column(Text, default="{}")
+    action_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    target_snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
+    target_snapshot_hash: Mapped[str] = mapped_column(String(64))
+    display_json: Mapped[str] = mapped_column(Text, default="{}")
+    continuation_json: Mapped[str] = mapped_column(Text, default="{}")
+    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    result_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    chat_message_id: Mapped[int | None] = mapped_column(ForeignKey("chat_messages.id"), nullable=True)
+    execution_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class SimulationClock(Base):
     __tablename__ = "simulation_clock"
 

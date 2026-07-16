@@ -65,7 +65,7 @@ from agent_app.tool_protocol import (
 from agent_app.tool_results import tool_calls_payload, tool_result_summary
 from agent_app.tool_runtime import ToolRuntime
 from agent_app.tool_side_effects import ae_tool_call_from_lookup
-from shared.schemas import AgentCallbackContext, DailyMedicationPattern, DosePatternEvent, MissedDoseEventPayload, MultiturnChatRequest, SlotAdherenceSummary, ToolCallResult
+from shared.schemas import AgentCallbackContext, DailyMedicationPattern, DosePatternEvent, MissedDoseEventPayload, MultiturnChatRequest, MutationConfirmationResolutionRequest, SlotAdherenceSummary, ToolCallResult
 from shared.settings import get_settings
 
 
@@ -1388,6 +1388,304 @@ def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_perm
         "get_side_effect_history",
     } <= specialist_tools
     assert "get_nutrition_recommendation_candidates" not in specialist_tools
+
+
+def test_agent_app_mutation_confirmation_stops_specialist_and_finishes_in_supervisor(monkeypatch):
+    provider = NativeDelegatingMedicationProvider()
+
+    class ConfirmationExecutor:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
+            self.calls.append({**tool_call, "_source_event_type": source_event_type})
+            return ToolCallResult(
+                tool_name=tool_call["name"],
+                status="confirmation_required",
+                response={
+                    "mutation_confirmation": {
+                        "confirmation_required": True,
+                        "confirmation_id": "confirmation-1",
+                        "action_type": "agent_tool",
+                        "action_name": UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+                        "tool_call_id": tool_call.get("id", ""),
+                        "action_fingerprint": "fingerprint-1",
+                        "status": "pending",
+                        "display": {
+                            "title": "dose confirmation",
+                            "question": "confirm dose update",
+                        },
+                    }
+                },
+            )
+
+    executor = ConfirmationExecutor()
+    monkeypatch.setattr(
+        native_agent_main,
+        "orchestrator",
+        AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=executor),
+    )
+    client = TestClient(native_agent_main.app)
+
+    response = client.post(
+        "/agent/multiturn-chat",
+        json=build_taken_chat_request().model_dump(mode="json"),
+        headers=internal_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    structured = payload["structured_payload"]
+    assert payload["agent_name"] == "multiturn_chat_agent"
+    assert payload["decision_type"] == "mutation_confirmation_required"
+    assert structured["routing_mode"] == "mutation_confirmation_required"
+    assert structured["mutation_confirmation_required"] is True
+    assert structured["mutation_confirmation"]["confirmation_id"] == "confirmation-1"
+    assert structured["tool_results"][0]["status"] == "confirmation_required"
+    assert executor.calls[0]["_source_event_type"] == SOURCE_MEDICATION_AGENT
+    assert provider.chat_model_bound_tool_history[-1] == []
+
+
+def test_agent_app_rejects_unapplied_mutation_result_instead_of_claiming_success(monkeypatch):
+    provider = NativeDelegatingMedicationProvider()
+
+    class SkippedMutationExecutor:
+        async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
+            return ToolCallResult(
+                tool_name=tool_call["name"],
+                status="skipped",
+                response={
+                    "dose_event_id": 12,
+                    "status": "taken",
+                    "message": "stale result from an earlier confirmation",
+                },
+                error="mutation_confirmation_applied",
+            )
+
+    monkeypatch.setattr(
+        native_agent_main,
+        "orchestrator",
+        AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=SkippedMutationExecutor()),
+    )
+    client = TestClient(native_agent_main.app)
+
+    response = client.post(
+        "/agent/multiturn-chat",
+        json=build_taken_chat_request().model_dump(mode="json"),
+        headers=internal_auth_headers(),
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error_type"] == "mutation_tool_not_applied"
+
+
+def test_agent_app_mutation_confirmation_resolution_finishes_in_supervisor(monkeypatch):
+    class ResolutionProvider(NativeChatProvider):
+        def __init__(self) -> None:
+            self.seen_payloads: list[dict[str, Any]] = []
+            self.bound_tool_names: list[str] = []
+            self.bound_tool_history: list[list[str]] = []
+
+        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+            self.seen_payloads.append(user_payload)
+            self.bound_tool_history.append(list(self.bound_tool_names))
+            status = str((user_payload.get("context") or {}).get("mutation_resolution", {}).get("status") or "")
+            return {"message": f"Supervisor resolved mutation: {status}."}
+
+    class ResolutionExecutor:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
+            self.calls.append(
+                {
+                    **tool_call,
+                    "_source_event_type": source_event_type,
+                    "_approved": dict((payload.get("context") or {}).get("approved_mutation_confirmation") or {}),
+                }
+            )
+            return ToolCallResult(
+                tool_name=tool_call["name"],
+                status="success",
+                response={"dose_event_id": 12, "status": "taken"},
+            )
+
+    for resolution, expected_status, expected_call_count in (
+        ("confirm", "applied", 1),
+        ("cancel", "cancelled", 0),
+    ):
+        provider = ResolutionProvider()
+        executor = ResolutionExecutor()
+        monkeypatch.setattr(
+            native_agent_main,
+            "orchestrator",
+            AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=executor),
+        )
+        client = TestClient(native_agent_main.app)
+        request = MutationConfirmationResolutionRequest(
+            confirmation_id=f"confirmation-{resolution}",
+            resolution=resolution,
+            action_name=UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+            tool_call_id=f"tool-{resolution}",
+            arguments={"dose_event_id": 12},
+            action_fingerprint=f"fingerprint-{resolution}",
+            source_event_type=SOURCE_MEDICATION_AGENT,
+            original_request=build_taken_chat_request(),
+        )
+
+        response = client.post(
+            "/agent/mutation-confirmations/resolve",
+            json=request.model_dump(mode="json"),
+            headers=internal_auth_headers(),
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["agent_name"] == "multiturn_chat_agent"
+        assert payload["structured_payload"]["supervisor_agent"] == "multiturn_chat_agent"
+        assert payload["decision_type"] == "mutation_resolution"
+        assert payload["structured_payload"]["routing_mode"] == "mutation_resolution_finalization"
+        assert payload["structured_payload"]["tool_calls"] == []
+        assert payload["structured_payload"]["iterations"] == 0
+        assert payload["structured_payload"]["finalization_mode"] == "mutation_resolution_iterative_llm"
+        assert set(payload["structured_payload"]["node_timings_ms"]) == {"mutation_resolution_llm"}
+        assert provider.seen_payloads[-1]["context"]["mutation_resolution"]["status"] == expected_status
+        assert "delegate_to_medication_agent" in provider.chat_model_bound_tool_history[0]
+        assert UPDATE_MEDICATION_DOSE_EVENT_STATUS not in provider.chat_model_bound_tool_history[0]
+        assert len(provider.seen_payloads) == 1
+        assert len(executor.calls) == expected_call_count
+        if executor.calls:
+            assert executor.calls[0]["_source_event_type"] == SOURCE_MEDICATION_AGENT
+            assert executor.calls[0]["_approved"]["confirmation_id"] == f"confirmation-{resolution}"
+
+
+def test_agent_app_mutation_resolution_continues_only_remaining_work(monkeypatch):
+    remaining_task = "Check only whether the morning taken record can be corrected to missed."
+
+    class RemainingWorkProvider(NativeChatProvider):
+        def __init__(self) -> None:
+            self.seen_payloads: list[dict[str, Any]] = []
+            self.finalized_payloads: list[dict[str, Any]] = []
+            self.bound_tool_names: list[str] = []
+
+        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+            self.seen_payloads.append(user_payload)
+            response_mode = user_payload.get("response_mode")
+            if response_mode == "mutation_resolution_continuation":
+                return {
+                    "message": "Continue the unresolved morning correction.",
+                    "tool_call": {
+                        "name": "delegate_to_medication_agent",
+                        "arguments": {
+                            "task": remaining_task,
+                            "reason": "The lunch update is complete but the morning correction remains.",
+                        },
+                    },
+                }
+            if response_mode == "medication_chat":
+                return {
+                    "message": "Inspect the morning dose record before explaining the supported action.",
+                    "tool_call": {
+                        "name": GET_MEDICATION_DOSE_STATUS,
+                        "arguments": {"target_date": "2026-04-20"},
+                    },
+                }
+            raise AssertionError(f"unexpected response_mode: {response_mode}")
+
+        async def finalize_tool_results(
+            self,
+            system_prompt: str,
+            user_payload: dict[str, Any],
+            tool_results: list[dict[str, Any]],
+        ) -> dict[str, Any]:
+            self.finalized_payloads.append(user_payload)
+            if user_payload.get("response_mode") == "medication_chat":
+                return {"message": "The morning dose is recorded as taken, but reverting it to missed is unsupported."}
+            if user_payload.get("response_mode") == "mutation_resolution_continuation":
+                return {
+                    "message": "The lunch dose was recorded as taken. The morning taken record cannot currently be reverted to missed."
+                }
+            raise AssertionError(f"unexpected finalization response_mode: {user_payload.get('response_mode')}")
+
+    class RemainingWorkExecutor:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
+            self.calls.append({**tool_call, "_payload": payload, "_source_event_type": source_event_type})
+            if tool_call["name"] == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
+                return ToolCallResult(
+                    tool_name=tool_call["name"],
+                    status="success",
+                    response={"dose_event_id": 22, "status": "taken"},
+                )
+            if tool_call["name"] == GET_MEDICATION_DOSE_STATUS:
+                return ToolCallResult(
+                    tool_name=tool_call["name"],
+                    status="success",
+                    response={
+                        "records": [
+                            {"dose_event_id": 21, "slot_label": "morning 08:00", "status": "taken"},
+                            {"dose_event_id": 22, "slot_label": "lunch 13:00", "status": "taken"},
+                        ]
+                    },
+                )
+            raise AssertionError(f"unexpected tool: {tool_call['name']}")
+
+    provider = RemainingWorkProvider()
+    executor = RemainingWorkExecutor()
+    monkeypatch.setattr(
+        native_agent_main,
+        "orchestrator",
+        AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=executor),
+    )
+    client = TestClient(native_agent_main.app)
+    original_request = build_taken_chat_request().model_copy(
+        update={
+            "message": "I took the lunch dose, but I did not actually take the morning dose.",
+            "context": {
+                "today_dose_events": [
+                    {"dose_event_id": 21, "slot_label": "morning 08:00", "status": "taken"},
+                    {"dose_event_id": 22, "slot_label": "lunch 13:00", "status": "missed"},
+                ]
+            },
+        }
+    )
+    request = MutationConfirmationResolutionRequest(
+        confirmation_id="confirmation-multi-intent",
+        resolution="confirm",
+        action_name=UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+        tool_call_id="tool-lunch",
+        arguments={"dose_event_id": 22},
+        action_fingerprint="fingerprint-lunch",
+        source_event_type=SOURCE_MEDICATION_AGENT,
+        original_request=original_request,
+    )
+
+    response = client.post(
+        "/agent/mutation-confirmations/resolve",
+        json=request.model_dump(mode="json"),
+        headers=internal_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    structured = payload["structured_payload"]
+    assert payload["agent_name"] == "multiturn_chat_agent"
+    assert payload["decision_type"] == "mutation_resolution"
+    assert structured["routing_mode"] == "mutation_resolution_continuation"
+    assert structured["iterations"] == 1
+    assert structured["supervisor_tool_calls"][0]["name"] == "delegate_to_medication_agent"
+    assert [call["name"] for call in structured["specialist_tool_calls"]] == [GET_MEDICATION_DOSE_STATUS]
+    assert [call["name"] for call in executor.calls] == [
+        UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+        GET_MEDICATION_DOSE_STATUS,
+    ]
+    assert executor.calls[1]["_payload"]["message"] == remaining_task
+    scoped_context = executor.calls[1]["_payload"]["context"]["supervisor_delegation"]
+    assert scoped_context["original_user_message"] == original_request.message
+    assert scoped_context["mutation_resolution"]["action_fingerprint"] == "fingerprint-lunch"
+    assert "morning taken record cannot currently be reverted" in payload["human_summary"]
 
 
 def test_agent_app_multiturn_delegates_nutrition_management_tools(monkeypatch):

@@ -48,6 +48,9 @@ def test_run_migrations_tracks_agent_jobs_version():
         "20260710_0001_side_effect_records",
         "20260710_0002_side_effect_records_patient_created",
         "20260710_0003_side_effect_records_suspected_medication",
+        "20260715_0001_mutation_confirmations",
+        "20260715_0002_mutation_confirmations_patient_status",
+        "20260715_0003_mutation_confirmations_fingerprint",
     ]
     assert second_run == []
 
@@ -80,6 +83,9 @@ def test_run_migrations_tracks_agent_jobs_version():
         "20260710_0001_side_effect_records",
         "20260710_0002_side_effect_records_patient_created",
         "20260710_0003_side_effect_records_suspected_medication",
+        "20260715_0001_mutation_confirmations",
+        "20260715_0002_mutation_confirmations_patient_status",
+        "20260715_0003_mutation_confirmations_fingerprint",
         ]
 
 

@@ -8,10 +8,19 @@ from types import SimpleNamespace
 
 import system_app.main as system_main
 import system_app.services.workers as worker_services
-from shared.schemas import AgentResponse, MissedDoseEventPayload, SlotAdherenceSummary
-from system_app.models import AgentJob, ChatMessage, Notification
-from system_app.services.agent_client import AgentServiceError
+from shared.schemas import (
+    AgentResponse,
+    MissedDoseEventPayload,
+    MultiturnChatRequest,
+    MutationConfirmationResolutionRequest,
+    SlotAdherenceSummary,
+)
+from shared.json_utils import dump_json
+from shared.time_utils import utc_now
+from system_app.models import AgentJob, ChatMessage, MutationConfirmation, Notification
+from system_app.services.agent_client import AgentClient, AgentServiceError
 from system_app.services.agent_jobs import FAILED, create_agent_job
+from system_app.services.mutation_confirmation_service import APPLIED, EXECUTING
 from system_app.services.simulation import (
     create_medication_plan,
     create_notification,
@@ -83,6 +92,44 @@ class LockCheckingAsyncSystemEventAgentClient:
         return SimpleNamespace(request_id="chat_continuation:conversation:system-event-test", task_type="chat_continuation")
 
 
+def test_mutation_confirmation_resolution_timeout_exceeds_llm_timeout(monkeypatch):
+    client = AgentClient(base_url="http://agent.test")
+    client.llm_timeout_seconds = 60
+    observed: dict[str, float] = {}
+
+    async def fake_request_json(method, path, *, payload=None, timeout=60.0):
+        observed["timeout"] = timeout
+        return AgentResponse(
+            trace_id="trace-resolution",
+            agent_name="multiturn_chat_agent",
+            prompt_version_id="test",
+            decision_type="system_guidance",
+            structured_payload={},
+            human_summary="resolved",
+        ).model_dump(mode="json")
+
+    monkeypatch.setattr(client, "_request_json", fake_request_json)
+    request = MutationConfirmationResolutionRequest(
+        confirmation_id="confirmation-timeout",
+        resolution="confirm",
+        action_name="update_medication_dose_event_status",
+        arguments={"dose_event_id": 1},
+        action_fingerprint="fingerprint-timeout",
+        source_event_type="medication_agent",
+        original_request=MultiturnChatRequest(
+            patient_id="demo-patient",
+            event_type="multiturn_chat",
+            message="I took my dose.",
+            current_time=datetime(2026, 4, 20, 9, 30),
+        ),
+    )
+
+    response = asyncio.run(client.resolve_mutation_confirmation(request))
+
+    assert response.human_summary == "resolved"
+    assert observed["timeout"] == 90.0
+
+
 def test_handle_system_event_creates_agent_error_notification_and_chat():
     with build_session() as session:
         ensure_base_data(session)
@@ -128,6 +175,107 @@ def test_system_event_worker_releases_write_lock_while_calling_agent(monkeypatch
         assert metadata["status"] == "answered"
         assert assistant_message.content == "증상 질문에 답변했습니다."
         assert session.query(Notification).filter(Notification.notification_type == "agent_error").count() == 0
+
+
+def test_mutation_worker_preserves_applied_state_when_supervisor_finalization_times_out(monkeypatch):
+    session_factory = build_threadsafe_session_factory()
+    write_lock = threading.RLock()
+    confirmation_id = "confirmation-finalization-timeout"
+    with session_factory() as session:
+        ensure_base_data(session)
+        clock = ensure_clock(session)
+        request_notification = create_system_event_request(
+            session,
+            "multiturn_chat",
+            "I took my lunch dose.",
+            clock.current_time,
+        )
+        card_message = ChatMessage(
+            patient_id="demo-patient",
+            role="assistant",
+            sender_type="assistant",
+            category="multiturn_chat",
+            content="Confirm the medication update.",
+            metadata_json=dump_json(
+                {
+                    "mutation_confirmation": {
+                        "confirmation_id": confirmation_id,
+                        "status": EXECUTING,
+                        "display": {"title": "dose update", "question": "Apply it?"},
+                    }
+                }
+            ),
+            created_at=clock.current_time,
+        )
+        session.add(card_message)
+        session.flush()
+        confirmation = MutationConfirmation(
+            public_id=confirmation_id,
+            patient_id="demo-patient",
+            origin_request_notification_id=request_notification.id,
+            conversation_id="conversation-timeout",
+            origin_trace_id="trace-confirmation",
+            origin_agent="medication_agent",
+            source_event_type="medication_agent",
+            action_type="agent_tool",
+            action_name="update_medication_dose_event_status",
+            tool_call_id="tool-confirmation",
+            arguments_json=dump_json({"dose_event_id": 1}),
+            action_fingerprint="fingerprint-timeout",
+            target_snapshot_json=dump_json({}),
+            target_snapshot_hash="snapshot-timeout",
+            display_json=dump_json({"title": "dose update", "question": "Apply it?"}),
+            continuation_json=dump_json({}),
+            idempotency_key="confirmation-finalization-timeout-key",
+            status=EXECUTING,
+            chat_message_id=card_message.id,
+            execution_started_at=utc_now(),
+        )
+        session.add(confirmation)
+        request_notification_id = request_notification.id
+        session.commit()
+
+    class AppliedThenTimeoutClient:
+        async def resolve_mutation_confirmation(self, payload):
+            with session_factory() as session:
+                row = session.query(MutationConfirmation).filter(
+                    MutationConfirmation.public_id == confirmation_id
+                ).one()
+                row.status = APPLIED
+                row.result_json = dump_json({"status": "taken"})
+                row.resolved_at = utc_now()
+                session.commit()
+            raise AgentServiceError("finalization timed out", error_type="agent_network_error")
+
+    monkeypatch.setattr(worker_services, "SessionLocal", session_factory)
+    worker_services.mutation_confirmation_worker(
+        confirmation_id,
+        "confirm",
+        write_lock,
+        AppliedThenTimeoutClient(),
+    )
+
+    with session_factory() as session:
+        row = session.query(MutationConfirmation).filter(
+            MutationConfirmation.public_id == confirmation_id
+        ).one()
+        card = session.get(ChatMessage, row.chat_message_id)
+        card_metadata = json.loads(card.metadata_json)
+        request_notification = session.get(Notification, request_notification_id)
+        request_metadata = json.loads(request_notification.metadata_json)
+        error_message = session.query(ChatMessage).filter(ChatMessage.category == "error").one()
+        error_notification = session.query(Notification).filter(
+            Notification.notification_type == "agent_error"
+        ).one()
+        error_metadata = json.loads(error_notification.metadata_json)
+
+        assert row.status == APPLIED
+        assert card_metadata["mutation_confirmation"]["status"] == APPLIED
+        assert request_metadata["status"] == APPLIED
+        assert request_metadata["result_message"] == worker_services.MUTATION_APPLIED_FINALIZATION_FAILED_MESSAGE
+        assert error_message.content == worker_services.MUTATION_APPLIED_FINALIZATION_FAILED_MESSAGE
+        assert error_metadata["mutation_status"] == APPLIED
+        assert error_metadata["finalization_failed"] is True
 
 
 def test_system_event_worker_submits_chat_to_agent_async_without_write_lock(monkeypatch):

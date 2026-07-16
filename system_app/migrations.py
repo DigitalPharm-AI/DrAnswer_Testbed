@@ -371,6 +371,49 @@ MIGRATIONS: list[tuple[str, str]] = [
         "20260710_0003_side_effect_records_suspected_medication",
         "CREATE INDEX IF NOT EXISTS ix_side_effect_records_suspected_medication ON side_effect_records (suspected, medication_name)",
     ),
+    (
+        "20260715_0001_mutation_confirmations",
+        """
+        CREATE TABLE IF NOT EXISTS mutation_confirmations (
+            id INTEGER NOT NULL PRIMARY KEY,
+            public_id VARCHAR(64) NOT NULL UNIQUE,
+            patient_id VARCHAR(100) NOT NULL,
+            origin_request_notification_id INTEGER,
+            conversation_id VARCHAR(180) NOT NULL DEFAULT '',
+            origin_trace_id VARCHAR(120) NOT NULL DEFAULT '',
+            origin_agent VARCHAR(120) NOT NULL DEFAULT '',
+            source_event_type VARCHAR(80) NOT NULL DEFAULT '',
+            action_type VARCHAR(40) NOT NULL,
+            action_name VARCHAR(160) NOT NULL,
+            tool_call_id VARCHAR(180) NOT NULL DEFAULT '',
+            arguments_json TEXT NOT NULL DEFAULT '{}',
+            action_fingerprint VARCHAR(64) NOT NULL,
+            target_snapshot_json TEXT NOT NULL DEFAULT '{}',
+            target_snapshot_hash VARCHAR(64) NOT NULL,
+            display_json TEXT NOT NULL DEFAULT '{}',
+            continuation_json TEXT NOT NULL DEFAULT '{}',
+            idempotency_key VARCHAR(255) NOT NULL UNIQUE,
+            status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            result_json TEXT NOT NULL DEFAULT '{}',
+            error_message TEXT NOT NULL DEFAULT '',
+            chat_message_id INTEGER,
+            execution_started_at DATETIME,
+            resolved_at DATETIME,
+            created_at DATETIME,
+            updated_at DATETIME,
+            FOREIGN KEY(origin_request_notification_id) REFERENCES notifications (id),
+            FOREIGN KEY(chat_message_id) REFERENCES chat_messages (id)
+        )
+        """,
+    ),
+    (
+        "20260715_0002_mutation_confirmations_patient_status",
+        "CREATE INDEX IF NOT EXISTS ix_mutation_confirmations_patient_status ON mutation_confirmations (patient_id, status)",
+    ),
+    (
+        "20260715_0003_mutation_confirmations_fingerprint",
+        "CREATE INDEX IF NOT EXISTS ix_mutation_confirmations_fingerprint ON mutation_confirmations (action_fingerprint)",
+    ),
 ]
 
 

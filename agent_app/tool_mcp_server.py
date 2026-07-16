@@ -7,6 +7,7 @@ import httpx
 
 from agent_app import trace_logging
 from agent_app.ae_pro_ctcae import match_pro_ctcae_symptom
+from agent_app.confirmation_actions import ConfirmationActionRegistry
 from agent_app.payload_context import context_value
 from agent_app.tool_catalog import ToolCatalog
 from agent_app.tool_permissions import allowed_tool_names_for_source, permission_denied_result, validate_tool_permission
@@ -43,7 +44,11 @@ from shared.schemas import (
     AEProCtcaeAssessmentRequest,
     DoseTakenToolRequest,
     DoseTakenToolResult,
+    ConfirmedMutationExecutionRequest,
+    ConfirmedMutationExecutionResult,
     MedicationDoseStatusResult,
+    MutationConfirmationPrepareRequest,
+    MutationConfirmationPrepareResult,
     NutritionPreferenceFactRequest,
     SideEffectAssessmentRequest,
     SideEffectAssessmentResult,
@@ -91,6 +96,7 @@ class AgentMcpToolServer:
     async def tools_call(self, params: dict[str, Any], *, trace_id: str, source_event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         tool_name = str(params.get("name") or "")
         arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+        tool_call_id = str(params.get("tool_call_id") or "")
         started = perf_counter()
         trace_logging.log_info(
             "agent_mcp_tools_call_started",
@@ -100,7 +106,14 @@ class AgentMcpToolServer:
             argument_keys=sorted(str(key) for key in arguments.keys()),
         )
         try:
-            result = await self._execute_tool_result(tool_name, arguments, trace_id=trace_id, source_event_type=source_event_type, payload=payload)
+            result = await self._execute_tool_result(
+                tool_name,
+                arguments,
+                trace_id=trace_id,
+                source_event_type=source_event_type,
+                payload=payload,
+                tool_call_id=tool_call_id,
+            )
         except httpx.HTTPStatusError as exc:
             result = http_status_tool_error_result(
                 exc,
@@ -138,6 +151,7 @@ class AgentMcpToolServer:
         trace_id: str,
         source_event_type: str,
         payload: dict[str, Any],
+        tool_call_id: str = "",
     ) -> ToolCallResult:
         if tool_name not in ALLOWED_TOOL_NAMES:
             return ToolCallResult(tool_name=tool_name or "unknown", status="error", error=f"unsupported_tool:{tool_name}")
@@ -155,6 +169,23 @@ class AgentMcpToolServer:
             )
         if tool_name in DEFERRED_POLICY_TOOL_NAMES:
             return deferred_policy_tool_result({"name": tool_name, "arguments": arguments}, trace_id=trace_id, source_event_type=source_event_type)
+        if ConfirmationActionRegistry.requires_confirmation(tool_name):
+            approved = context_value(payload, "approved_mutation_confirmation")
+            if isinstance(approved, dict) and approved.get("confirmation_id"):
+                return await self._execute_confirmed_mutation(
+                    tool_name,
+                    approved,
+                    trace_id=trace_id,
+                    source_event_type=source_event_type,
+                )
+            return await self._prepare_mutation_confirmation(
+                tool_name,
+                arguments,
+                tool_call_id=tool_call_id,
+                trace_id=trace_id,
+                source_event_type=source_event_type,
+                payload=payload,
+            )
         if tool_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
             return await self._mark_dose_taken(arguments, trace_id=trace_id, source_event_type=source_event_type)
         if tool_name == GET_MEDICATION_DOSE_STATUS:
@@ -188,6 +219,88 @@ class AgentMcpToolServer:
         if tool_name == GET_PRO_CTCAE_QUESTIONNAIRE:
             return self._ae_pro_ctcae(arguments, trace_id=trace_id)
         return ToolCallResult(tool_name=tool_name or "unknown", status="error", error=f"unsupported_tool:{tool_name}")
+
+    async def _prepare_mutation_confirmation(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        tool_call_id: str,
+        trace_id: str,
+        source_event_type: str,
+        payload: dict[str, Any],
+    ) -> ToolCallResult:
+        request = MutationConfirmationPrepareRequest(
+            patient_id=str(payload.get("patient_id") or ""),
+            action_type="agent_tool",
+            action_name=tool_name,
+            tool_call_id=tool_call_id,
+            arguments=arguments,
+            trace_id=trace_id,
+            source_event_type=source_event_type,
+            request_context={
+                "message": payload.get("message"),
+                "event_type": payload.get("event_type"),
+                "current_time": payload.get("current_time"),
+                "callback_context": payload.get("callback_context"),
+                "request_metadata": context_value(payload, "request_metadata"),
+                "mutation_resolution": context_value(payload, "mutation_resolution"),
+            },
+        )
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
+            response = await client.post(
+                f"{self.system_base_url}/api/agent/mutation-confirmations/prepare",
+                json=request.model_dump(mode="json"),
+                headers=self._internal_headers(),
+            )
+            response.raise_for_status()
+        result = MutationConfirmationPrepareResult.model_validate(response.json())
+        if not result.confirmation_required:
+            already_applied = result.status == "already_applied"
+            return ToolCallResult(
+                tool_name=tool_name,
+                status="success" if already_applied else "error",
+                response=result.execution_result,
+                error="" if already_applied else f"mutation_confirmation_{result.status}",
+                idempotency_key=f"{trace_id}:{tool_name}:{result.action_fingerprint}",
+            )
+        return ToolCallResult(
+            tool_name=tool_name,
+            status="confirmation_required",
+            response={"mutation_confirmation": result.model_dump(mode="json")},
+            idempotency_key=f"{trace_id}:{tool_name}:{result.action_fingerprint}",
+        )
+
+    async def _execute_confirmed_mutation(
+        self,
+        tool_name: str,
+        approved: dict[str, Any],
+        *,
+        trace_id: str,
+        source_event_type: str,
+    ) -> ToolCallResult:
+        request = ConfirmedMutationExecutionRequest(
+            confirmation_id=str(approved.get("confirmation_id") or ""),
+            action_name=tool_name,
+            action_fingerprint=str(approved.get("action_fingerprint") or ""),
+            trace_id=trace_id,
+            source_event_type=source_event_type,
+        )
+        async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
+            response = await client.post(
+                f"{self.system_base_url}/api/agent/mutation-confirmations/{request.confirmation_id}/execute",
+                json=request.model_dump(mode="json"),
+                headers=self._internal_headers(),
+            )
+            response.raise_for_status()
+        result = ConfirmedMutationExecutionResult.model_validate(response.json())
+        return ToolCallResult(
+            tool_name=tool_name,
+            status="success" if result.status == "applied" else "error",
+            response=result.tool_result,
+            error=result.error or ("" if result.status == "applied" else f"mutation_confirmation_{result.status}"),
+            idempotency_key=f"{request.confirmation_id}:{tool_name}:confirmed",
+        )
 
     def _internal_headers(self) -> dict[str, str]:
         if not self.internal_api_token:

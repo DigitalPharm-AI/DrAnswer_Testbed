@@ -13,14 +13,14 @@ from shared.schemas import (
 from system_app.models import AgentDecisionAudit, Notification
 from system_app.services.audit_service import create_agent_decision_audit
 from system_app.services.clock_service import ensure_clock
-from system_app.services.dose_event_service import mark_dose_taken
+from system_app.services.dose_event_service import mark_dose_taken_command
 from system_app.services.notification_service import create_notification
 from system_app.services.timeline_service import add_chat_message
 
 
 def apply_agent_dose_taken_request(session: Session, payload: DoseTakenToolRequest) -> DoseTakenToolResult:
     trace_id = f"{payload.source_trace_id or 'agent'}:{UPDATE_MEDICATION_DOSE_EVENT_STATUS}:{payload.source_event_type}:{payload.dose_event_id}"
-    event = mark_dose_taken(session, payload.dose_event_id, taken_at=payload.taken_at)
+    event = mark_dose_taken_command(session, payload.dose_event_id, taken_at=payload.taken_at)
     if event is None:
         result = DoseTakenToolResult(
             dose_event_id=payload.dose_event_id,
@@ -46,7 +46,7 @@ def apply_agent_dose_taken_request(session: Session, payload: DoseTakenToolReque
         error_message="" if result.status == "taken" else result.message,
         source_event_type="agent_dose_taken",
     )
-    session.commit()
+    session.flush()
     return result
 
 

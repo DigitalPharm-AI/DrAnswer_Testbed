@@ -9,10 +9,14 @@ from sqlalchemy.orm import Session
 
 from shared.schemas import (
     AgentNotificationRequest,
+    ConfirmedMutationExecutionRequest,
+    ConfirmedMutationExecutionResult,
     DoseTakenToolRequest,
     DoseTakenToolResult,
     MedicationDoseEventView,
     MedicationDoseStatusResult,
+    MutationConfirmationPrepareRequest,
+    MutationConfirmationPrepareResult,
     NutritionDailySummaryResult,
     NutritionFoodDeleteRequest,
     NutritionFoodDeleteResult,
@@ -60,6 +64,10 @@ from system_app.services.nutrition_service import (
     update_meal,
 )
 from system_app.services.nutrition_preference_service import nutrition_preference_summary, record_preference_fact
+from system_app.services.mutation_confirmation_service import (
+    execute_confirmed_mutation,
+    prepare_mutation_confirmation,
+)
 from system_app.services.policy_service import reload_policy_workbook
 from system_app.services.clock_service import ensure_clock
 from system_app.services.side_effect_record_service import list_side_effect_history, record_side_effect, side_effect_record_view
@@ -96,7 +104,48 @@ def create_agent_api_router(get_runtime: Callable[[], SystemRuntime]) -> APIRout
     @router.post("/api/agent/dose-events/mark-taken", response_model=DoseTakenToolResult)
     async def agent_dose_taken(payload: DoseTakenToolRequest, session: Session = Depends(get_session)) -> DoseTakenToolResult:
         with get_runtime().write_lock:
-            return apply_agent_dose_taken_request(session, payload)
+            result = apply_agent_dose_taken_request(session, payload)
+            session.commit()
+            return result
+
+    @router.post(
+        "/api/agent/mutation-confirmations/prepare",
+        response_model=MutationConfirmationPrepareResult,
+    )
+    async def agent_prepare_mutation_confirmation(
+        payload: MutationConfirmationPrepareRequest,
+        session: Session = Depends(get_session),
+    ) -> MutationConfirmationPrepareResult:
+        with get_runtime().write_lock:
+            try:
+                result = prepare_mutation_confirmation(session, payload)
+            except ValueError as exc:
+                session.rollback()
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            session.commit()
+            return result
+
+    @router.post(
+        "/api/agent/mutation-confirmations/{confirmation_id}/execute",
+        response_model=ConfirmedMutationExecutionResult,
+    )
+    async def agent_execute_confirmed_mutation(
+        confirmation_id: str,
+        payload: ConfirmedMutationExecutionRequest,
+        session: Session = Depends(get_session),
+    ) -> ConfirmedMutationExecutionResult:
+        with get_runtime().write_lock:
+            try:
+                result = execute_confirmed_mutation(session, confirmation_id, payload)
+            except ValueError as exc:
+                session.rollback()
+                detail = str(exc)
+                raise HTTPException(
+                    status_code=404 if detail == "mutation_confirmation_not_found" else 409,
+                    detail=detail,
+                ) from exc
+            session.commit()
+            return result
 
     @router.get("/api/agent/dose-events", response_model=MedicationDoseStatusResult)
     async def agent_medication_dose_status(

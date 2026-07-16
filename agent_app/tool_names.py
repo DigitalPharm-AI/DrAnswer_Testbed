@@ -111,7 +111,14 @@ NUTRITION_RECOMMENDATION_TOOLS = {
 ALL_TOOL_NAMES = MEDICATION_CHAT_TOOLS | POLICY_TOOLS | NUTRITION_TOOLS
 
 
-def _metadata(domain: str, source_path: str, source_tool_name: str, mutability: str, risk_level: str) -> dict[str, str]:
+def _metadata(
+    domain: str,
+    source_path: str,
+    source_tool_name: str,
+    mutability: str,
+    risk_level: str,
+    confirmation_policy: str | None = None,
+) -> dict[str, str]:
     return {
         "domain": domain,
         "source_repo": "DrAnswer_Testbed",
@@ -119,6 +126,8 @@ def _metadata(domain: str, source_path: str, source_tool_name: str, mutability: 
         "source_tool_name": source_tool_name,
         "mutability": mutability,
         "risk_level": risk_level,
+        "confirmation_policy": confirmation_policy
+        or ("user_required" if mutability in {"write", "delete"} else "app_server_confirmation" if mutability == "propose" else "none"),
     }
 
 

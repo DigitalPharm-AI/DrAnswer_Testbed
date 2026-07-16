@@ -102,7 +102,7 @@ class MissedDoseOutput(BaseModel):
 
     @model_validator(mode="after")
     def validate_content(self) -> MissedDoseOutput:
-        if not (self.patient_message or self.message or self.missed_dose_hybrid or self.follow_up_questions or self.tool_call or self.tool_calls):
+        if not (self.patient_message or self.message or self.missed_dose_hybrid or self.tool_call or self.tool_calls):
             raise ValueError("missed_dose_output_requires_patient_content")
         return self
 

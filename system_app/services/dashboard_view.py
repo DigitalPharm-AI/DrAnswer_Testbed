@@ -14,6 +14,10 @@ from system_app.models import AgentJob, ChatMessage, DoseEvent, Notification, Re
 from system_app.services.agent_client import AgentClient
 from system_app.services.clock_service import ensure_clock
 from system_app.services.medication_plan_service import get_schedule_map, list_medication_plans
+from system_app.services.mutation_confirmation_service import (
+    has_executing_confirmation,
+    recover_expired_confirmations,
+)
 from system_app.services.nutrition_service import nutrition_dashboard_view
 from system_app.services.patient_profile_service import phr_profile_view, simulation_readiness
 from system_app.services.policy_service import daily_pattern_conversation_time_view, policy_missed_dose_delay_minutes, resolve_policy_for_slot
@@ -255,6 +259,31 @@ def diet_recommendations_view(metadata: dict) -> dict | None:
     }
 
 
+def mutation_confirmation_view(metadata: dict) -> dict | None:
+    payload = metadata.get("mutation_confirmation")
+    if not isinstance(payload, dict) or not payload.get("confirmation_id"):
+        return None
+    status = str(payload.get("status") or "pending")
+    status_message = {
+        "executing": "\ubcc0\uacbd\uc744 \ucc98\ub9ac\ud558\uace0 \uc788\uc2b5\ub2c8\ub2e4.",
+        "applied": "\uc801\uc6a9\uc774 \uc644\ub8cc\ub418\uc5c8\uc2b5\ub2c8\ub2e4.",
+        "cancelled": "\ucde8\uc18c\ub418\uc5c8\uc2b5\ub2c8\ub2e4.",
+        "superseded": "\uc0c8 \ub300\ud654\uac00 \uc2dc\uc791\ub418\uc5b4 \uc774 \uc694\uccad\uc740 \uc885\ub8cc\ub418\uc5c8\uc2b5\ub2c8\ub2e4.",
+        "stale": "\uae30\ub85d\uc774 \ub2ec\ub77c\uc838 \ub2e4\uc2dc \ud655\uc778\ud574\uc57c \ud569\ub2c8\ub2e4.",
+        "failed": "\ucc98\ub9ac\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4. \ub2e4\uc2dc \uc694\uccad\ud574 \uc8fc\uc138\uc694.",
+    }.get(status, "")
+    return {
+        "confirmation_id": payload.get("confirmation_id"),
+        "status": status,
+        "display": payload.get("display") if isinstance(payload.get("display"), dict) else {},
+        "error": payload.get("error", ""),
+        "is_pending": status == "pending",
+        "is_executing": status == "executing",
+        "is_active": status in {"pending", "executing"},
+        "status_message": status_message,
+    }
+
+
 def chat_message_view(message) -> dict:
     metadata = parse_metadata_json(getattr(message, "metadata_json", "{}"))
     from_user = message.role == "user" or message.sender_type in {"patient", "user"}
@@ -284,6 +313,7 @@ def chat_message_view(message) -> dict:
         "ae_pro_ctcae": ae_prompt_view(metadata, message.id),
         "food_selection": food_selection_view(metadata, message.id),
         "diet_recommendations": diet_recommendations_view(metadata),
+        "mutation_confirmation": mutation_confirmation_view(metadata),
     }
 
 def is_hidden_policy_confirmation_reply(message) -> bool:
@@ -340,6 +370,8 @@ def pending_agent_chat_views(session: Session, current_time: datetime) -> list[d
                 "side_effect_reminder_safety": None,
                 "ae_pro_ctcae": None,
                 "food_selection": None,
+                "diet_recommendations": None,
+                "mutation_confirmation": None,
             }
         )
     return views
@@ -792,6 +824,8 @@ def daily_pattern_job_status_view(session: Session) -> dict | None:
 
 
 def build_dashboard_context(request: Request, session: Session, agent_model_config: dict | None = None) -> dict:
+    if recover_expired_confirmations(session, settings.patient_id):
+        session.commit()
     clock = ensure_clock(session)
     timeline_date_param = request.query_params.get("timeline_date")
     try:
@@ -837,6 +871,7 @@ def build_dashboard_context(request: Request, session: Session, agent_model_conf
         "daily_pattern_job_status": daily_pattern_job_status_view(session),
         "system_request_history": get_system_request_history(session, clock.current_time),
         "agent_model_config": agent_model_config or fallback_agent_model_config_view(),
+        "mutation_execution_in_progress": has_executing_confirmation(session, settings.patient_id),
     }
 
 async def resolve_agent_model_config(agent_client: AgentClient) -> dict[str, Any]:

@@ -274,6 +274,50 @@ def test_ambiguous_pattern_can_use_llm_adjudication_and_generated_message():
         assert metadata["adherence_pattern"]["message_validation"]["passed"] is True
 
 
+def test_missed_dose_pro_card_keeps_validated_hybrid_message_as_chat_body():
+    with build_session() as session:
+        current = seed_slot_events(session, ["missed"], medication_name="\ud608\uc555\uc57d")[-1]
+        create_missed_dose_conversation_alert(session, current, current.missed_detected_at)
+        generated_message = "\uc810\uc2ec \uc2dc\uac04\uc5d0 \ub193\uce58\uc2e0 \uac83 \uac19\uc544\uc694. \ud3b8\ud558\uc2e4 \ub54c \ud655\uc778\ud574\ubcf4\uc138\uc694."
+        response = AgentResponse(
+            trace_id="trace-missed-dose-pro-card-body",
+            agent_name="missed_dose_coach",
+            prompt_version_id="v1",
+            decision_type="side_effect_assessment",
+            structured_payload={
+                "missed_dose_hybrid": {
+                    "reason": "routine_support",
+                    "tone_key": "persuasion",
+                    "generated_message": generated_message,
+                    "safety_notes": ["no_medication_name", "no_diagnosis", "non_directive"],
+                },
+                "tool_results": [
+                    {
+                        "tool_name": "get_pro_ctcae_questionnaire",
+                        "status": "success",
+                        "response": {
+                            "input_symptom": "\uba54\uc2a4\uaebc\uc6c0",
+                            "matched": True,
+                            "questions": [{"question": "\uc99d\uc0c1\uc774 \uc788\uc5c8\ub098\uc694?"}],
+                        },
+                    }
+                ],
+            },
+            human_summary="```json\n{\"missed_dose_hybrid\": {}}\n```",
+            requires_conversation_alert=True,
+        )
+
+        persist_agent_summary(session, response, category="missed_dose", related_dose_event_id=current.id)
+
+        message = session.query(ChatMessage).filter(ChatMessage.category == "missed_dose").one()
+        metadata = json.loads(message.metadata_json)
+        alert = session.query(Notification).filter(Notification.notification_type == "conversation_alert").one()
+        assert message.content == generated_message
+        assert alert.body == generated_message
+        assert metadata["ae_pro_ctcae"]["input_symptom"] == "\uba54\uc2a4\uaebc\uc6c0"
+        assert "```json" not in message.content
+
+
 def test_clear_escalation_pattern_ignores_llm_downgrade_candidate():
     with build_session() as session:
         current = seed_slot_events(session, ["missed", "missed", "missed"], medication_name="혈압약")[-1]

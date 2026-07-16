@@ -46,6 +46,7 @@ from shared.schemas import (
     DailyMedicationPattern,
     MissedDoseEventPayload,
     MultiturnChatRequest,
+    MutationConfirmationResolutionRequest,
 )
 from shared.settings import get_settings
 
@@ -125,6 +126,82 @@ async def update_agent_model_config(payload: AgentModelTierRequest) -> AgentMode
 async def multiturn_chat(payload: MultiturnChatRequest) -> AgentResponse:
     trace_logging.log_info("agent_api_call", path="/agent/multiturn-chat", mode="sync", task_type="multiturn_chat")
     return await orchestrator.invoke("multiturn_chat", payload.model_dump(mode="json"))
+
+
+@app.post(
+    "/agent/mutation-confirmations/resolve",
+    response_model=AgentResponse,
+    dependencies=[Depends(require_internal_api_token)],
+)
+async def resolve_mutation_confirmation(
+    payload: MutationConfirmationResolutionRequest,
+) -> AgentResponse:
+    request_payload = payload.original_request.model_dump(mode="json")
+    resolution_status = "cancelled"
+    tool_result: dict[str, Any] = {}
+    if payload.resolution == "confirm":
+        execution_payload = dict(request_payload)
+        execution_context = dict(execution_payload.get("context") or {})
+        execution_context["approved_mutation_confirmation"] = {
+            "confirmation_id": payload.confirmation_id,
+            "action_name": payload.action_name,
+            "action_fingerprint": payload.action_fingerprint,
+        }
+        execution_payload["context"] = execution_context
+        calls, results = await orchestrator.tool_runtime.execute(
+            [
+                {
+                    "id": payload.tool_call_id or f"{payload.confirmation_id}:confirmed",
+                    "name": payload.action_name,
+                    "arguments": payload.arguments,
+                }
+            ],
+            trace_id=f"mutation-confirmation:{payload.confirmation_id}",
+            source_event_type=payload.source_event_type,
+            payload=execution_payload,
+            routing_context={
+                "routing_mode": "confirmed_mutation",
+                "executed_by": payload.source_event_type,
+                "tool_names": [payload.action_name],
+                "agent_graph_mode": "langgraph_state_graph",
+            },
+        )
+        if len(calls) != 1 or len(results) != 1:
+            raise AgentExecutionError(
+                "confirmed_mutation_execution_result_count_mismatch",
+                error_type="confirmed_mutation_execution_failed",
+                trace_id=f"mutation-confirmation:{payload.confirmation_id}",
+                agent_name="mutation_confirmation_executor",
+                decision_type=payload.action_name,
+            )
+        result = results[0]
+        tool_result = result.model_dump(mode="json")
+        if result.status == "success":
+            resolution_status = "applied"
+        elif result.error == "mutation_confirmation_stale":
+            resolution_status = "stale"
+        else:
+            resolution_status = "failed"
+
+    context = dict(request_payload.get("context") or {})
+    context.pop("approved_mutation_confirmation", None)
+    context["mutation_resolution"] = {
+        "confirmation_id": payload.confirmation_id,
+        "status": resolution_status,
+        "action_type": payload.action_type,
+        "action_name": payload.action_name,
+        "action_fingerprint": payload.action_fingerprint,
+        "tool_result": tool_result,
+    }
+    request_payload["context"] = context
+    trace_logging.log_info(
+        "agent_mutation_confirmation_resolved",
+        confirmation_id=payload.confirmation_id,
+        action_name=payload.action_name,
+        resolution=payload.resolution,
+        status=resolution_status,
+    )
+    return await orchestrator.invoke("multiturn_chat", request_payload)
 
 
 # Keep each synchronous SQLAlchemy session inside one worker-thread call so

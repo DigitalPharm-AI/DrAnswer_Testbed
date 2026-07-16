@@ -2,6 +2,50 @@
   background: rgba(255, 255, 255, 0.92);
 }
 
+.mutation-confirmation-card {
+  background: rgba(255, 255, 255, 0.94);
+  border-color: rgba(25, 135, 84, 0.32);
+}
+
+.mutation-confirmation-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mutation-confirmation-details {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.mutation-confirmation-details > div {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.4fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.mutation-confirmation-details dt {
+  color: #59636f;
+  font-size: 0.84rem;
+}
+
+.mutation-confirmation-details dd {
+  margin: 0;
+  color: #17212b;
+  font-weight: 600;
+}
+
+.mutation-confirmation-actions form {
+  margin: 0;
+}
+
+.chat-composer textarea:disabled + button {
+  pointer-events: none;
+  opacity: 0.55;
+}
+
 .policy-change-table-wrap {
   width: 100%;
   margin-top: 12px;

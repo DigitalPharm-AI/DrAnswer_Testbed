@@ -10,17 +10,16 @@ from agent_app.agents.tool_chat import (
     ToolChatGraphState,
     tool_chat_message_flow,
 )
-from agent_app.chat_tooling import patient_summary_with_source
+from agent_app.errors import AgentExecutionError
 from agent_app.generation import PROMPT_VERSION_ID, agent_error
 from agent_app.prompt_builders import missed_dose_prompt
 from agent_app.providers import BaseLLMProvider
-from agent_app.response_builders import missed_dose_hybrid_payload, string_list
+from agent_app.response_builders import missed_dose_hybrid_payload, string_list, text_field
 from agent_app.tool_names import (
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
-    GET_PRO_CTCAE_QUESTIONNAIRE,
     SOURCE_MISSED_DOSE,
 )
-from agent_app.tool_results import tool_calls_payload, tool_result_summary
+from agent_app.tool_results import tool_calls_payload
 from agent_app.tool_runtime import ToolRuntime
 from shared.schemas import AgentResponse, MissedDoseEventPayload
 
@@ -36,7 +35,7 @@ class MissedDoseAgent:
             prompt=missed_dose_prompt(),
             response_mode="missed_dose_coaching",
             decision_type="missed_dose_assessment",
-            tool_names=(GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE),
+            tool_names=(GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,),
             source_event_type=SOURCE_MISSED_DOSE,
             force_ae_after_positive_lookup=True,
             defer_async_continuation=False,
@@ -59,11 +58,11 @@ class MissedDoseAgent:
         results = state.get("all_results", [])
         decision_output = state.get("initial_model_output", {})
         response_output = state.get("current_model_output", {})
-        response_message = state["current_ai_message"]
         questions = string_list(response_output.get("follow_up_questions")) or ["현재 복용 가능한 상태인지 알려주세요."]
         side_effect_signal = bool(response_output.get("side_effect_signal")) or any(
             result.tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT and result.status == "success" and result.response.get("suspected") for result in results
         )
+        hybrid_payload = missed_dose_hybrid_payload(response_output)
         structured_payload = {
             "dose_event_id": event.dose_event_id,
             "likely_reason": str(response_output.get("likely_reason") or "unknown"),
@@ -72,7 +71,7 @@ class MissedDoseAgent:
             "symptom_summary": str(response_output.get("symptom_summary") or ""),
             "follow_up_questions": questions,
             "recommendation": str(response_output.get("recommendation") or ""),
-            "missed_dose_hybrid": missed_dose_hybrid_payload(response_output),
+            "missed_dose_hybrid": hybrid_payload,
             "model_output": decision_output,
             **tool_calls_payload(executed_calls, results),
             "routing_mode": "event_tool" if executed_calls else "event_answer",
@@ -86,15 +85,19 @@ class MissedDoseAgent:
         if executed_calls:
             structured_payload["final_model_output"] = response_output
             structured_payload["finalization_mode"] = ITERATIVE_FINALIZATION_MODE
-        fallback_summary = tool_result_summary(
-            results,
-            str(response_output.get("patient_message") or response_output.get("message") or f"{event.slot_label} 복약을 놓친 것으로 확인했어요. 현재 상태를 알려주세요."),
-        )
-        human_summary, final_answer_source = patient_summary_with_source(
-            response_message,
-            fallback_summary,
-            fallback_source="tool_result_summary" if results else "model_output",
-        )
+        human_summary = text_field(hybrid_payload.get("generated_message"))
+        final_answer_source = "missed_dose_hybrid.generated_message"
+        if not human_summary:
+            human_summary = text_field(response_output.get("patient_message")) or text_field(response_output.get("message"))
+            final_answer_source = "model_output"
+        if not human_summary:
+            raise AgentExecutionError(
+                "missed_dose_patient_message_missing",
+                error_type="llm_output_validation_failed",
+                trace_id=state["trace_id"],
+                agent_name="missed_dose_coach",
+                decision_type="missed_dose_assessment",
+            )
         structured_payload["final_answer_source"] = final_answer_source
         return AgentResponse(
             trace_id=state["trace_id"],

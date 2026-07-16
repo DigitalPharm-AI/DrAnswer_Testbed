@@ -74,6 +74,16 @@ def system_event_worker(event_type: str, message: str, notification_id: int) -> 
     worker_services.system_event_worker(event_type, message, notification_id, write_lock, agent_client)
 
 
+def mutation_confirmation_worker(confirmation_id: str, resolution: str) -> None:
+    sync_worker_dependencies()
+    worker_services.mutation_confirmation_worker(
+        confirmation_id,
+        resolution,
+        write_lock,
+        agent_client,
+    )
+
+
 def get_runtime() -> SystemRuntime:
     return SystemRuntime(
         templates=templates,
@@ -81,6 +91,7 @@ def get_runtime() -> SystemRuntime:
         agent_client=agent_client,
         phr_client=phr_client,
         system_event_worker=system_event_worker,
+        mutation_confirmation_worker=mutation_confirmation_worker,
     )
 
 
@@ -155,6 +166,7 @@ __all__ = [
     "create_app",
     "get_runtime",
     "notification_worker",
+    "mutation_confirmation_worker",
     "phr_client",
     "system_event_worker",
     "templates",

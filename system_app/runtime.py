@@ -14,3 +14,4 @@ class SystemRuntime:
     agent_client: Any
     phr_client: Any
     system_event_worker: Any
+    mutation_confirmation_worker: Any

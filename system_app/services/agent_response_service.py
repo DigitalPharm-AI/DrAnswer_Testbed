@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from shared.json_utils import dump_json, parse_json_object
 from shared.schemas import AgentResponse, NotificationPolicyDelta
+from system_app.models import ChatMessage
 from system_app.services.agent_client import AgentClient
 from system_app.services.agent_error_service import present_agent_error
 from system_app.services.agent_jobs import create_agent_job
@@ -212,12 +213,30 @@ def policy_deltas_from_response_payload(response: AgentResponse) -> list[Notific
     return []
 
 
+def mutation_confirmation_chat_metadata(response: AgentResponse) -> dict:
+    if response.structured_payload.get("mutation_confirmation_required") is not True:
+        return {}
+    proposal = response.structured_payload.get("mutation_confirmation")
+    if not isinstance(proposal, dict) or not proposal.get("confirmation_id"):
+        return {}
+    return {
+        "mutation_confirmation": {
+            "confirmation_id": proposal.get("confirmation_id"),
+            "status": proposal.get("status", "pending"),
+            "action_type": proposal.get("action_type", "agent_tool"),
+            "action_name": proposal.get("action_name", ""),
+            "display": proposal.get("display") if isinstance(proposal.get("display"), dict) else {},
+            "error": "",
+        }
+    }
+
+
 def persist_agent_summary(
     session: Session,
     response: AgentResponse,
     category: str,
     related_dose_event_id: int | None = None,
-) -> None:
+) -> ChatMessage | None:
     existing = get_unacknowledged_conversation_alert(session, related_dose_event_id)
     conversation_notification = None
     message_metadata = ae_pro_ctcae_chat_metadata(response)
@@ -227,6 +246,9 @@ def persist_agent_summary(
     diet_metadata = diet_recommendation_chat_metadata(response)
     if diet_metadata:
         message_metadata.update(diet_metadata)
+    confirmation_metadata = mutation_confirmation_chat_metadata(response)
+    if confirmation_metadata:
+        message_metadata.update(confirmation_metadata)
     should_update_existing_missed_dose_alert = category == "missed_dose" and existing is not None
     if response.requires_conversation_alert or should_update_existing_missed_dose_alert:
         if existing is not None:
@@ -268,21 +290,22 @@ def persist_agent_summary(
     message_content = response.human_summary
     if conversation_notification is not None and category == "missed_dose":
         message_content = message_content or conversation_notification.body
-        if pattern_message and "ae_pro_ctcae" not in message_metadata:
+        if pattern_message:
             message_content = pattern_message
     if not message_content and "ae_pro_ctcae" in message_metadata:
         message_content = ae_pro_ctcae_chat_content(response)
     if not message_content and "food_selection" in message_metadata:
         message_content = food_selection_chat_content(message_metadata)
+    persisted_message = None
     if conversation_notification is not None and category == "missed_dose":
-        ensure_chat_message_for_conversation_alert(
+        persisted_message = ensure_chat_message_for_conversation_alert(
             session,
             conversation_notification,
             content=message_content,
             metadata=message_metadata,
         )
     elif message_content:
-        add_chat_message(
+        persisted_message = add_chat_message(
             session,
             role="assistant",
             content=message_content,
@@ -291,6 +314,7 @@ def persist_agent_summary(
             related_dose_event_id=related_dose_event_id,
             metadata=message_metadata,
         )
+    return persisted_message
 
 
 def maybe_apply_policy_response(session: Session, response: AgentResponse, source_event_type: str) -> tuple[bool, str]:

@@ -301,10 +301,61 @@ class AgentAsyncFailureRequest(BaseModel):
 
 class ToolCallResult(BaseModel):
     tool_name: str
-    status: Literal["success", "error", "skipped"]
+    status: Literal["success", "error", "skipped", "confirmation_required"]
     response: dict[str, Any] = Field(default_factory=dict)
     error: str = ""
     idempotency_key: str | None = None
+
+
+class MutationConfirmationPrepareRequest(BaseModel):
+    patient_id: str
+    action_type: Literal["agent_tool", "server_action"] = "agent_tool"
+    action_name: str
+    tool_call_id: str = ""
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    trace_id: str
+    source_event_type: str
+    request_context: dict[str, Any] = Field(default_factory=dict)
+
+
+class MutationConfirmationPrepareResult(BaseModel):
+    confirmation_required: bool
+    confirmation_id: str | None = None
+    action_type: Literal["agent_tool", "server_action"] = "agent_tool"
+    action_name: str
+    tool_call_id: str = ""
+    action_fingerprint: str = ""
+    status: str
+    display: dict[str, Any] = Field(default_factory=dict)
+    execution_result: dict[str, Any] = Field(default_factory=dict)
+
+
+class MutationConfirmationResolutionRequest(BaseModel):
+    confirmation_id: str
+    resolution: Literal["confirm", "cancel"]
+    action_type: Literal["agent_tool", "server_action"] = "agent_tool"
+    action_name: str
+    tool_call_id: str = ""
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    action_fingerprint: str
+    source_event_type: str = "multiturn_chat"
+    original_request: MultiturnChatRequest
+
+
+class ConfirmedMutationExecutionRequest(BaseModel):
+    confirmation_id: str
+    action_name: str
+    action_fingerprint: str
+    trace_id: str
+    source_event_type: str = "multiturn_chat"
+
+
+class ConfirmedMutationExecutionResult(BaseModel):
+    confirmation_id: str
+    action_name: str
+    status: Literal["applied", "stale", "failed"]
+    tool_result: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""
 
 
 class SideEffectAssessmentRequest(BaseModel):

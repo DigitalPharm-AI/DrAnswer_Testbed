@@ -12,7 +12,7 @@ from system_app.services.agent_response_service import (
     run_manual_pattern_analysis,
 )
 from system_app.services.clock_service import ensure_clock
-from system_app.services.dose_event_service import mark_dose_taken, set_clock_state
+from system_app.services.dose_event_service import mark_dose_taken_command, set_clock_state
 from system_app.services.medication_plan_service import reset_simulation_state
 from system_app.services.patient_profile_service import can_run_simulation
 from system_app.services.side_effect_reminder_safety import (
@@ -89,7 +89,8 @@ def create_simulation_router(get_runtime: Callable[[], SystemRuntime]) -> APIRou
     @router.post("/doses/{dose_event_id}/take")
     async def take_dose(dose_event_id: int, session: Session = Depends(get_session)):
         with get_runtime().write_lock:
-            mark_dose_taken(session, dose_event_id)
+            mark_dose_taken_command(session, dose_event_id)
+            session.commit()
         return hx_refresh()
 
     return router

@@ -565,7 +565,10 @@ def _tool_result_schema() -> dict[str, Any]:
     return _object_schema(
         {
             "tool_name": {"type": "string"},
-            "status": {"type": "string", "enum": ["success", "error", "skipped"]},
+            "status": {
+                "type": "string",
+                "enum": ["success", "error", "skipped", "confirmation_required"],
+            },
             "response": {"type": "object"},
             "error": {"type": "string"},
             "idempotency_key": {"type": "string"},

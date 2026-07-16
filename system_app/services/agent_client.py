@@ -14,6 +14,7 @@ from shared.schemas import (
     DailyMedicationPattern,
     MissedDoseEventPayload,
     MultiturnChatRequest,
+    MutationConfirmationResolutionRequest,
 )
 from shared.settings import get_settings
 
@@ -43,6 +44,7 @@ class AgentClient:
         settings = get_settings()
         self.base_url = (base_url or settings.agent_base_url).rstrip("/")
         self.internal_api_token = settings.internal_api_token
+        self.llm_timeout_seconds = settings.llm_timeout_seconds
 
     def _headers(self) -> dict[str, str]:
         if not self.internal_api_token:
@@ -84,8 +86,14 @@ class AgentClient:
             )
         return result
 
-    async def _post(self, path: str, payload: dict[str, Any]) -> AgentResponse:
-        data = await self._request_json("POST", path, payload=payload, timeout=60.0)
+    async def _post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        timeout: float = 60.0,
+    ) -> AgentResponse:
+        data = await self._request_json("POST", path, payload=payload, timeout=timeout)
         return self._validate_response_model(data, AgentResponse, "에이전트 성공 응답을 해석하지 못했습니다.")
 
     @staticmethod
@@ -133,6 +141,16 @@ class AgentClient:
 
     async def send_multiturn_chat(self, payload: MultiturnChatRequest) -> AgentResponse:
         return await self._post("/agent/multiturn-chat", payload.model_dump(mode="json"))
+
+    async def resolve_mutation_confirmation(
+        self,
+        payload: MutationConfirmationResolutionRequest,
+    ) -> AgentResponse:
+        return await self._post(
+            "/agent/mutation-confirmations/resolve",
+            payload.model_dump(mode="json"),
+            timeout=max(90.0, float(self.llm_timeout_seconds) + 30.0),
+        )
 
     async def send_daily_pattern_async(self, payload: DailyMedicationPattern) -> AgentAsyncAccepted:
         data = await self._request_json("POST", "/agent/async/daily-patterns", payload=payload.model_dump(mode="json"), timeout=10.0)

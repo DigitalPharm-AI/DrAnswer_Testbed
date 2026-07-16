@@ -7,8 +7,9 @@ from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.orm import Session
 
 from shared.json_utils import dump_json, parse_json_object
+from shared.settings import get_settings
 from system_app.db import get_session
-from system_app.models import ChatMessage, Notification
+from system_app.models import ChatMessage, MutationConfirmation, Notification
 from system_app.runtime import SystemRuntime
 from system_app.services.background_threads import start_daemon_thread
 from system_app.services.clock_service import ensure_clock
@@ -21,6 +22,13 @@ from system_app.services.missed_dose_reply_understanding import (
     annotate_missed_dose_reply,
     build_rule_based_missed_dose_reply_understanding,
     missed_dose_reply_request_metadata,
+)
+from system_app.services.mutation_confirmation_service import (
+    PENDING,
+    begin_mutation_resolution,
+    has_executing_confirmation,
+    recover_expired_confirmations,
+    supersede_pending_confirmations,
 )
 from system_app.services.nutrition_service import MEAL_TYPE_LABELS, record_meal
 from system_app.services.side_effect_reminder_safety import create_side_effect_reminder_safety_prompt, handle_side_effect_reminder_safety_reply
@@ -175,6 +183,12 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
     ):
         runtime = get_runtime()
         with runtime.write_lock:
+            patient_id = get_settings().patient_id
+            recover_expired_confirmations(session, patient_id)
+            if has_executing_confirmation(session, patient_id):
+                session.commit()
+                raise HTTPException(status_code=409, detail="mutation_confirmation_execution_in_progress")
+            supersede_pending_confirmations(session, patient_id)
             clock = ensure_clock(session)
             missed_dose_prompt = active_missed_dose_conversation_alert(session)
             request_metadata = None
@@ -199,6 +213,53 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
             args=(event_type, message, notification_id),
         )
         return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
+
+    @router.post("/chat/mutation-confirmation")
+    def mutation_confirmation_chat(
+        request: Request,
+        confirmation_id: str = Form(...),
+        action: str = Form(...),
+        session: Session = Depends(get_session),
+    ):
+        runtime = get_runtime()
+        should_start_worker = False
+        with runtime.write_lock:
+            patient_id = get_settings().patient_id
+            recover_expired_confirmations(session, patient_id)
+            row = session.scalar(
+                select(MutationConfirmation).where(
+                    MutationConfirmation.public_id == confirmation_id,
+                    MutationConfirmation.patient_id == patient_id,
+                )
+            )
+            if row is None:
+                raise HTTPException(status_code=404, detail="mutation_confirmation_not_found")
+            if action not in {"confirm", "cancel"}:
+                raise HTTPException(status_code=422, detail="mutation_confirmation_invalid_resolution")
+            if row.status == PENDING:
+                try:
+                    begin_mutation_resolution(
+                        session,
+                        confirmation_id,
+                        action,
+                        patient_id=patient_id,
+                    )
+                except ValueError as exc:
+                    session.rollback()
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
+                should_start_worker = True
+            session.commit()
+        if should_start_worker:
+            start_daemon_thread(
+                name=f"mutation-confirmation-{confirmation_id}",
+                target=runtime.mutation_confirmation_worker,
+                args=(confirmation_id, action),
+            )
+        return runtime.templates.TemplateResponse(
+            request,
+            "partials/chat.html",
+            build_dashboard_context(request, session),
+        )
 
     @router.post("/chat/food-select")
     def food_select(

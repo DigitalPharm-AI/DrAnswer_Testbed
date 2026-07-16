@@ -18,6 +18,48 @@
         {% else %}
           <div class="chat-content">{{ message.content }}</div>
         {% endif %}
+        {% if message.mutation_confirmation %}
+          {% set mutation = message.mutation_confirmation %}
+          {% set display = mutation.display %}
+          <div class="chat-action-card mutation-confirmation-card{% if not mutation.is_active %} is-disabled{% endif %}">
+            <div class="mutation-confirmation-heading">
+              <strong>{{ display.get('title') }}</strong>
+              {% if mutation.is_executing %}<span class="tiny-badge">&#xCC98;&#xB9AC; &#xC911;</span>{% endif %}
+            </div>
+            <p>{{ display.get('question') }}</p>
+            {% if display.get('details') %}
+              <dl class="mutation-confirmation-details">
+                {% for detail in display.get('details') %}
+                  <div>
+                    <dt>{{ detail.get('label') }}</dt>
+                    <dd>{{ detail.get('value') }}</dd>
+                  </div>
+                {% endfor %}
+              </dl>
+            {% endif %}
+            {% if mutation.is_pending %}
+              <div class="chat-action-row mutation-confirmation-actions">
+                <form action="/chat/mutation-confirmation" method="post" hx-post="/chat/mutation-confirmation" hx-target="#chat-panel" hx-swap="outerHTML">
+                  <input type="hidden" name="confirmation_id" value="{{ mutation.confirmation_id }}">
+                  <input type="hidden" name="action" value="confirm">
+                  <button type="submit">{{ display.get('action_label') }}&#xD558;&#xAE30;</button>
+                </form>
+                <form action="/chat/mutation-confirmation" method="post" hx-post="/chat/mutation-confirmation" hx-target="#chat-panel" hx-swap="outerHTML">
+                  <input type="hidden" name="confirmation_id" value="{{ mutation.confirmation_id }}">
+                  <input type="hidden" name="action" value="cancel">
+                  <button class="ghost" type="submit">&#xCDE8;&#xC18C;</button>
+                </form>
+              </div>
+            {% elif mutation.is_executing %}
+              <div class="chat-pending-content" aria-live="polite">
+                <span class="progress-round" aria-hidden="true"></span>
+                <span>{{ mutation.status_message }}</span>
+              </div>
+            {% else %}
+              <p class="muted action-card-disabled-note">{{ mutation.status_message }}</p>
+            {% endif %}
+          </div>
+        {% endif %}
         {% if message.policy_confirmation %}
           {% set policy = message.policy_confirmation %}
           {% set policy_disabled = not policy.is_active %}

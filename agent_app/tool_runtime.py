@@ -11,6 +11,7 @@ from agent_app.tool_names import (
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
 )
 from shared.redaction import safe_log_arguments
+from shared.schemas import ToolCallResult
 
 
 def _tool_call_log_payload(tool_call: dict[str, Any]) -> dict[str, Any]:
@@ -135,6 +136,30 @@ class ToolRuntime:
                 tool_index=index,
                 **_tool_result_log_payload(result),
             )
+            if result.status == "confirmation_required":
+                for blocked_index in range(index + 1, len(executed_calls)):
+                    blocked_call = executed_calls[blocked_index]
+                    blocked_result = ToolCallResult(
+                        tool_name=str(blocked_call.get("name") or "unknown"),
+                        status="skipped",
+                        response={
+                            "reason": "blocked_by_pending_confirmation",
+                            "confirmation_tool": result.tool_name,
+                        },
+                        error="blocked_by_pending_confirmation",
+                        idempotency_key=f"{trace_id}:{blocked_call.get('name') or 'unknown'}:blocked:{blocked_index}",
+                    )
+                    results.append(blocked_result)
+                    trace_logging.log_info(
+                        "agent_tool_call_blocked_by_confirmation",
+                        trace_id=trace_id,
+                        source_event_type=source_event_type,
+                        routing=routing,
+                        tool_index=blocked_index,
+                        confirmation_tool=result.tool_name,
+                        **_tool_call_log_payload(blocked_call),
+                    )
+                break
             if force_ae_after_positive_lookup and positive_side_effect_lookup(result) and not ae_already_requested:
                 ae_call = ae_tool_call_from_lookup(tool_call, result, payload)
                 trace_logging.log_info(

@@ -11,11 +11,11 @@ from sqlalchemy import desc, select
 from shared.json_utils import dump_json as dump_metadata_json
 from shared.json_utils import parse_json_object as parse_metadata_json
 from shared.redaction import safe_exception_summary
-from shared.schemas import AgentCallbackContext
+from shared.schemas import AgentCallbackContext, MutationConfirmationResolutionRequest
 from shared.settings import get_settings
 from shared.time_utils import utc_now
 from system_app.db import SessionLocal
-from system_app.models import AgentJob, Base, Notification
+from system_app.models import AgentJob, Base, MutationConfirmation, Notification
 from system_app.services import trace_logging
 from system_app.services.agent_client import AgentClient
 from system_app.services.agent_error_service import present_agent_error
@@ -31,6 +31,12 @@ from system_app.services.agent_jobs import (
 from system_app.services.clock_service import ensure_clock
 from system_app.services.dose_event_service import ensure_day_events, prepare_notification_window
 from system_app.services.failure_copy import copy_for_async_task
+from system_app.services.mutation_confirmation_service import (
+    APPLIED,
+    EXECUTING,
+    FAILED,
+    mirror_confirmation_card_status,
+)
 from system_app.services.patient_profile_service import can_run_simulation, ensure_base_data
 from system_app.services.system_request_service import (
     apply_async_continuation_ack,
@@ -40,9 +46,14 @@ from system_app.services.system_request_service import (
     mark_system_event_async_submitted,
     mark_system_event_request_failed,
     response_requires_async_continuation,
+    update_system_event_request_notification,
 )
 
 logger = logging.getLogger("uvicorn.error")
+MUTATION_APPLIED_FINALIZATION_FAILED_MESSAGE = (
+    "\ubcc0\uacbd\uc740 \uc801\uc6a9\ub418\uc5c8\uc9c0\ub9cc AI\uc758 \ucd5c\uc885 \uc548\ub0b4\ub97c \uc0dd\uc131\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4. "
+    "\ud654\uba74\uc5d0\uc11c \uae30\ub85d \uc0c1\ud0dc\ub97c \ud655\uc778\ud574\uc8fc\uc138\uc694."
+)
 
 
 def clock_worker(stop_event: threading.Event, write_lock: threading.RLock) -> None:
@@ -298,6 +309,122 @@ def system_event_worker(
         with write_lock:
             with SessionLocal() as session:
                 mark_system_event_request_failed(session, event_type, message, notification_id, exc)
+                session.commit()
+
+
+def mutation_confirmation_worker(
+    confirmation_id: str,
+    resolution: str,
+    write_lock: threading.RLock,
+    agent_client: AgentClient,
+) -> None:
+    event_type = "multiturn_chat"
+    message = ""
+    notification_id: int | None = None
+    try:
+        with write_lock:
+            with SessionLocal() as session:
+                row = session.scalar(
+                    select(MutationConfirmation).where(
+                        MutationConfirmation.public_id == confirmation_id
+                    )
+                )
+                if row is None:
+                    raise ValueError("mutation_confirmation_not_found")
+                notification_id = row.origin_request_notification_id
+                notification = session.get(Notification, notification_id) if notification_id is not None else None
+                metadata = parse_metadata_json(notification.metadata_json) if notification is not None else {}
+                event_type = str(metadata.get("event_type") or "multiturn_chat")
+                message = str(metadata.get("request_message") or "")
+                if notification_id is None:
+                    raise ValueError("mutation_confirmation_origin_request_missing")
+                original_request = build_multiturn_chat_request(
+                    session,
+                    event_type,
+                    message,
+                    notification_id,
+                )
+                request = MutationConfirmationResolutionRequest(
+                    confirmation_id=row.public_id,
+                    resolution=resolution,
+                    action_type=row.action_type,
+                    action_name=row.action_name,
+                    tool_call_id=row.tool_call_id,
+                    arguments=parse_metadata_json(row.arguments_json),
+                    action_fingerprint=row.action_fingerprint,
+                    source_event_type=row.source_event_type,
+                    original_request=original_request,
+                )
+                session.commit()
+
+        response = asyncio.run(agent_client.resolve_mutation_confirmation(request))
+        with write_lock:
+            with SessionLocal() as session:
+                row = session.scalar(
+                    select(MutationConfirmation).where(
+                        MutationConfirmation.public_id == confirmation_id
+                    )
+                )
+                if row is not None:
+                    mirror_confirmation_card_status(session, row)
+                apply_system_event_response(
+                    session,
+                    event_type,
+                    message,
+                    notification_id,
+                    response,
+                )
+                session.commit()
+    except Exception as exc:  # pragma: no cover - defensive path
+        safe_error = safe_exception_summary(exc)
+        logger.error(
+            "mutation_confirmation_worker_failed confirmation_id=%s error=%s",
+            confirmation_id,
+            safe_error,
+        )
+        with write_lock:
+            with SessionLocal() as session:
+                row = session.scalar(
+                    select(MutationConfirmation).where(
+                        MutationConfirmation.public_id == confirmation_id
+                    )
+                )
+                mutation_applied = row is not None and row.status == APPLIED
+                if row is not None:
+                    if row.status == EXECUTING:
+                        row.status = FAILED
+                        row.error_message = safe_error
+                        row.resolved_at = utc_now()
+                    mirror_confirmation_card_status(session, row)
+                if notification_id is not None:
+                    if mutation_applied:
+                        update_system_event_request_notification(
+                            session,
+                            notification_id,
+                            status=APPLIED,
+                            request_message=message,
+                            result_message=MUTATION_APPLIED_FINALIZATION_FAILED_MESSAGE,
+                        )
+                        present_agent_error(
+                            session,
+                            event_type,
+                            exc,
+                            user_message=MUTATION_APPLIED_FINALIZATION_FAILED_MESSAGE,
+                            add_chat=True,
+                            metadata={
+                                "confirmation_id": confirmation_id,
+                                "mutation_status": APPLIED,
+                                "finalization_failed": True,
+                            },
+                        )
+                    else:
+                        mark_system_event_request_failed(
+                            session,
+                            event_type,
+                            message,
+                            notification_id,
+                            exc,
+                        )
                 session.commit()
 
 
