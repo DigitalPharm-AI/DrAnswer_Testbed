@@ -27,8 +27,9 @@ from system_app.services.mutation_confirmation_service import (
     PENDING,
     begin_mutation_resolution,
     has_executing_confirmation,
+    pending_confirmation_for_patient,
+    pending_confirmation_reply_context,
     recover_expired_confirmations,
-    supersede_pending_confirmations,
 )
 from system_app.services.nutrition_service import MEAL_TYPE_LABELS, record_meal
 from system_app.services.side_effect_reminder_safety import create_side_effect_reminder_safety_prompt, handle_side_effect_reminder_safety_reply
@@ -188,10 +189,20 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
             if has_executing_confirmation(session, patient_id):
                 session.commit()
                 raise HTTPException(status_code=409, detail="mutation_confirmation_execution_in_progress")
-            supersede_pending_confirmations(session, patient_id)
             clock = ensure_clock(session)
-            missed_dose_prompt = active_missed_dose_conversation_alert(session)
-            request_metadata = None
+            pending_confirmation = pending_confirmation_for_patient(session, patient_id)
+            request_metadata: dict = {}
+            if pending_confirmation is not None:
+                request_metadata["pending_mutation_confirmation_id"] = pending_confirmation.public_id
+                request_metadata["pending_mutation_confirmation"] = pending_confirmation_reply_context(
+                    session,
+                    pending_confirmation,
+                )
+            missed_dose_prompt = (
+                None
+                if pending_confirmation is not None
+                else active_missed_dose_conversation_alert(session)
+            )
             if missed_dose_prompt is not None:
                 prompt_message = ensure_chat_message_for_conversation_alert(session, missed_dose_prompt)
                 understanding = build_rule_based_missed_dose_reply_understanding(message)
@@ -202,9 +213,15 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
                     understanding=understanding,
                     prompt_message=prompt_message,
                 )
-                request_metadata = missed_dose_reply_request_metadata(missed_dose_prompt, understanding)
+                request_metadata.update(missed_dose_reply_request_metadata(missed_dose_prompt, understanding))
                 acknowledge_notification_record(session, missed_dose_prompt.id, resume_conversation_clock=False, commit=False)
-            request_notification = create_system_event_request(session, event_type, message, clock.current_time, metadata=request_metadata)
+            request_notification = create_system_event_request(
+                session,
+                event_type,
+                message,
+                clock.current_time,
+                metadata=request_metadata or None,
+            )
             notification_id = request_notification.id
             session.commit()
         start_daemon_thread(

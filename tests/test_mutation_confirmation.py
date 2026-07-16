@@ -3,17 +3,22 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from agent_app.tool_names import UPDATE_MEDICATION_DOSE_EVENT_STATUS
+from agent_app.async_worker import _continuation_payload
 from agent_app.tool_protocol import mcp_result_from_tool_result, tool_result_from_mcp_result
 from agent_app.tool_runtime import ToolRuntime
 from shared.json_utils import dump_json
 from shared.schemas import (
+    AgentAsyncChatResultRequest,
+    AgentResponse,
     ConfirmedMutationExecutionRequest,
     MutationConfirmationPrepareRequest,
+    MultiturnChatRequest,
     ToolCallResult,
 )
 from system_app.models import AgentDecisionAudit, Base, ChatMessage, DoseEvent, MutationConfirmation, Notification
@@ -30,6 +35,8 @@ from system_app.services.mutation_confirmation_service import (
     prepare_mutation_confirmation,
     recover_expired_confirmations,
 )
+from system_app.services.agent_async_callback_service import process_async_chat_result_callback
+from system_app.services.system_request_service import build_async_continuation_request
 from shared.time_utils import utc_now
 
 
@@ -100,6 +107,229 @@ def _seed_request(session: Session) -> tuple[DoseEvent, MutationConfirmationPrep
     )
     session.commit()
     return event, request
+
+
+def _seed_confirmation_reply_notification(
+    session: Session,
+    confirmation_id: str,
+    *,
+    message: str,
+) -> Notification:
+    notification = Notification(
+        patient_id="demo-patient",
+        notification_type="system_policy_request",
+        title="confirmation reply",
+        body=message,
+        visible_at=datetime(2026, 4, 20, 9, 31),
+        metadata_json=dump_json(
+            {
+                "event_type": "multiturn_chat",
+                "request_message": message,
+                "status": "sent",
+                "pending_mutation_confirmation_id": confirmation_id,
+            }
+        ),
+    )
+    session.add(notification)
+    session.flush()
+    return notification
+
+
+def _confirmation_reply_callback(
+    notification: Notification,
+    *,
+    intent: str,
+    message: str,
+) -> AgentAsyncChatResultRequest:
+    return AgentAsyncChatResultRequest(
+        request_id=f"chat-continuation-{intent}",
+        notification_id=notification.id,
+        event_type="multiturn_chat",
+        message=message,
+        response=AgentResponse(
+            trace_id=f"trace-confirmation-reply-{intent}",
+            agent_name="multiturn_chat_agent",
+            prompt_version_id="test",
+            decision_type=(
+                "system_guidance"
+                if intent == "new_request"
+                else "mutation_confirmation_reply"
+            ),
+            structured_payload={
+                "routing_mode": "mutation_confirmation_reply",
+                "mutation_confirmation_reply": {"intent": intent},
+                "tool_calls": [],
+                "tool_results": [],
+            },
+            human_summary=f"supervisor response for {intent}",
+        ),
+        idempotency_key=f"confirmation-reply-{intent}-once",
+    )
+
+
+@pytest.mark.parametrize(
+    ("intent", "expected_status"),
+    [("confirm", EXECUTING), ("cancel", CANCELLED)],
+)
+def test_natural_confirmation_reply_starts_existing_resolution_flow(intent, expected_status):
+    engine = _engine()
+    with Session(engine) as session:
+        _event, request = _seed_request(session)
+        prepared = prepare_mutation_confirmation(session, request)
+        reply = _seed_confirmation_reply_notification(
+            session,
+            prepared.confirmation_id,
+            message=f"natural reply: {intent}",
+        )
+        session.commit()
+
+        result = process_async_chat_result_callback(
+            session,
+            _confirmation_reply_callback(
+                reply,
+                intent=intent,
+                message=f"natural reply: {intent}",
+            ),
+        )
+
+        row = session.scalar(
+            select(MutationConfirmation).where(
+                MutationConfirmation.public_id == prepared.confirmation_id
+            )
+        )
+        assert result["start_mutation_confirmation_worker"] is True
+        assert result["confirmation_id"] == prepared.confirmation_id
+        assert result["intent"] == intent
+        assert row.status == expected_status
+        assert session.query(ChatMessage).filter(ChatMessage.role == "assistant").count() == 0
+
+
+def test_unclear_natural_confirmation_reply_keeps_card_pending_and_asks_again():
+    engine = _engine()
+    with Session(engine) as session:
+        _event, request = _seed_request(session)
+        prepared = prepare_mutation_confirmation(session, request)
+        reply = _seed_confirmation_reply_notification(
+            session,
+            prepared.confirmation_id,
+            message="maybe",
+        )
+        session.commit()
+
+        result = process_async_chat_result_callback(
+            session,
+            _confirmation_reply_callback(reply, intent="unclear", message="maybe"),
+        )
+
+        row = session.scalar(
+            select(MutationConfirmation).where(
+                MutationConfirmation.public_id == prepared.confirmation_id
+            )
+        )
+        assistant = session.query(ChatMessage).filter(ChatMessage.role == "assistant").one()
+        assert "start_mutation_confirmation_worker" not in result
+        assert row.status == PENDING
+        assert assistant.content == "supervisor response for unclear"
+
+
+def test_new_request_supersedes_only_the_previous_pending_confirmation():
+    engine = _engine()
+    with Session(engine) as session:
+        _event, request = _seed_request(session)
+        prepared = prepare_mutation_confirmation(session, request)
+        reply = _seed_confirmation_reply_notification(
+            session,
+            prepared.confirmation_id,
+            message="What is my dose status?",
+        )
+        session.commit()
+
+        result = process_async_chat_result_callback(
+            session,
+            _confirmation_reply_callback(
+                reply,
+                intent="new_request",
+                message="What is my dose status?",
+            ),
+        )
+
+        row = session.scalar(
+            select(MutationConfirmation).where(
+                MutationConfirmation.public_id == prepared.confirmation_id
+            )
+        )
+        assistant = session.query(ChatMessage).filter(ChatMessage.role == "assistant").one()
+        assert result["status"] == "ok"
+        assert row.status == SUPERSEDED
+        assert assistant.content == "supervisor response for new_request"
+
+
+def test_new_request_confirmation_classification_survives_async_continuation():
+    response = AgentResponse(
+        trace_id="trace-new-request-continuation",
+        agent_name="multiturn_chat_agent",
+        prompt_version_id="test",
+        decision_type="async_continuation_requested",
+        structured_payload={
+            "mutation_confirmation_reply": {"intent": "new_request"},
+            "async_continuation_required": True,
+            "async_continuation_type": "side_effect_lookup",
+            "tool_calls": [],
+        },
+        human_summary="continuing",
+    )
+    request = MultiturnChatRequest(
+        patient_id="demo-patient",
+        event_type="multiturn_chat",
+        message="I have a new symptom question.",
+        current_time=datetime(2026, 4, 20, 9, 30),
+        context={"pending_mutation_confirmation": {"display": {"question": "Apply?"}}},
+    )
+
+    system_continuation = build_async_continuation_request(request, response)
+    worker_continuation = _continuation_payload(request.model_dump(mode="json"), response)
+
+    assert "pending_mutation_confirmation" not in system_continuation.context
+    assert system_continuation.context["pending_mutation_confirmation_reply_resolved"] == "new_request"
+    assert "pending_mutation_confirmation" not in worker_continuation["context"]
+    assert worker_continuation["context"]["pending_mutation_confirmation_reply_resolved"] == "new_request"
+
+
+def test_late_unclear_reply_does_not_reopen_executing_confirmation():
+    engine = _engine()
+    with Session(engine) as session:
+        _event, request = _seed_request(session)
+        prepared = prepare_mutation_confirmation(session, request)
+        confirming_reply = _seed_confirmation_reply_notification(
+            session,
+            prepared.confirmation_id,
+            message="yes",
+        )
+        session.commit()
+        process_async_chat_result_callback(
+            session,
+            _confirmation_reply_callback(confirming_reply, intent="confirm", message="yes"),
+        )
+
+        late_reply = _seed_confirmation_reply_notification(
+            session,
+            prepared.confirmation_id,
+            message="maybe",
+        )
+        session.commit()
+        result = process_async_chat_result_callback(
+            session,
+            _confirmation_reply_callback(late_reply, intent="unclear", message="maybe"),
+        )
+
+        row = session.scalar(
+            select(MutationConfirmation).where(
+                MutationConfirmation.public_id == prepared.confirmation_id
+            )
+        )
+        assert row.status == EXECUTING
+        assert "start_mutation_confirmation_worker" not in result
+        assert session.query(ChatMessage).filter(ChatMessage.role == "assistant").count() == 0
 
 
 def test_dose_mutation_waits_for_confirmation_and_commits_atomically():

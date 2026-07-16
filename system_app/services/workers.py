@@ -285,10 +285,24 @@ def system_event_worker(
             )
             return
 
+        response_follow_up: dict | None = None
         with write_lock:
             with SessionLocal() as session:
-                apply_system_event_response(session, event_type, message, notification_id, response)
+                response_follow_up = apply_system_event_response(
+                    session,
+                    event_type,
+                    message,
+                    notification_id,
+                    response,
+                )
                 session.commit()
+        if response_follow_up and response_follow_up.get("start_mutation_confirmation_worker") is True:
+            mutation_confirmation_worker(
+                str(response_follow_up.get("confirmation_id") or ""),
+                str(response_follow_up.get("intent") or ""),
+                write_lock,
+                agent_client,
+            )
         trace_logging.log_info(
             "system_event_response_persisted",
             event_type=event_type,

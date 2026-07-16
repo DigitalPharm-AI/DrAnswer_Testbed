@@ -22,6 +22,10 @@
 - 현재는 resolved action을 다시 실행하지 않으면서 남은 작업만 전문 Agent에 위임할 수 있는 반복 StateGraph 경로로 보완했다.
 - 단일 작업은 추가 Tool 호출 없이 한 번에 종료하고, 복합 작업만 필요한 만큼 이어서 처리한다.
 - 전용 finalization 도입 당시 동일 confirmation 실측은 총 34.8초에서 3.7초로 줄었고, 보완 후 단일 작업 latency는 수동 재측정할 예정이다.
+- pending 확인 카드에 사용자가 버튼 대신 “응”, “아니”, “진행해줘”, “취소해줘”처럼 채팅으로 답해도 처리할 수 있는 Supervisor 전용 StateGraph 분기를 구현했다.
+- 카드 버튼은 LLM을 거치지 않는 기존 deterministic route를 유지하고, 자연어 답변에서만 Supervisor가 `confirm / cancel / unclear / new_request` 의미를 판정한다.
+- LLM은 confirmation ID나 실행 인자를 만들 수 없으며, 서버가 알림 metadata에 저장한 pending confirmation만 기존 resolution worker로 실행한다.
+- 자연어 확인 응답 구현 후 전체 테스트는 383 passed, 3 skipped이며 사용자 수동 검증을 기다리고 있다.
 
 ## 완료한 작업
 
@@ -37,6 +41,9 @@
 - [x] 승인·취소 후 MultiturnChatAgent continuation 및 최종 답변
 - [x] 복합 요청에서 승인된 작업을 제외하고 남은 작업만 순차적으로 재개
 - [x] MissedDoseAgent의 증상 없는 PRO-CTCAE 직접 호출과 원시 JSON 응답 회귀 수정
+- [x] pending 확인 카드의 자연어 승인·취소·모호한 답변·새 요청 분기
+- [x] 자연어 승인·취소를 기존 deterministic mutation resolution worker에 연결
+- [x] new_request async continuation의 확인 판정 보존과 동시 응답 경합 방지
 
 ## 현재 수정 체크리스트
 
@@ -51,11 +58,13 @@
 - [x] 단일 작업은 Tool 0회, 복합 작업은 반복 StateGraph에서 다음 전문 Agent 작업 수행
 - [x] `node_timings_ms.mutation_resolution_llm`과 node 완료 로그 추가
 - [x] 복합 복약 요청 회귀 테스트: 점심 변경 1회 실행 후 아침 정정 지원 여부를 순차 확인
-- [x] Agent graph 회귀 테스트 실행: 47 passed
+- [x] Agent graph 회귀 테스트 실행: 52 passed
 - [x] 관련 단위·통합 회귀 테스트 실행: 69 passed
-- [x] 전체 pytest 실행: 371 passed, 3 skipped
+- [x] 자연어 confirmation 관련 Agent·callback·route 회귀 테스트 실행
+- [x] 전체 pytest 실행: 383 passed, 3 skipped
 - [ ] 사용자 수동 확인: 질문 카드 표시, 승인 전 미변경, 승인 후 반영
-- [ ] 사용자 확인 후 1단계 커밋
+- [x] 1단계 기준 구현 커밋: `58b5a87`
+- [ ] 자연어 확인 응답 수동 확인 후 별도 커밋
 
 ## 이후 단계
 
@@ -87,6 +96,10 @@
 - 한 발화에 작업이 여러 개면 첫 확인 처리 후 이미 완료된 작업은 반복하지 않고 남은 작업을 이어간다.
 - 남은 작업이 현재 지원되지 않으면 전문 Agent 확인 후 Supervisor가 제한을 정확히 안내한다.
 - 같은 버튼을 중복 클릭해도 mutation이 다시 실행되지 않는다.
+- 카드가 pending일 때 “응” 또는 “진행해줘”라고 채팅하면 버튼 승인과 동일한 작업이 한 번만 실행된다.
+- 카드가 pending일 때 “아니” 또는 “취소해줘”라고 채팅하면 DB를 바꾸지 않고 Supervisor가 취소 결과를 안내한다.
+- 모호한 채팅 답변에는 카드가 pending으로 남고 Supervisor가 적용 또는 취소 의사를 다시 묻는다.
+- 카드 답변이 아닌 새 요청은 이전 카드만 superseded 처리한 뒤 기존 Supervisor 흐름으로 처리한다.
 - 과거 승인 이력이 있어도 현재 DB가 미복용이면 새 확인을 요구한다.
 - Tool이 실행되지 않았거나 실패하면 기록 성공이라고 답하지 않는다.
 
@@ -108,3 +121,4 @@
 | 2026-07-16 | 승인 결과의 일반 tool loop 재진입과 MedicationAgent 재위임 제거 | 실측 34.8초 → 3.7초, 자동 테스트 완료 |
 | 2026-07-16 | finalization 실패 시 applied mutation과 카드 상태 보존 | 자동 테스트 완료, 수동 검증 대기 |
 | 2026-07-16 | 복합 요청 승인 후 남은 작업 유실 수정 | Agent graph 47 passed, 수동 검증 대기 |
+| 2026-07-16 | pending 확인 카드 자연어 승인·취소와 새 요청 분기 구현 | 전체 383 passed, 3 skipped, 수동 검증 대기 |

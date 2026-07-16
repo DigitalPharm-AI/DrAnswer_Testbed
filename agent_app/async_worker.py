@@ -158,6 +158,10 @@ def _requires_async_continuation(response: AgentResponse) -> bool:
 def _continuation_payload(payload: dict[str, Any], response: AgentResponse) -> dict[str, Any]:
     continuation = dict(payload)
     context = dict(continuation.get("context") or {})
+    confirmation_reply = response.structured_payload.get("mutation_confirmation_reply")
+    if isinstance(confirmation_reply, dict) and confirmation_reply.get("intent") == "new_request":
+        context.pop("pending_mutation_confirmation", None)
+        context["pending_mutation_confirmation_reply_resolved"] = "new_request"
     context["execute_async_continuation"] = True
     context["async_continuation_type"] = response.structured_payload.get("async_continuation_type", "")
     context["async_tool_calls"] = response.structured_payload.get("tool_calls", [])

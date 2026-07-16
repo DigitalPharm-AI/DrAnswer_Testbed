@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -123,6 +123,21 @@ class MultiturnChatOutput(BaseModel):
         return self
 
 
+class MutationConfirmationReplyOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    intent: Literal["confirm", "cancel", "unclear", "new_request"]
+    message: str
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("mutation_confirmation_reply_message_required")
+        return text
+
+
 def validate_llm_output(
     decision_type: str,
     output: dict[str, Any],
@@ -139,6 +154,10 @@ def validate_llm_output(
     elif decision_type == "system_guidance":
         MultiturnChatOutput.model_validate(output)
     return output
+
+
+def validate_mutation_confirmation_reply_output(output: dict[str, Any]) -> dict[str, Any]:
+    return MutationConfirmationReplyOutput.model_validate(output).model_dump(mode="json")
 
 
 

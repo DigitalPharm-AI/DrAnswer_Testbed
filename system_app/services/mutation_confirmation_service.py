@@ -234,6 +234,57 @@ def supersede_pending_confirmations(session: Session, patient_id: str) -> int:
     return _supersede_pending(session, patient_id)
 
 
+def pending_confirmation_for_patient(session: Session, patient_id: str) -> MutationConfirmation | None:
+    return session.scalar(
+        select(MutationConfirmation)
+        .where(
+            MutationConfirmation.patient_id == patient_id,
+            MutationConfirmation.status == PENDING,
+        )
+        .order_by(MutationConfirmation.created_at.desc(), MutationConfirmation.id.desc())
+        .limit(1)
+    )
+
+
+def pending_confirmation_reply_context(
+    session: Session,
+    row: MutationConfirmation,
+) -> dict[str, object]:
+    origin = (
+        session.get(Notification, row.origin_request_notification_id)
+        if row.origin_request_notification_id is not None
+        else None
+    )
+    origin_metadata = parse_json_object(origin.metadata_json) if origin is not None else {}
+    return {
+        "display": parse_json_object(row.display_json),
+        "original_request": str(origin_metadata.get("request_message") or ""),
+    }
+
+
+def supersede_mutation_confirmation(
+    session: Session,
+    public_id: str,
+    *,
+    patient_id: str,
+) -> bool:
+    row = session.scalar(
+        select(MutationConfirmation)
+        .where(
+            MutationConfirmation.public_id == public_id,
+            MutationConfirmation.patient_id == patient_id,
+        )
+        .with_for_update()
+    )
+    if row is None or row.status != PENDING:
+        return False
+    row.status = SUPERSEDED
+    row.resolved_at = utc_now()
+    mirror_confirmation_card_status(session, row)
+    session.flush()
+    return True
+
+
 def has_executing_confirmation(session: Session, patient_id: str) -> bool:
     return (
         session.scalar(

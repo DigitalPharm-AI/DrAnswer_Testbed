@@ -19,6 +19,7 @@ from system_app.models import (
     DoseSchedule,
     MedicationPlan,
     MissedDoseFlag,
+    MutationConfirmation,
     Notification,
     ReminderPolicy,
     SimulationPatientProfile,
@@ -812,6 +813,71 @@ def test_system_chat_records_sent_request_before_background_completion(monkeypat
     assert metadata["request_message"] == "아침 알림을 2번 10분 간격으로 바꿔줘"
     assert chat_message.content == "아침 알림을 2번 10분 간격으로 바꿔줘"
     assert chat_message.sender_type == "patient"
+
+
+def test_system_chat_keeps_pending_mutation_and_attaches_confirmation_reply_context(monkeypatch):
+    client = TestClient(app)
+    worker_called = threading.Event()
+    worker_args = []
+
+    def fake_system_event_worker(event_type: str, message: str, notification_id: int) -> None:
+        worker_args.append((event_type, message, notification_id))
+        worker_called.set()
+
+    monkeypatch.setattr(system_main, "system_event_worker", fake_system_event_worker)
+
+    with SessionLocal() as session:
+        session.query(MutationConfirmation).delete()
+        session.query(ChatMessage).delete()
+        session.query(Notification).delete()
+        ensure_base_data(session)
+        confirmation = MutationConfirmation(
+            public_id="confirmation-natural-reply",
+            patient_id=get_settings().patient_id,
+            action_type="agent_tool",
+            action_name="update_medication_dose_event_status",
+            tool_call_id="tool-natural-reply",
+            arguments_json="{}",
+            action_fingerprint="fingerprint-natural-reply",
+            target_snapshot_json="{}",
+            target_snapshot_hash="snapshot-natural-reply",
+            display_json=json.dumps(
+                {"question": "Apply the lunch dose update?"},
+                ensure_ascii=False,
+            ),
+            continuation_json="{}",
+            idempotency_key="confirmation-natural-reply-key",
+            status="pending",
+        )
+        session.add(confirmation)
+        session.commit()
+
+    response = client.post(
+        "/chat/system",
+        data={"event_type": "multiturn_chat", "message": "yes"},
+    )
+
+    assert response.status_code == 200
+    assert worker_called.wait(timeout=2)
+    with SessionLocal() as session:
+        confirmation = session.query(MutationConfirmation).filter_by(
+            public_id="confirmation-natural-reply"
+        ).one()
+        request_notification = session.query(Notification).filter(
+            Notification.notification_type == "system_policy_request"
+        ).one()
+        metadata = json.loads(request_notification.metadata_json)
+        notification_id = request_notification.id
+        assert confirmation.status == "pending"
+        assert metadata["pending_mutation_confirmation_id"] == confirmation.public_id
+        assert metadata["pending_mutation_confirmation"]["display"]["question"] == "Apply the lunch dose update?"
+
+        session.query(MutationConfirmation).delete()
+        session.query(ChatMessage).delete()
+        session.query(Notification).delete()
+        session.commit()
+
+    assert worker_args == [("multiturn_chat", "yes", notification_id)]
 
 
 def test_missed_dose_prompt_reply_uses_multiturn_chat_route(monkeypatch):

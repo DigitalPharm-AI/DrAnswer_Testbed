@@ -1446,6 +1446,147 @@ def test_agent_app_mutation_confirmation_stops_specialist_and_finishes_in_superv
     assert provider.chat_model_bound_tool_history[-1] == []
 
 
+@pytest.mark.parametrize("intent", ["confirm", "cancel", "unclear"])
+def test_agent_app_interprets_pending_mutation_confirmation_reply_without_tools(monkeypatch, intent):
+    class ConfirmationReplyProvider(NativeChatProvider):
+        def __init__(self) -> None:
+            self.seen_payloads: list[dict[str, Any]] = []
+            self.bound_tool_names: list[str] = []
+
+        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+            self.seen_payloads.append(user_payload)
+            assert user_payload["response_mode"] == "mutation_confirmation_reply"
+            return {"intent": intent, "message": f"confirmation reply: {intent}"}
+
+    class NoToolExecutor:
+        async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
+            raise AssertionError("confirmation reply interpretation must not execute tools")
+
+    provider = ConfirmationReplyProvider()
+    monkeypatch.setattr(
+        native_agent_main,
+        "orchestrator",
+        AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=NoToolExecutor()),
+    )
+    client = TestClient(native_agent_main.app)
+    request = build_taken_chat_request().model_copy(deep=True)
+    request.message = "natural confirmation reply"
+    request.context = {
+        **request.context,
+        "pending_mutation_confirmation": {
+            "display": {"question": "Apply this dose update?"},
+            "original_request": "I took my lunch dose.",
+        },
+    }
+
+    response = client.post(
+        "/agent/multiturn-chat",
+        json=request.model_dump(mode="json"),
+        headers=internal_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["agent_name"] == "multiturn_chat_agent"
+    assert payload["decision_type"] == "mutation_confirmation_reply"
+    assert payload["structured_payload"]["mutation_confirmation_reply"] == {"intent": intent}
+    assert payload["structured_payload"]["tool_calls"] == []
+    assert payload["structured_payload"]["tool_execution_mode"] == "none"
+    assert provider.chat_model_bound_tool_history == [[]]
+
+
+def test_agent_app_continues_new_request_after_pending_confirmation_reply_classification(monkeypatch):
+    class NewRequestProvider(NativeChatProvider):
+        def __init__(self) -> None:
+            self.seen_payloads: list[dict[str, Any]] = []
+            self.bound_tool_names: list[str] = []
+
+        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+            self.seen_payloads.append(user_payload)
+            if user_payload.get("response_mode") == "mutation_confirmation_reply":
+                return {"intent": "new_request", "message": "This is a new request."}
+            return {"message": "Handled the independent request."}
+
+    class NoToolExecutor:
+        async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
+            raise AssertionError("direct new request must not execute tools")
+
+    provider = NewRequestProvider()
+    monkeypatch.setattr(
+        native_agent_main,
+        "orchestrator",
+        AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=NoToolExecutor()),
+    )
+    client = TestClient(native_agent_main.app)
+    request = build_taken_chat_request().model_copy(deep=True)
+    request.message = "What time is it now?"
+    request.context = {
+        **request.context,
+        "pending_mutation_confirmation": {
+            "display": {"question": "Apply this dose update?"},
+            "original_request": "I took my lunch dose.",
+        },
+    }
+
+    response = client.post(
+        "/agent/multiturn-chat",
+        json=request.model_dump(mode="json"),
+        headers=internal_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["decision_type"] == "system_guidance"
+    assert payload["human_summary"] == "Handled the independent request."
+    assert payload["structured_payload"]["mutation_confirmation_reply"] == {"intent": "new_request"}
+    assert [item.get("response_mode") for item in provider.seen_payloads] == [
+        "mutation_confirmation_reply",
+        "multiturn_chat",
+    ]
+    assert "pending_mutation_confirmation" not in provider.seen_payloads[1]["context"]
+    assert provider.seen_payloads[1]["context"]["pending_mutation_confirmation_reply_resolved"] == "new_request"
+    assert provider.chat_model_bound_tool_history[0] == []
+    assert "delegate_to_medication_agent" in provider.chat_model_bound_tool_history[1]
+
+
+def test_agent_app_empty_pending_confirmation_context_uses_standard_supervisor_route(monkeypatch):
+    class StandardProvider(NativeChatProvider):
+        def __init__(self) -> None:
+            self.bound_tool_names: list[str] = []
+
+        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+            assert user_payload["response_mode"] == "multiturn_chat"
+            return {"message": "standard response"}
+
+    class NoToolExecutor:
+        async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
+            raise AssertionError("standard direct response must not execute tools")
+
+    provider = StandardProvider()
+    monkeypatch.setattr(
+        native_agent_main,
+        "orchestrator",
+        AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=NoToolExecutor()),
+    )
+    client = TestClient(native_agent_main.app)
+    request = build_taken_chat_request().model_copy(deep=True)
+    request.message = "hello"
+    request.context = {**request.context, "pending_mutation_confirmation": {}}
+
+    response = client.post(
+        "/agent/multiturn-chat",
+        json=request.model_dump(mode="json"),
+        headers=internal_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["decision_type"] == "system_guidance"
+    assert payload["human_summary"] == "standard response"
+    assert "mutation_confirmation_reply" not in payload["structured_payload"]
+    assert "delegate_to_medication_agent" in provider.chat_model_bound_tool_history[0]
+
+
 def test_agent_app_rejects_unapplied_mutation_result_instead_of_claiming_success(monkeypatch):
     provider = NativeDelegatingMedicationProvider()
 

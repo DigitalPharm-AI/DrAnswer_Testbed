@@ -33,8 +33,13 @@ from agent_app.chat_tooling import (
 from agent_app.continuation_policy import async_continuation_summary, async_continuation_type
 from agent_app.errors import AgentExecutionError
 from agent_app.generation import PROMPT_VERSION_ID, agent_error
-from agent_app.output_validation import validate_llm_output
-from agent_app.prompt_builders import multiturn_chat_prompt, mutation_confirmation_prompt, mutation_resolution_prompt
+from agent_app.output_validation import validate_llm_output, validate_mutation_confirmation_reply_output
+from agent_app.prompt_builders import (
+    multiturn_chat_prompt,
+    mutation_confirmation_prompt,
+    mutation_confirmation_reply_prompt,
+    mutation_resolution_prompt,
+)
 from agent_app.providers import BaseLLMProvider
 from agent_app.response_builders import finalized_chat_summary, natural_chat_summary, string_list
 from agent_app.tool_catalog import ToolCatalog
@@ -77,6 +82,10 @@ class MultiturnGraphState(TypedDict, total=False):
     confirmation_model_output: dict[str, Any]
     entry_mode: str
     mutation_resolution_llm_timings_ms: list[int]
+    confirmation_reply_ai_message: Any
+    confirmation_reply_model_output: dict[str, Any]
+    confirmation_reply_intent: str
+    confirmation_reply_llm_elapsed_ms: int
     response: AgentResponse
 
 
@@ -112,7 +121,17 @@ class MultiturnChatAgent:
                     "iterations": 0,
                 }
             )
-            return final_state["response"]
+            response = final_state["response"]
+            reply_intent = str(
+                final_state.get("confirmation_reply_intent")
+                or context.get("pending_mutation_confirmation_reply_resolved")
+                or ""
+            )
+            if reply_intent:
+                structured_payload = dict(response.structured_payload)
+                structured_payload["mutation_confirmation_reply"] = {"intent": reply_intent}
+                response = response.model_copy(update={"structured_payload": structured_payload})
+            return response
         except Exception as exc:
             raise agent_error(trace_id, MULTITURN_CHAT_AGENT_NAME, "system_guidance", exc) from exc
 
@@ -124,6 +143,9 @@ class MultiturnChatAgent:
         graph.add_node("supervisor_tool_node", self._supervisor_tool_node)
         graph.add_node("confirmation_llm", self._confirmation_llm)
         graph.add_node("confirmation_response", self._confirmation_response)
+        graph.add_node("prepare_confirmation_reply_model", self._prepare_confirmation_reply_model)
+        graph.add_node("confirmation_reply_llm", self._confirmation_reply_llm)
+        graph.add_node("confirmation_reply_response", self._confirmation_reply_response)
         graph.add_node("prepare_mutation_resolution_model", self._prepare_mutation_resolution_model)
         graph.add_node("mutation_resolution_response", self._mutation_resolution_response)
         graph.add_node("final_response", self._final_response)
@@ -136,6 +158,16 @@ class MultiturnChatAgent:
             {
                 "prepare_model": "prepare_model",
                 "prepare_mutation_resolution_model": "prepare_mutation_resolution_model",
+                "prepare_confirmation_reply_model": "prepare_confirmation_reply_model",
+            },
+        )
+        graph.add_edge("prepare_confirmation_reply_model", "confirmation_reply_llm")
+        graph.add_conditional_edges(
+            "confirmation_reply_llm",
+            self._route_after_confirmation_reply,
+            {
+                "prepare_model": "prepare_model",
+                "confirmation_reply_response": "confirmation_reply_response",
             },
         )
         graph.add_edge("prepare_model", "supervisor_llm")
@@ -165,18 +197,140 @@ class MultiturnChatAgent:
         graph.add_edge("max_iterations_response", END)
         graph.add_edge("confirmation_response", END)
         graph.add_edge("mutation_resolution_response", END)
+        graph.add_edge("confirmation_reply_response", END)
         return graph.compile()
 
     @staticmethod
     def _entry_router(state: MultiturnGraphState) -> dict[str, str]:
-        resolution = state.get("context", {}).get("mutation_resolution")
-        return {"entry_mode": "mutation_resolution" if isinstance(resolution, dict) else "standard"}
+        context = state.get("context", {})
+        resolution = context.get("mutation_resolution")
+        pending_confirmation = context.get("pending_mutation_confirmation")
+        if isinstance(resolution, dict):
+            entry_mode = "mutation_resolution"
+        elif isinstance(pending_confirmation, dict) and pending_confirmation:
+            entry_mode = "mutation_confirmation_reply"
+        else:
+            entry_mode = "standard"
+        return {"entry_mode": entry_mode}
 
     @staticmethod
     def _route_after_entry(state: MultiturnGraphState) -> str:
         if state.get("entry_mode") == "mutation_resolution":
             return "prepare_mutation_resolution_model"
+        if state.get("entry_mode") == "mutation_confirmation_reply":
+            return "prepare_confirmation_reply_model"
         return "prepare_model"
+
+    @staticmethod
+    def _prepare_confirmation_reply_model(state: MultiturnGraphState) -> dict[str, Any]:
+        pending_confirmation = state.get("context", {}).get("pending_mutation_confirmation")
+        if not isinstance(pending_confirmation, dict):
+            raise ValueError("pending_mutation_confirmation_required")
+        messages = build_chat_messages(
+            mutation_confirmation_reply_prompt(),
+            {
+                "response_mode": "mutation_confirmation_reply",
+                "user_reply": state["request_payload"].get("message"),
+                "pending_change": {
+                    "display": pending_confirmation.get("display", {}),
+                    "original_request": pending_confirmation.get("original_request", ""),
+                },
+            },
+        )
+        return {"messages": messages}
+
+    async def _confirmation_reply_llm(self, state: MultiturnGraphState) -> dict[str, Any]:
+        started = perf_counter()
+        ai_message = await self.provider.chat_model().ainvoke(state["messages"])
+        elapsed_ms = round((perf_counter() - started) * 1000)
+        native_tool_calls = tool_calls_from_ai_message(ai_message)
+        output = model_output_from_ai_message(ai_message)
+        serialized_tool_calls = output.get("tool_calls")
+        if native_tool_calls or isinstance(output.get("tool_call"), dict) or (
+            isinstance(serialized_tool_calls, list) and serialized_tool_calls
+        ):
+            raise AgentExecutionError(
+                "mutation_confirmation_reply_returned_tool_calls",
+                error_type="llm_output_validation_failed",
+                trace_id=state["trace_id"],
+                agent_name=MULTITURN_CHAT_AGENT_NAME,
+                decision_type="mutation_confirmation_reply",
+            )
+        validated = validate_mutation_confirmation_reply_output(output)
+        trace_logging.log_info(
+            "agent_llm_node_completed",
+            trace_id=state["trace_id"],
+            agent_name=MULTITURN_CHAT_AGENT_NAME,
+            node="mutation_confirmation_reply_llm",
+            elapsed_ms=elapsed_ms,
+            tools_bound=False,
+            intent=validated["intent"],
+        )
+        updates: dict[str, Any] = {
+            "confirmation_reply_ai_message": ai_message,
+            "confirmation_reply_model_output": validated,
+            "confirmation_reply_intent": validated["intent"],
+            "confirmation_reply_llm_elapsed_ms": elapsed_ms,
+        }
+        if validated["intent"] == "new_request":
+            context = dict(state.get("context", {}))
+            context.pop("pending_mutation_confirmation", None)
+            request_metadata = dict(context.get("request_metadata") or {})
+            request_metadata.pop("pending_mutation_confirmation", None)
+            request_metadata.pop("pending_mutation_confirmation_id", None)
+            context["request_metadata"] = request_metadata
+            context["pending_mutation_confirmation_reply_resolved"] = "new_request"
+            request_payload = dict(state["request_payload"])
+            request_payload["context"] = context
+            updates["context"] = context
+            updates["request_payload"] = request_payload
+        return updates
+
+    @staticmethod
+    def _route_after_confirmation_reply(state: MultiturnGraphState) -> str:
+        if state.get("confirmation_reply_intent") == "new_request":
+            return "prepare_model"
+        return "confirmation_reply_response"
+
+    @staticmethod
+    def _confirmation_reply_response(state: MultiturnGraphState) -> dict[str, AgentResponse]:
+        output = state["confirmation_reply_model_output"]
+        human_summary, final_answer_source = patient_summary_with_source(
+            state["confirmation_reply_ai_message"],
+            natural_chat_summary(output),
+            fallback_source="model_output",
+        )
+        intent = str(output["intent"])
+        return {
+            "response": AgentResponse(
+                trace_id=state["trace_id"],
+                agent_name=MULTITURN_CHAT_AGENT_NAME,
+                prompt_version_id=PROMPT_VERSION_ID,
+                decision_type="mutation_confirmation_reply",
+                structured_payload={
+                    "routing_mode": "mutation_confirmation_reply",
+                    "supervisor_agent": MULTITURN_CHAT_AGENT_NAME,
+                    "executed_by": MULTITURN_CHAT_AGENT_NAME,
+                    "mutation_confirmation_reply": {"intent": intent},
+                    "model_output": output,
+                    "tool_calls": [],
+                    "tool_results": [],
+                    "tools_executed": False,
+                    "final_answer_source": final_answer_source,
+                    "message_flow": ["HumanMessage", "AIMessage(confirmation_reply)"],
+                    "agent_graph_mode": TOOL_LOOP_MODE,
+                    "tool_loop_mode": TOOL_LOOP_MODE,
+                    "tool_execution_mode": "none",
+                    "finalization_mode": "confirmation_reply_interpretation",
+                    "node_timings_ms": {
+                        "mutation_confirmation_reply_llm": state.get("confirmation_reply_llm_elapsed_ms", 0),
+                    },
+                    "iterations": 0,
+                },
+                human_summary=human_summary,
+                requires_conversation_alert=False,
+            )
+        }
 
     def _prepare_mutation_resolution_model(self, state: MultiturnGraphState) -> dict[str, Any]:
         resolution = state.get("context", {}).get("mutation_resolution")

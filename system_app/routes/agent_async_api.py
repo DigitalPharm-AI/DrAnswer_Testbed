@@ -19,6 +19,7 @@ from system_app.db import get_session
 from system_app.models import AgentRunStep, AgentRunTrace
 from system_app.runtime import SystemRuntime
 from system_app.security import require_internal_api_token
+from system_app.services.background_threads import start_daemon_thread
 from system_app.services.agent_async_callback_service import (
     process_async_chat_result_callback,
     process_async_clinician_alert_callback,
@@ -74,8 +75,18 @@ def create_agent_async_api_router(get_runtime: Callable[[], SystemRuntime]) -> A
 
     @router.post("/chat-results")
     def agent_async_chat_results(payload: AgentAsyncChatResultRequest, session: Session = Depends(get_session)) -> dict:
-        with get_runtime().write_lock:
-            return process_async_chat_result_callback(session, payload)
+        runtime = get_runtime()
+        with runtime.write_lock:
+            result = process_async_chat_result_callback(session, payload)
+        if result.get("start_mutation_confirmation_worker") is True:
+            confirmation_id = str(result.get("confirmation_id") or "")
+            resolution = str(result.get("intent") or "")
+            start_daemon_thread(
+                name=f"mutation-confirmation-chat-{confirmation_id}",
+                target=runtime.mutation_confirmation_worker,
+                args=(confirmation_id, resolution),
+            )
+        return result
 
     @router.post("/policy-change-requests")
     def agent_async_policy_change_requests(payload: AgentAsyncPolicyChangeRequest, session: Session = Depends(get_session)) -> dict:

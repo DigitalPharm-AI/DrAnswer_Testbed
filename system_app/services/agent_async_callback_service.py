@@ -86,8 +86,15 @@ def process_async_job_result_callback(session: Session, payload: AgentAsyncJobRe
 def process_async_chat_result_callback(session: Session, payload: AgentAsyncChatResultRequest) -> dict:
     if _is_duplicate(session, payload.idempotency_key, "agent_async_chat_result"):
         return {"status": "duplicate", "request_id": payload.request_id}
+    follow_up: dict | None = None
     if payload.notification_id is not None:
-        apply_system_event_response(session, payload.event_type, payload.message, payload.notification_id, payload.response)
+        follow_up = apply_system_event_response(
+            session,
+            payload.event_type,
+            payload.message,
+            payload.notification_id,
+            payload.response,
+        )
         _mark_async_continuation_status(session, payload.notification_id, "done")
     else:
         persist_agent_summary(session, payload.response, category="multiturn_chat")
@@ -102,7 +109,10 @@ def process_async_chat_result_callback(session: Session, payload: AgentAsyncChat
         )
     _record_idempotency(session, payload.idempotency_key, "agent_async_chat_result", {"notification_id": payload.notification_id}, payload.response.human_summary)
     session.commit()
-    return {"status": "ok", "request_id": payload.request_id, "notification_id": payload.notification_id}
+    result = {"status": "ok", "request_id": payload.request_id, "notification_id": payload.notification_id}
+    if follow_up:
+        result.update(follow_up)
+    return result
 
 
 def process_async_policy_change_callback(session: Session, payload: AgentAsyncPolicyChangeRequest) -> dict:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from agent_app.tool_names import (
@@ -15,7 +16,7 @@ from shared.json_utils import dump_json, parse_json_object
 from shared.redaction import safe_exception_summary, safe_log_arguments
 from shared.schemas import AgentCallbackContext, AgentResponse, MultiturnChatRequest, NotificationPolicyDelta
 from shared.settings import get_settings
-from system_app.models import Notification
+from system_app.models import MutationConfirmation, Notification
 from system_app.services import trace_logging
 from system_app.services.agent_client import AgentClient
 from system_app.services.agent_error_service import present_agent_error
@@ -43,7 +44,9 @@ from system_app.services.timeline_service import (
 from system_app.services.mutation_confirmation_service import (
     PENDING,
     attach_confirmation_chat_message,
+    begin_mutation_resolution,
     confirmation_for_response,
+    supersede_mutation_confirmation,
 )
 
 settings = get_settings()
@@ -214,6 +217,10 @@ def build_multiturn_chat_request(
                 if row.notification_type == "nutrition_alert" and row.patient_id == settings.patient_id
             ][:5],
             "request_metadata": request_metadata,
+            "pending_mutation_confirmation": request_metadata.get(
+                "pending_mutation_confirmation",
+                {},
+            ),
             MISSED_DOSE_REPLY_METADATA_KEY: request_metadata.get(MISSED_DOSE_REPLY_METADATA_KEY, {}),
             "today_dose_events": [
                 {
@@ -253,7 +260,7 @@ def apply_system_event_response(
     message: str,
     request_notification_id: int,
     response: AgentResponse,
-) -> None:
+) -> dict[str, str | bool] | None:
     trace_logging.log_info(
         "system_event_response_apply_started",
         notification_id=request_notification_id,
@@ -275,6 +282,14 @@ def apply_system_event_response(
     )
     log_agent_tool_trace(request_notification_id, response)
     merge_missed_dose_reply_understanding_from_agent_response(session, request_notification_id, response)
+    confirmation_reply = _apply_mutation_confirmation_reply(
+        session,
+        request_notification_id,
+        message,
+        response,
+    )
+    if confirmation_reply is not None and confirmation_reply.get("continue_normal_response") is not True:
+        return confirmation_reply
     mutation_confirmation = confirmation_for_response(session, response.structured_payload)
     if mutation_confirmation is not None:
         if mutation_confirmation.status != PENDING:
@@ -287,7 +302,7 @@ def apply_system_event_response(
                 result_message=result_message,
                 response=response,
             )
-            return
+            return None
         chat_message = persist_agent_summary(session, response, category="multiturn_chat")
         if chat_message is not None:
             attach_confirmation_chat_message(session, mutation_confirmation, chat_message)
@@ -307,7 +322,7 @@ def apply_system_event_response(
             action_name=mutation_confirmation.action_name,
             status=mutation_confirmation.status,
         )
-        return
+        return None
     policy_tool_response = is_policy_tool_response(response)
     if not policy_tool_response:
         persist_agent_summary(session, response, category="multiturn_chat")
@@ -349,6 +364,149 @@ def apply_system_event_response(
         applied=applied,
         result=trace_logging.snippet(result_message),
     )
+    return None
+
+
+def _apply_mutation_confirmation_reply(
+    session: Session,
+    request_notification_id: int,
+    message: str,
+    response: AgentResponse,
+) -> dict[str, str | bool] | None:
+    reply = response.structured_payload.get("mutation_confirmation_reply")
+    if not isinstance(reply, dict):
+        return None
+    intent = str(reply.get("intent") or "")
+    if intent not in {"confirm", "cancel", "unclear", "new_request"}:
+        raise ValueError("mutation_confirmation_reply_intent_invalid")
+
+    request_notification = session.get(Notification, request_notification_id)
+    request_metadata = (
+        parse_json_object(request_notification.metadata_json)
+        if request_notification is not None
+        else {}
+    )
+    confirmation_id = str(request_metadata.get("pending_mutation_confirmation_id") or "")
+    if not confirmation_id:
+        raise ValueError("mutation_confirmation_reply_target_missing")
+
+    row = session.scalar(
+        select(MutationConfirmation).where(
+            MutationConfirmation.public_id == confirmation_id,
+            MutationConfirmation.patient_id == settings.patient_id,
+        )
+    )
+    if intent == "new_request":
+        replacement = response.structured_payload.get("mutation_confirmation")
+        replaced_by_current_request = (
+            isinstance(replacement, dict)
+            and str(replacement.get("confirmation_id") or "") not in {"", confirmation_id}
+        )
+        superseded = supersede_mutation_confirmation(
+            session,
+            confirmation_id,
+            patient_id=settings.patient_id,
+        )
+        if not superseded and not replaced_by_current_request:
+            update_system_event_request_notification(
+                session,
+                request_notification_id,
+                status="answered",
+                request_message=message,
+                result_message=response.human_summary,
+                response=response,
+            )
+            trace_logging.log_info(
+                "mutation_confirmation_chat_reply_ignored",
+                notification_id=request_notification_id,
+                trace_id=response.trace_id,
+                confirmation_id=confirmation_id,
+                intent=intent,
+                confirmation_status=row.status if row is not None else "missing",
+            )
+            return {"intent": intent, "confirmation_id": confirmation_id}
+        trace_logging.log_info(
+            "mutation_confirmation_chat_reply_resolved",
+            notification_id=request_notification_id,
+            trace_id=response.trace_id,
+            confirmation_id=confirmation_id,
+            intent=intent,
+            continue_normal_response=True,
+        )
+        return {
+            "intent": intent,
+            "confirmation_id": confirmation_id,
+            "continue_normal_response": True,
+        }
+
+    if intent == "unclear":
+        if row is None or row.status != PENDING:
+            update_system_event_request_notification(
+                session,
+                request_notification_id,
+                status="answered",
+                request_message=message,
+                result_message=response.human_summary,
+                response=response,
+            )
+            trace_logging.log_info(
+                "mutation_confirmation_chat_reply_ignored",
+                notification_id=request_notification_id,
+                trace_id=response.trace_id,
+                confirmation_id=confirmation_id,
+                intent=intent,
+                confirmation_status=row.status if row is not None else "missing",
+            )
+            return {"intent": intent, "confirmation_id": confirmation_id}
+        persist_agent_summary(session, response, category="multiturn_chat")
+        update_system_event_request_notification(
+            session,
+            request_notification_id,
+            status="needs_clarification",
+            request_message=message,
+            result_message=response.human_summary,
+            response=response,
+        )
+        trace_logging.log_info(
+            "mutation_confirmation_chat_reply_resolved",
+            notification_id=request_notification_id,
+            trace_id=response.trace_id,
+            confirmation_id=confirmation_id,
+            intent=intent,
+            confirmation_status=row.status if row is not None else "missing",
+        )
+        return {"intent": intent, "confirmation_id": confirmation_id}
+
+    should_start_worker = row is not None and row.status == PENDING
+    if should_start_worker:
+        begin_mutation_resolution(
+            session,
+            confirmation_id,
+            intent,
+            patient_id=settings.patient_id,
+        )
+    update_system_event_request_notification(
+        session,
+        request_notification_id,
+        status="answered",
+        request_message=message,
+        result_message=response.human_summary,
+        response=response,
+    )
+    trace_logging.log_info(
+        "mutation_confirmation_chat_reply_resolved",
+        notification_id=request_notification_id,
+        trace_id=response.trace_id,
+        confirmation_id=confirmation_id,
+        intent=intent,
+        worker_started=should_start_worker,
+        confirmation_status=row.status if row is not None else "missing",
+    )
+    return {
+        "intent": intent,
+        "confirmation_id": confirmation_id,
+        "start_mutation_confirmation_worker": should_start_worker,
+    }
 
 
 def response_requires_async_continuation(response: AgentResponse) -> bool:
@@ -358,6 +516,10 @@ def response_requires_async_continuation(response: AgentResponse) -> bool:
 def build_async_continuation_request(request: MultiturnChatRequest, response: AgentResponse) -> MultiturnChatRequest:
     continuation = request.model_copy(deep=True)
     context = dict(continuation.context or {})
+    confirmation_reply = response.structured_payload.get("mutation_confirmation_reply")
+    if isinstance(confirmation_reply, dict) and confirmation_reply.get("intent") == "new_request":
+        context.pop("pending_mutation_confirmation", None)
+        context["pending_mutation_confirmation_reply_resolved"] = "new_request"
     context["execute_async_continuation"] = True
     context["async_continuation_type"] = response.structured_payload.get("async_continuation_type", "")
     context["async_tool_calls"] = response.structured_payload.get("tool_calls", [])

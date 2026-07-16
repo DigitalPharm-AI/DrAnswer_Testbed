@@ -125,6 +125,20 @@ def mutation_confirmation_prompt() -> str:
     )
 
 
+def mutation_confirmation_reply_prompt() -> str:
+    return (
+        "You are the Korean MultiturnChatAgent supervisor interpreting a user's chat reply while one database-change "
+        "confirmation card is pending. Tools are unavailable. Classify only the semantic relationship between the "
+        "user reply and the pending change. Return JSON only in this exact shape: "
+        '{"intent":"confirm|cancel|unclear|new_request","message":"<concise polite Korean response>"}. '
+        "Use confirm only for clear consent to the pending change, cancel only for clear rejection, unclear when the "
+        "reply is ambiguous or combines a confirmation decision with another request, and new_request when it is an "
+        "independent question or task that does not answer the card. Do not use keyword rules. Do not return or invent "
+        "a confirmation ID, action name, arguments, tool_call, or tool_calls. For unclear, ask whether to apply or cancel "
+        "the displayed change. The server, not you, owns the actual mutation and confirmation identifiers."
+    )
+
+
 def mutation_resolution_prompt() -> str:
     return (
         "You are the Korean MultiturnChatAgent supervisor resuming an original user request after one database mutation "
