@@ -28,6 +28,7 @@ from agent_app.worker_status import (
     record_worker_heartbeat,
     record_worker_task_completed,
 )
+from shared.redaction import safe_exception_summary
 from shared.schemas import (
     AgentAsyncChatResultRequest,
     AgentAsyncClinicianAlertRequest,
@@ -38,7 +39,6 @@ from shared.schemas import (
     AgentCallbackContext,
     AgentResponse,
 )
-from shared.redaction import safe_exception_summary
 from shared.settings import get_settings
 
 logger = logging.getLogger("uvicorn.error")
@@ -159,9 +159,13 @@ def _continuation_payload(payload: dict[str, Any], response: AgentResponse) -> d
     continuation = dict(payload)
     context = dict(continuation.get("context") or {})
     confirmation_reply = response.structured_payload.get("mutation_confirmation_reply")
-    if isinstance(confirmation_reply, dict) and confirmation_reply.get("intent") == "new_request":
+    if isinstance(confirmation_reply, dict) and confirmation_reply.get("intent") in {"new_request", "revise"}:
+        intent = str(confirmation_reply.get("intent"))
         context.pop("pending_mutation_confirmation", None)
-        context["pending_mutation_confirmation_reply_resolved"] = "new_request"
+        context["pending_mutation_confirmation_reply_resolved"] = intent
+        revision = response.structured_payload.get("mutation_confirmation_revision")
+        if intent == "revise" and isinstance(revision, dict):
+            context["mutation_confirmation_revision"] = revision
     context["execute_async_continuation"] = True
     context["async_continuation_type"] = response.structured_payload.get("async_continuation_type", "")
     context["async_tool_calls"] = response.structured_payload.get("tool_calls", [])

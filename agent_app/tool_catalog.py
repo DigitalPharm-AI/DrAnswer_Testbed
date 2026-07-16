@@ -3,7 +3,12 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from agent_app.tool_names import MODEL_VISIBLE_TOOL_METADATA, canonical_tool_name, replace_legacy_tool_names
+from agent_app.tool_names import (
+    MODEL_VISIBLE_TOOL_METADATA,
+    UPSERT_NUTRITION_PREFERENCE_FACT,
+    canonical_tool_name,
+    replace_legacy_tool_names,
+)
 
 
 class ToolCatalog:
@@ -376,6 +381,7 @@ class ToolCatalog:
                                 "dislikes",
                                 "prefers",
                                 "avoids_by_preference",
+                                "cannot_consume",
                                 "allergic_to",
                                 "medically_avoids",
                                 "religious_avoids",
@@ -581,6 +587,16 @@ def _canonical_tool_payload(tool: dict[str, Any]) -> dict[str, Any]:
     payload = replace_legacy_tool_names(deepcopy(tool))
     name = canonical_tool_name(str(tool.get("name") or ""))
     payload["name"] = name
+    if name == UPSERT_NUTRITION_PREFERENCE_FACT:
+        payload["description"] = (
+            "Stores an explicitly stated nutrition preference or restriction as an ontology fact. "
+            "Use preference predicates only for voluntary likes or dislikes. Use cannot_consume for a hard "
+            "ingestion restriction whose cause is not specified, allergic_to only for an explicit allergy, "
+            "medically_avoids only for an explicit medical restriction, and religious_avoids only for an "
+            "explicit religious restriction. Never store inability to consume as avoids_by_preference."
+        )
+        predicate_schema = payload.get("inputSchema", {}).get("properties", {}).get("predicate", {})
+        predicate_schema["description"] = "Hard restrictions must not use a preference predicate."
     args_schema = payload.get("inputSchema") if isinstance(payload.get("inputSchema"), dict) else _object_schema({}, [])
     payload["args_schema"] = args_schema
     metadata = MODEL_VISIBLE_TOOL_METADATA.get(name, {})

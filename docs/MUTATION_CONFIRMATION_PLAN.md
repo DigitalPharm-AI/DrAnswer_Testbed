@@ -8,7 +8,7 @@
 
 ## 현재 단계
 
-**1단계: 공통 기반과 복약 완료 확인 흐름을 구현하고 수동 검증하는 중**
+**2단계: 영양 선호도 확인 흐름 구현을 완료하고 사용자 수동 검증 대기 중**
 
 - 자동 구현과 1차 회귀 테스트는 완료했다.
 - 사용자 수동 테스트에서 과거 승인 결과가 새 요청에 재사용되어, DB는 변경되지 않았는데 성공으로 답하는 회귀를 발견했다.
@@ -25,7 +25,14 @@
 - pending 확인 카드에 사용자가 버튼 대신 “응”, “아니”, “진행해줘”, “취소해줘”처럼 채팅으로 답해도 처리할 수 있는 Supervisor 전용 StateGraph 분기를 구현했다.
 - 카드 버튼은 LLM을 거치지 않는 기존 deterministic route를 유지하고, 자연어 답변에서만 Supervisor가 `confirm / cancel / unclear / new_request` 의미를 판정한다.
 - LLM은 confirmation ID나 실행 인자를 만들 수 없으며, 서버가 알림 metadata에 저장한 pending confirmation만 기존 resolution worker로 실행한다.
-- 자연어 확인 응답 구현 후 전체 테스트는 383 passed, 3 skipped이며 사용자 수동 검증을 기다리고 있다.
+- 1단계 복약 완료와 자연어 확인 응답은 사용자 수동 검증 후 각각 커밋했다.
+- `upsert_nutrition_preference_fact`를 `ConfirmationActionRegistry`에 등록하고 NutritionManagementAgent mutation으로 확인 흐름을 활성화했다.
+- prepare 단계는 온톨로지 노드와 기존 선호도만 조회하며, 승인 전에는 노드와 선호도 fact를 생성하거나 변경하지 않는다.
+- 승인 시 선호도 fact 저장과 confirmation `applied` 전환을 같은 transaction에서 처리하고, snapshot 변경 시 `stale`로 중단한다.
+- “저녁 추천 + 사과 알레르기” 복합 요청은 알레르기 저장 승인 후 동일 mutation을 반복하지 않고 추천 작업만 NutritionRecommendationAgent로 이어간다.
+- 사용자 수동 테스트에서 추천이 텍스트로만 보여 위임되지 않은 것처럼 보이는 회귀를 확인했다. trace상 위임과 추천 Tool 실행은 성공했지만 추천 카드 metadata가 최종 채팅에서 누락됐다.
+- 원인은 mutation-resolution 최종 응답이 전문 Agent의 카드용 structured payload를 병합하지 않은 점이며, Supervisor 최종 응답에 전문 Agent payload를 보존하도록 수정했다.
+- 2단계 구현 후 전체 테스트는 389 passed, 3 skipped이며 사용자 수동 검증을 기다리고 있다.
 
 ## 완료한 작업
 
@@ -44,6 +51,12 @@
 - [x] pending 확인 카드의 자연어 승인·취소·모호한 답변·새 요청 분기
 - [x] 자연어 승인·취소를 기존 deterministic mutation resolution worker에 연결
 - [x] new_request async continuation의 확인 판정 보존과 동시 응답 경합 방지
+- [x] 영양 선호도 mutation의 read-only prepare와 사용자용 변경 요약
+- [x] 영양 선호도 저장과 confirmation 상태의 단일 transaction 처리
+- [x] 동일 선호도 중복 확인 방지와 snapshot stale 처리
+- [x] 영양 선호도 확인에서 NutritionManagementAgent 중단 및 Supervisor 최종 안내
+- [x] 알레르기 저장 승인 후 NutritionRecommendationAgent 추천 continuation
+- [x] mutation-resolution 추천 결과의 카드 structured payload와 specialist Agent 식별자 보존
 
 ## 현재 수정 체크리스트
 
@@ -61,16 +74,17 @@
 - [x] Agent graph 회귀 테스트 실행: 52 passed
 - [x] 관련 단위·통합 회귀 테스트 실행: 69 passed
 - [x] 자연어 confirmation 관련 Agent·callback·route 회귀 테스트 실행
-- [x] 전체 pytest 실행: 383 passed, 3 skipped
-- [ ] 사용자 수동 확인: 질문 카드 표시, 승인 전 미변경, 승인 후 반영
+- [x] 전체 pytest 실행: 389 passed, 3 skipped
+- [x] 1단계 사용자 수동 확인: 질문 카드 표시, 승인 전 미변경, 승인 후 반영
 - [x] 1단계 기준 구현 커밋: `58b5a87`
-- [ ] 자연어 확인 응답 수동 확인 후 별도 커밋
+- [x] 자연어 확인 응답 구현 커밋: `3d718c5`
 
 ## 이후 단계
 
-1. **영양 선호도**
-   - `upsert_nutrition_preference_fact` 확인 계약 적용
-   - 알레르기 저장 승인 후 추천 요청 continuation 검증
+1. **영양 선호도 (구현 완료, 수동 검증 대기)**
+   - [x] `upsert_nutrition_preference_fact` 확인 계약 적용
+   - [x] 알레르기 저장 승인 후 추천 요청 continuation 자동 검증
+   - [ ] 사용자 수동 검증 후 커밋
 2. **영양 CRUD**
    - 식사·음식 생성, 수정, 삭제 확인 계약 적용
    - `/chat/food-confirm`을 proposal 완성 단계로 변경
@@ -103,6 +117,17 @@
 - 과거 승인 이력이 있어도 현재 DB가 미복용이면 새 확인을 요구한다.
 - Tool이 실행되지 않았거나 실패하면 기록 성공이라고 답하지 않는다.
 
+## 2단계 수동 합격 기준
+
+- “사과 알레르기가 있어”라고 말하면 바로 저장하지 않고 영양 제약 정보 확인 카드를 보여준다.
+- 카드에는 대상, 정보 유형, 변경 전후 상태가 보이고 내부 Tool 이름이나 DB ID는 노출되지 않는다.
+- 승인 전에는 영양 온톨로지 노드와 환자 선호도 fact가 생성되거나 변경되지 않는다.
+- 취소하면 선호도를 저장하지 않고 Supervisor가 취소 결과를 안내한다.
+- 승인하면 해당 선호도를 한 번만 저장하고 Supervisor가 실제 적용 결과를 안내한다.
+- “저녁 뭐 먹을까? 사과 알레르기가 있어”에서는 알레르기 저장 승인 후 추천 작업이 자동으로 이어진다.
+- 추천 재개 시 이미 승인된 알레르기 저장을 다시 제안하지 않으며, 사과 제약을 반영한 후보를 보여준다.
+- 같은 알레르기가 이미 같은 상태로 저장되어 있으면 중복 confirmation이나 중복 fact를 만들지 않는다.
+
 ## 작업 원칙
 
 - 단계별 자동 테스트와 사용자 수동 확인을 거친 뒤, 사용자가 요청할 때만 커밋한다.
@@ -117,8 +142,20 @@
 |---|---|---|
 | 2026-07-15 | 공통 confirmation 기반 및 복약 완료 1차 구현 | 수동 검증 중 |
 | 2026-07-15 | MissedDoseAgent의 잘못된 PRO-CTCAE 호출과 원시 JSON 응답 수정 | 자동 테스트 완료 |
+## 2026-07-16 영양 선호도 정정 보완
+
+- [x] 수동 테스트에서 `못 먹는다`가 `avoids_by_preference`로 오분류되는 문제 확인
+- [x] pending 카드 응답 계약에 LLM 의미 분류 `revise` 추가
+- [x] 정정 시 기존 confirmation을 `superseded` 처리하고 수정된 새 confirmation을 `pending`으로 생성
+- [x] 섭취 불가는 hard restriction, 비선호는 soft preference로 구분하도록 NutritionManagementAgent prompt와 model-visible Tool 계약 보강
+- [x] 원인이 명시되지 않은 섭취 불가는 `cannot_consume`으로 저장해 알레르기나 의학적 이유를 추정하지 않음
+- [x] 정정 전후에는 실제 영양 선호도 DB가 변경되지 않는 회귀 테스트 추가
+- [ ] 사용자 수동 재검증 후 2단계 영양 선호도 변경 커밋
 | 2026-07-15 | 과거 승인 결과 재사용으로 인한 복약 false success 원인 확인 및 수정 | 자동 테스트 완료, 수동 검증 대기 |
 | 2026-07-16 | 승인 결과의 일반 tool loop 재진입과 MedicationAgent 재위임 제거 | 실측 34.8초 → 3.7초, 자동 테스트 완료 |
 | 2026-07-16 | finalization 실패 시 applied mutation과 카드 상태 보존 | 자동 테스트 완료, 수동 검증 대기 |
 | 2026-07-16 | 복합 요청 승인 후 남은 작업 유실 수정 | Agent graph 47 passed, 수동 검증 대기 |
 | 2026-07-16 | pending 확인 카드 자연어 승인·취소와 새 요청 분기 구현 | 전체 383 passed, 3 skipped, 수동 검증 대기 |
+| 2026-07-16 | 영양 선호도 확인 계약과 알레르기 승인 후 추천 continuation 구현 | 전체 389 passed, 3 skipped, 수동 검증 대기 |
+| 2026-07-16 | 알레르기 승인 후 추천 위임 결과의 카드 metadata 누락 수정 | 전체 389 passed, 3 skipped, 수동 재검증 대기 |
+- [x] 자동 테스트: 관련 회귀 94 passed, 전체 pytest 392 passed / 3 skipped

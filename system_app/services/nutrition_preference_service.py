@@ -20,11 +20,12 @@ PREFERENCE_PREDICATES = {
     "dislikes",
     "prefers",
     "avoids_by_preference",
+    "cannot_consume",
     "allergic_to",
     "medically_avoids",
     "religious_avoids",
 }
-HARD_CONSTRAINT_PREDICATES = {"allergic_to", "medically_avoids", "religious_avoids"}
+HARD_CONSTRAINT_PREDICATES = {"cannot_consume", "allergic_to", "medically_avoids", "religious_avoids"}
 SOFT_PREFERENCE_PREDICATES = PREFERENCE_PREDICATES - HARD_CONSTRAINT_PREDICATES
 NODE_TYPES = {"food", "ingredient", "food_category", "cuisine", "preparation", "nutrient", "nutrient_risk", "restriction", "diet_style"}
 ALLERGEN_RELATION_PREDICATE = "contains_allergen"
@@ -40,6 +41,7 @@ PREDICATE_LABELS = {
     "dislikes": "비선호",
     "prefers": "선호 경향",
     "avoids_by_preference": "기호상 회피",
+    "cannot_consume": "\uc12d\ucde8 \ubd88\uac00",
     "allergic_to": "알레르기",
     "medically_avoids": "의학적 제한",
     "religious_avoids": "종교/신념 제한",

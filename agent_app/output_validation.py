@@ -126,7 +126,7 @@ class MultiturnChatOutput(BaseModel):
 class MutationConfirmationReplyOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    intent: Literal["confirm", "cancel", "unclear", "new_request"]
+    intent: Literal["confirm", "cancel", "revise", "unclear", "new_request"]
     message: str
 
     @field_validator("message")

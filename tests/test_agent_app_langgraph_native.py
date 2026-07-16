@@ -50,6 +50,7 @@ from agent_app.tool_names import (
     SOURCE_NUTRITION_MANAGEMENT_AGENT,
     SOURCE_NUTRITION_RECOMMENDATION_AGENT,
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+    UPSERT_NUTRITION_PREFERENCE_FACT,
     replace_legacy_tool_names,
 )
 from agent_app.tool_permissions import permission_denied_result, validate_tool_permission
@@ -65,7 +66,16 @@ from agent_app.tool_protocol import (
 from agent_app.tool_results import tool_calls_payload, tool_result_summary
 from agent_app.tool_runtime import ToolRuntime
 from agent_app.tool_side_effects import ae_tool_call_from_lookup
-from shared.schemas import AgentCallbackContext, DailyMedicationPattern, DosePatternEvent, MissedDoseEventPayload, MultiturnChatRequest, MutationConfirmationResolutionRequest, SlotAdherenceSummary, ToolCallResult
+from shared.schemas import (
+    AgentCallbackContext,
+    DailyMedicationPattern,
+    DosePatternEvent,
+    MissedDoseEventPayload,
+    MultiturnChatRequest,
+    MutationConfirmationResolutionRequest,
+    SlotAdherenceSummary,
+    ToolCallResult,
+)
 from shared.settings import get_settings
 
 
@@ -902,6 +912,12 @@ def test_tool_catalog_can_be_exposed_as_mcp_tools_list():
         assert {"domain", "source_repo", "source_path", "source_tool_name", "mutability", "risk_level"} <= set(tool)
         assert tool["_meta"]["domain"] == tool["domain"]
 
+    preference_tool = next(tool for tool in payload["tools"] if tool["name"] == UPSERT_NUTRITION_PREFERENCE_FACT)
+    assert "Never store inability to consume as avoids_by_preference" in preference_tool["description"]
+    predicate_schema = preference_tool["inputSchema"]["properties"]["predicate"]
+    assert predicate_schema["description"] == "Hard restrictions must not use a preference predicate."
+    assert "cannot_consume" in predicate_schema["enum"]
+
 
 def test_model_visible_tool_contract_does_not_expose_legacy_names():
     tools_payload = json.dumps(ToolCatalog.available_tools_payload(), ensure_ascii=False)
@@ -1446,6 +1462,101 @@ def test_agent_app_mutation_confirmation_stops_specialist_and_finishes_in_superv
     assert provider.chat_model_bound_tool_history[-1] == []
 
 
+def test_agent_app_nutrition_preference_confirmation_stops_specialist_and_finishes_in_supervisor(monkeypatch):
+    class NutritionPreferenceProvider(NativeChatProvider):
+        def __init__(self) -> None:
+            self.bound_tool_names: list[str] = []
+
+        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+            if user_payload.get("response_mode") == "multiturn_chat":
+                return {
+                    "message": "I will delegate the nutrition preference update.",
+                    "tool_call": {
+                        "name": "delegate_to_nutrition_management_agent",
+                        "arguments": {
+                            "task": "Record the explicit apple allergy.",
+                            "reason": "The user stated a permanent nutrition constraint.",
+                        },
+                    },
+                }
+            if user_payload.get("response_mode") == "nutrition_management_chat":
+                return {
+                    "message": "I will prepare the allergy preference update.",
+                    "tool_call": {
+                        "name": UPSERT_NUTRITION_PREFERENCE_FACT,
+                        "arguments": {
+                            "predicate": "allergic_to",
+                            "object_label": "apple",
+                            "object_type": "ingredient",
+                            "evidence_text": "I am allergic to apples.",
+                        },
+                    },
+                }
+            return {"message": "Please confirm the nutrition preference update below."}
+
+    class ConfirmationExecutor:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
+            self.calls.append({**tool_call, "_source_event_type": source_event_type})
+            return ToolCallResult(
+                tool_name=tool_call["name"],
+                status="confirmation_required",
+                response={
+                    "mutation_confirmation": {
+                        "confirmation_required": True,
+                        "confirmation_id": "preference-confirmation-1",
+                        "action_type": "agent_tool",
+                        "action_name": UPSERT_NUTRITION_PREFERENCE_FACT,
+                        "tool_call_id": tool_call.get("id", ""),
+                        "action_fingerprint": "preference-fingerprint-1",
+                        "status": "pending",
+                        "display": {
+                            "title": "nutrition preference confirmation",
+                            "question": "confirm apple allergy",
+                        },
+                    }
+                },
+            )
+
+    provider = NutritionPreferenceProvider()
+    executor = ConfirmationExecutor()
+    monkeypatch.setattr(
+        native_agent_main,
+        "orchestrator",
+        AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=executor),
+    )
+    client = TestClient(native_agent_main.app)
+    request = MultiturnChatRequest(
+        patient_id="demo-patient",
+        phr_patient_key="phr-demo",
+        event_type="multiturn_chat",
+        message="What should I eat for dinner? I am allergic to apples.",
+        current_time=datetime(2026, 4, 20, 18, 30),
+        context={"recent_chat": []},
+    )
+
+    response = client.post(
+        "/agent/multiturn-chat",
+        json=request.model_dump(mode="json"),
+        headers=internal_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    structured = payload["structured_payload"]
+    assert payload["agent_name"] == "multiturn_chat_agent"
+    assert payload["decision_type"] == "mutation_confirmation_required"
+    assert structured["routing_mode"] == "mutation_confirmation_required"
+    assert structured["mutation_confirmation"]["action_name"] == UPSERT_NUTRITION_PREFERENCE_FACT
+    assert structured["tool_results"][0]["status"] == "confirmation_required"
+    assert executor.calls[0]["name"] == UPSERT_NUTRITION_PREFERENCE_FACT
+    assert executor.calls[0]["_source_event_type"] == SOURCE_NUTRITION_MANAGEMENT_AGENT
+    assert provider.chat_model_bound_tool_history[-1] == []
+
+
+
 @pytest.mark.parametrize("intent", ["confirm", "cancel", "unclear"])
 def test_agent_app_interprets_pending_mutation_confirmation_reply_without_tools(monkeypatch, intent):
     class ConfirmationReplyProvider(NativeChatProvider):
@@ -1548,6 +1659,116 @@ def test_agent_app_continues_new_request_after_pending_confirmation_reply_classi
     assert provider.chat_model_bound_tool_history[0] == []
     assert "delegate_to_medication_agent" in provider.chat_model_bound_tool_history[1]
 
+
+def test_agent_app_revises_pending_preference_confirmation_with_a_new_proposal(monkeypatch):
+    class RevisionProvider(NativeChatProvider):
+        def __init__(self) -> None:
+            self.seen_payloads: list[dict[str, Any]] = []
+            self.bound_tool_names: list[str] = []
+
+        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+            self.seen_payloads.append(user_payload)
+            response_mode = user_payload.get("response_mode")
+            if response_mode == "mutation_confirmation_reply":
+                return {"intent": "revise", "message": "I will correct the proposal."}
+            if response_mode == "multiturn_chat":
+                revision = user_payload["context"]["mutation_confirmation_revision"]
+                assert revision["display"]["target"] == "watermelon"
+                assert revision["user_revision"] == "Apply it as a hard ingestion restriction."
+                return {
+                    "message": "I will delegate the corrected restriction.",
+                    "tool_call": {
+                        "name": "delegate_to_nutrition_management_agent",
+                        "arguments": {
+                            "task": "Replace the pending watermelon preference with a hard ingestion restriction.",
+                            "reason": "The user corrected the pending classification.",
+                        },
+                    },
+                }
+            if response_mode == "nutrition_management_chat":
+                assert user_payload["context"]["mutation_confirmation_revision"]["display"]["target"] == "watermelon"
+                return {
+                    "message": "I will prepare the corrected restriction.",
+                    "tool_call": {
+                        "name": UPSERT_NUTRITION_PREFERENCE_FACT,
+                        "arguments": {
+                            "predicate": "cannot_consume",
+                            "object_label": "watermelon",
+                            "object_type": "food",
+                            "safety_level": "hard",
+                            "evidence_text": "Apply it as a hard ingestion restriction.",
+                        },
+                    },
+                }
+            return {"message": "Please review the corrected restriction below."}
+
+    class RevisionExecutor:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
+            self.calls.append({**tool_call, "_source_event_type": source_event_type})
+            return ToolCallResult(
+                tool_name=tool_call["name"],
+                status="confirmation_required",
+                response={
+                    "mutation_confirmation": {
+                        "confirmation_required": True,
+                        "confirmation_id": "preference-revision-confirmation",
+                        "action_type": "agent_tool",
+                        "action_name": UPSERT_NUTRITION_PREFERENCE_FACT,
+                        "tool_call_id": tool_call.get("id", ""),
+                        "action_fingerprint": "preference-revision-fingerprint",
+                        "status": "pending",
+                        "display": {
+                            "title": "nutrition restriction confirmation",
+                            "question": "confirm watermelon restriction",
+                            "target": "watermelon",
+                        },
+                    }
+                },
+            )
+
+    provider = RevisionProvider()
+    executor = RevisionExecutor()
+    monkeypatch.setattr(
+        native_agent_main,
+        "orchestrator",
+        AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=executor),
+    )
+    client = TestClient(native_agent_main.app)
+    request = build_taken_chat_request().model_copy(deep=True)
+    request.message = "Apply it as a hard ingestion restriction."
+    request.context = {
+        **request.context,
+        "pending_mutation_confirmation": {
+            "display": {
+                "title": "nutrition preference confirmation",
+                "question": "Record watermelon as a preference-based avoid?",
+                "target": "watermelon",
+            },
+            "original_request": "Record that I cannot eat watermelon.",
+        },
+    }
+
+    response = client.post(
+        "/agent/multiturn-chat",
+        json=request.model_dump(mode="json"),
+        headers=internal_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    structured = payload["structured_payload"]
+    assert payload["agent_name"] == "multiturn_chat_agent"
+    assert payload["decision_type"] == "mutation_confirmation_required"
+    assert structured["mutation_confirmation_reply"] == {"intent": "revise"}
+    assert structured["mutation_confirmation_revision"]["display"]["target"] == "watermelon"
+    assert structured["mutation_confirmation"]["confirmation_id"] == "preference-revision-confirmation"
+    assert executor.calls[0]["name"] == UPSERT_NUTRITION_PREFERENCE_FACT
+    assert executor.calls[0]["arguments"]["predicate"] == "cannot_consume"
+    assert executor.calls[0]["arguments"]["safety_level"] == "hard"
+    assert executor.calls[0]["_source_event_type"] == SOURCE_NUTRITION_MANAGEMENT_AGENT
 
 def test_agent_app_empty_pending_confirmation_context_uses_standard_supervisor_route(monkeypatch):
     class StandardProvider(NativeChatProvider):
@@ -1827,6 +2048,147 @@ def test_agent_app_mutation_resolution_continues_only_remaining_work(monkeypatch
     assert scoped_context["original_user_message"] == original_request.message
     assert scoped_context["mutation_resolution"]["action_fingerprint"] == "fingerprint-lunch"
     assert "morning taken record cannot currently be reverted" in payload["human_summary"]
+
+
+def test_agent_app_nutrition_preference_resolution_continues_to_recommendation(monkeypatch):
+    remaining_task = "Recommend dinner while honoring the apple allergy that was just confirmed."
+
+    class PreferenceRecommendationProvider(NativeChatProvider):
+        def __init__(self) -> None:
+            self.seen_payloads: list[dict[str, Any]] = []
+            self.finalized_payloads: list[dict[str, Any]] = []
+            self.bound_tool_names: list[str] = []
+
+        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+            self.seen_payloads.append(user_payload)
+            response_mode = user_payload.get("response_mode")
+            if response_mode == "mutation_resolution_continuation":
+                return {
+                    "message": "Continue only the unresolved dinner recommendation.",
+                    "tool_call": {
+                        "name": "delegate_to_nutrition_recommendation_agent",
+                        "arguments": {
+                            "task": remaining_task,
+                            "reason": "The allergy was saved and the recommendation remains.",
+                        },
+                    },
+                }
+            if response_mode == "nutrition_recommendation_chat":
+                return {
+                    "message": "Find dinner candidates that exclude apple.",
+                    "tool_call": {
+                        "name": GET_NUTRITION_RECOMMENDATION_CANDIDATES,
+                        "arguments": {
+                            "meal_type": "dinner",
+                            "constraints": {"allergens": ["apple"]},
+                        },
+                    },
+                }
+            raise AssertionError(f"unexpected response_mode: {response_mode}")
+
+        async def finalize_tool_results(
+            self,
+            system_prompt: str,
+            user_payload: dict[str, Any],
+            tool_results: list[dict[str, Any]],
+        ) -> dict[str, Any]:
+            self.finalized_payloads.append(user_payload)
+            if user_payload.get("response_mode") == "nutrition_recommendation_chat":
+                return {"message": "Apple-free dinner candidates are ready."}
+            if user_payload.get("response_mode") == "mutation_resolution_continuation":
+                return {"message": "The apple allergy was saved, and safe dinner candidates are ready below."}
+            raise AssertionError(f"unexpected finalization response_mode: {user_payload.get('response_mode')}")
+
+    class PreferenceRecommendationExecutor:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
+            self.calls.append({**tool_call, "_payload": payload, "_source_event_type": source_event_type})
+            if tool_call["name"] == UPSERT_NUTRITION_PREFERENCE_FACT:
+                return ToolCallResult(
+                    tool_name=tool_call["name"],
+                    status="success",
+                    response={
+                        "success": True,
+                        "fact": {
+                            "predicate": "allergic_to",
+                            "object_label": "apple",
+                            "safety_level": "hard",
+                        },
+                        "preferences": {"hard_constraints": [{"object_label": "apple"}]},
+                    },
+                )
+            if tool_call["name"] == GET_NUTRITION_RECOMMENDATION_CANDIDATES:
+                return ToolCallResult(
+                    tool_name=tool_call["name"],
+                    status="success",
+                    response={
+                        "success": True,
+                        "recommendations": [{"food_name": "grilled tofu bowl"}],
+                    },
+                )
+            raise AssertionError(f"unexpected tool: {tool_call['name']}")
+
+    provider = PreferenceRecommendationProvider()
+    executor = PreferenceRecommendationExecutor()
+    monkeypatch.setattr(
+        native_agent_main,
+        "orchestrator",
+        AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=executor),
+    )
+    client = TestClient(native_agent_main.app)
+    original_request = MultiturnChatRequest(
+        patient_id="demo-patient",
+        phr_patient_key="phr-demo",
+        event_type="multiturn_chat",
+        message="What should I eat for dinner? I am allergic to apples.",
+        current_time=datetime(2026, 4, 20, 18, 30),
+        context={"recent_chat": []},
+    )
+    request = MutationConfirmationResolutionRequest(
+        confirmation_id="confirmation-preference-recommendation",
+        resolution="confirm",
+        action_name=UPSERT_NUTRITION_PREFERENCE_FACT,
+        tool_call_id="tool-preference",
+        arguments={
+            "predicate": "allergic_to",
+            "object_label": "apple",
+            "object_type": "ingredient",
+        },
+        action_fingerprint="fingerprint-apple-allergy",
+        source_event_type=SOURCE_NUTRITION_MANAGEMENT_AGENT,
+        original_request=original_request,
+    )
+
+    response = client.post(
+        "/agent/mutation-confirmations/resolve",
+        json=request.model_dump(mode="json"),
+        headers=internal_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    structured = payload["structured_payload"]
+    assert payload["agent_name"] == "multiturn_chat_agent"
+    assert structured["routing_mode"] == "mutation_resolution_continuation"
+    assert structured["supervisor_tool_calls"][0]["name"] == "delegate_to_nutrition_recommendation_agent"
+    assert [call["name"] for call in structured["specialist_tool_calls"]] == [
+        GET_NUTRITION_RECOMMENDATION_CANDIDATES
+    ]
+    assert [call["name"] for call in executor.calls] == [
+        UPSERT_NUTRITION_PREFERENCE_FACT,
+        GET_NUTRITION_RECOMMENDATION_CANDIDATES,
+    ]
+    assert executor.calls[0]["_source_event_type"] == SOURCE_NUTRITION_MANAGEMENT_AGENT
+    assert executor.calls[1]["_source_event_type"] == SOURCE_NUTRITION_RECOMMENDATION_AGENT
+    assert executor.calls[1]["_payload"]["message"] == remaining_task
+    scoped_context = executor.calls[1]["_payload"]["context"]["supervisor_delegation"]
+    assert scoped_context["mutation_resolution"]["action_fingerprint"] == "fingerprint-apple-allergy"
+    assert "safe dinner candidates" in payload["human_summary"]
+    assert structured["specialist_agent"] == "nutrition_recommendation_agent"
+    assert structured["diet_recommendations"] == [{"food_name": "grilled tofu bowl"}]
+
 
 
 def test_agent_app_multiturn_delegates_nutrition_management_tools(monkeypatch):

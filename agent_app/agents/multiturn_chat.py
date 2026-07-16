@@ -130,6 +130,9 @@ class MultiturnChatAgent:
             if reply_intent:
                 structured_payload = dict(response.structured_payload)
                 structured_payload["mutation_confirmation_reply"] = {"intent": reply_intent}
+                revision = final_state.get("context", {}).get("mutation_confirmation_revision")
+                if reply_intent == "revise" and isinstance(revision, dict):
+                    structured_payload["mutation_confirmation_revision"] = revision
                 response = response.model_copy(update={"structured_payload": structured_payload})
             return response
         except Exception as exc:
@@ -272,14 +275,21 @@ class MultiturnChatAgent:
             "confirmation_reply_intent": validated["intent"],
             "confirmation_reply_llm_elapsed_ms": elapsed_ms,
         }
-        if validated["intent"] == "new_request":
+        if validated["intent"] in {"new_request", "revise"}:
             context = dict(state.get("context", {}))
+            pending_confirmation = context.get("pending_mutation_confirmation")
             context.pop("pending_mutation_confirmation", None)
             request_metadata = dict(context.get("request_metadata") or {})
             request_metadata.pop("pending_mutation_confirmation", None)
             request_metadata.pop("pending_mutation_confirmation_id", None)
             context["request_metadata"] = request_metadata
-            context["pending_mutation_confirmation_reply_resolved"] = "new_request"
+            context["pending_mutation_confirmation_reply_resolved"] = validated["intent"]
+            if validated["intent"] == "revise" and isinstance(pending_confirmation, dict):
+                context["mutation_confirmation_revision"] = {
+                    "display": pending_confirmation.get("display", {}),
+                    "original_request": pending_confirmation.get("original_request", ""),
+                    "user_revision": state["request_payload"].get("message", ""),
+                }
             request_payload = dict(state["request_payload"])
             request_payload["context"] = context
             updates["context"] = context
@@ -288,7 +298,7 @@ class MultiturnChatAgent:
 
     @staticmethod
     def _route_after_confirmation_reply(state: MultiturnGraphState) -> str:
-        if state.get("confirmation_reply_intent") == "new_request":
+        if state.get("confirmation_reply_intent") in {"new_request", "revise"}:
             return "prepare_model"
         return "confirmation_reply_response"
 
@@ -362,6 +372,9 @@ class MultiturnChatAgent:
         supervisor_calls = state.get("all_supervisor_tool_calls", [])
         supervisor_results = state.get("all_supervisor_tool_results", [])
         delegated_responses = state.get("delegated_responses", [])
+        specialist_payload: dict[str, Any] = {}
+        for response in delegated_responses:
+            specialist_payload.update(response.structured_payload)
         specialist_calls, specialist_results, specialist_messages = _specialist_tool_payloads(delegated_responses)
         direct_calls = state.get("direct_tool_calls", [])
         direct_results = state.get("direct_tool_results", [])
@@ -377,6 +390,7 @@ class MultiturnChatAgent:
                 prompt_version_id=PROMPT_VERSION_ID,
                 decision_type="mutation_resolution",
                 structured_payload={
+                    **specialist_payload,
                     "routing_mode": routing_mode,
                     "supervisor_agent": MULTITURN_CHAT_AGENT_NAME,
                     "executed_by": MULTITURN_CHAT_AGENT_NAME,
@@ -385,6 +399,7 @@ class MultiturnChatAgent:
                     "supervisor_tool_calls": supervisor_calls,
                     "supervisor_tool_results": [result.model_dump(mode="json") for result in supervisor_results],
                     "delegated_agents": delegated_agents,
+                    "specialist_agent": delegated_responses[-1].agent_name if delegated_responses else "",
                     "specialist_tool_calls": specialist_calls,
                     "tool_calls": tool_calls,
                     "tool_results": tool_results,

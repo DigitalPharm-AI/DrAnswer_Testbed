@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agent_app.tool_names import UPDATE_MEDICATION_DOSE_EVENT_STATUS
+from agent_app.tool_names import (
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+    UPSERT_NUTRITION_PREFERENCE_FACT,
+)
 
 CONFIRMATION_NONE = "none"
 CONFIRMATION_USER_REQUIRED = "user_required"
@@ -20,6 +23,11 @@ class ConfirmationActionRegistry:
     _ACTIONS = {
         UPDATE_MEDICATION_DOSE_EVENT_STATUS: ConfirmationAction(
             action_name=UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+            action_type="agent_tool",
+            confirmation_policy=CONFIRMATION_USER_REQUIRED,
+        ),
+        UPSERT_NUTRITION_PREFERENCE_FACT: ConfirmationAction(
+            action_name=UPSERT_NUTRITION_PREFERENCE_FACT,
             action_type="agent_tool",
             confirmation_policy=CONFIRMATION_USER_REQUIRED,
         ),

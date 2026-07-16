@@ -8,8 +8,12 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from agent_app.tool_names import UPDATE_MEDICATION_DOSE_EVENT_STATUS
 from agent_app.async_worker import _continuation_payload
+from agent_app.confirmation_actions import ConfirmationActionRegistry
+from agent_app.tool_names import (
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+    UPSERT_NUTRITION_PREFERENCE_FACT,
+)
 from agent_app.tool_protocol import mcp_result_from_tool_result, tool_result_from_mcp_result
 from agent_app.tool_runtime import ToolRuntime
 from shared.json_utils import dump_json
@@ -17,11 +21,22 @@ from shared.schemas import (
     AgentAsyncChatResultRequest,
     AgentResponse,
     ConfirmedMutationExecutionRequest,
-    MutationConfirmationPrepareRequest,
     MultiturnChatRequest,
+    MutationConfirmationPrepareRequest,
     ToolCallResult,
 )
-from system_app.models import AgentDecisionAudit, Base, ChatMessage, DoseEvent, MutationConfirmation, Notification
+from shared.time_utils import utc_now
+from system_app.models import (
+    AgentDecisionAudit,
+    Base,
+    ChatMessage,
+    DoseEvent,
+    MutationConfirmation,
+    Notification,
+    NutritionOntologyNode,
+    NutritionPatientPreferenceTriple,
+)
+from system_app.services.agent_async_callback_service import process_async_chat_result_callback
 from system_app.services.mutation_confirmation_service import (
     APPLIED,
     CANCELLED,
@@ -35,9 +50,8 @@ from system_app.services.mutation_confirmation_service import (
     prepare_mutation_confirmation,
     recover_expired_confirmations,
 )
-from system_app.services.agent_async_callback_service import process_async_chat_result_callback
+from system_app.services.nutrition_preference_service import record_preference_fact
 from system_app.services.system_request_service import build_async_continuation_request
-from shared.time_utils import utc_now
 
 
 def _engine():
@@ -109,6 +123,63 @@ def _seed_request(session: Session) -> tuple[DoseEvent, MutationConfirmationPrep
     return event, request
 
 
+def _seed_preference_request(session: Session) -> MutationConfirmationPrepareRequest:
+    now = datetime(2026, 4, 20, 18, 30)
+    chat = ChatMessage(
+        patient_id="demo-patient",
+        role="user",
+        sender_type="patient",
+        category="multiturn_chat",
+        content="What should I eat for dinner? I am allergic to apples.",
+        created_at=now,
+    )
+    session.add(chat)
+    session.flush()
+    notification = Notification(
+        patient_id="demo-patient",
+        notification_type="system_policy_request",
+        title="request",
+        body="request",
+        visible_at=now,
+        metadata_json=dump_json(
+            {
+                "event_type": "multiturn_chat",
+                "request_message": chat.content,
+                "chat_message_id": chat.id,
+                "agent_conversation_id": "conversation-preference",
+            }
+        ),
+    )
+    session.add(notification)
+    session.flush()
+    request = MutationConfirmationPrepareRequest(
+        patient_id="demo-patient",
+        action_name=UPSERT_NUTRITION_PREFERENCE_FACT,
+        tool_call_id="tool-call-preference",
+        arguments={
+            "patient_id": "untrusted-patient",
+            "predicate": "allergic_to",
+            "object_label": "apple",
+            "object_type": "ingredient",
+            "evidence_text": chat.content,
+        },
+        trace_id="trace-preference-prepare",
+        source_event_type="nutrition_management_agent",
+        request_context={
+            "message": chat.content,
+            "event_type": "multiturn_chat",
+            "current_time": now.isoformat(),
+            "callback_context": {
+                "notification_id": notification.id,
+                "conversation_id": "conversation-preference",
+            },
+        },
+    )
+    session.commit()
+    return request
+
+
+
 def _seed_confirmation_reply_notification(
     session: Session,
     confirmation_id: str,
@@ -152,7 +223,7 @@ def _confirmation_reply_callback(
             prompt_version_id="test",
             decision_type=(
                 "system_guidance"
-                if intent == "new_request"
+                if intent in {"new_request", "revise"}
                 else "mutation_confirmation_reply"
             ),
             structured_payload={
@@ -165,6 +236,166 @@ def _confirmation_reply_callback(
         ),
         idempotency_key=f"confirmation-reply-{intent}-once",
     )
+
+
+def test_nutrition_preference_mutation_waits_for_confirmation_and_commits_atomically():
+    engine = _engine()
+    with Session(engine) as session:
+        request = _seed_preference_request(session)
+        assert ConfirmationActionRegistry.requires_confirmation(UPSERT_NUTRITION_PREFERENCE_FACT)
+
+        prepared = prepare_mutation_confirmation(session, request)
+        session.commit()
+
+        assert prepared.confirmation_required is True
+        assert prepared.status == PENDING
+        assert prepared.display["title"] == "\uc601\uc591 \uc81c\uc57d \uc815\ubcf4 \uae30\ub85d"
+        assert prepared.display["question"] == "apple \uc54c\ub808\ub974\uae30\ub97c \uc601\uc591 \uc81c\uc57d \uc815\ubcf4\ub85c \uae30\ub85d\ud560\uae4c\uc694?"
+        assert session.query(NutritionOntologyNode).count() == 0
+        assert session.query(NutritionPatientPreferenceTriple).count() == 0
+
+        begin_mutation_resolution(
+            session,
+            prepared.confirmation_id,
+            "confirm",
+            patient_id="demo-patient",
+        )
+        session.commit()
+
+        result = execute_confirmed_mutation(
+            session,
+            prepared.confirmation_id,
+            ConfirmedMutationExecutionRequest(
+                confirmation_id=prepared.confirmation_id,
+                action_name=UPSERT_NUTRITION_PREFERENCE_FACT,
+                action_fingerprint=prepared.action_fingerprint,
+                trace_id="trace-preference-confirmed",
+                source_event_type="nutrition_management_agent",
+            ),
+        )
+
+        assert result.status == APPLIED
+        fact = session.query(NutritionPatientPreferenceTriple).one()
+        node = session.get(NutritionOntologyNode, fact.object_node_id)
+        assert fact.patient_id == "demo-patient"
+        assert fact.predicate == "allergic_to"
+        assert fact.safety_level == "hard"
+        assert node.node_key == "ingredient:apple"
+        session.rollback()
+
+    with Session(engine) as session:
+        row = session.scalar(
+            select(MutationConfirmation).where(
+                MutationConfirmation.public_id == prepared.confirmation_id
+            )
+        )
+        assert row.status == EXECUTING
+        assert session.query(NutritionOntologyNode).count() == 0
+        assert session.query(NutritionPatientPreferenceTriple).count() == 0
+
+
+def test_nutrition_preference_confirmation_applies_once_and_detects_existing_fact():
+    engine = _engine()
+    with Session(engine) as session:
+        request = _seed_preference_request(session)
+        prepared = prepare_mutation_confirmation(session, request)
+        session.commit()
+        begin_mutation_resolution(
+            session,
+            prepared.confirmation_id,
+            "confirm",
+            patient_id="demo-patient",
+        )
+        session.commit()
+        result = execute_confirmed_mutation(
+            session,
+            prepared.confirmation_id,
+            ConfirmedMutationExecutionRequest(
+                confirmation_id=prepared.confirmation_id,
+                action_name=UPSERT_NUTRITION_PREFERENCE_FACT,
+                action_fingerprint=prepared.action_fingerprint,
+                trace_id="trace-preference-confirmed",
+                source_event_type="nutrition_management_agent",
+            ),
+        )
+        session.commit()
+
+        duplicate = prepare_mutation_confirmation(
+            session,
+            request.model_copy(update={"trace_id": "trace-preference-repeat"}),
+        )
+        session.commit()
+
+        assert result.status == APPLIED
+        assert duplicate.confirmation_required is False
+        assert duplicate.status == "already_applied"
+        assert duplicate.execution_result["fact"]["object_label"] == "apple"
+        assert session.query(MutationConfirmation).count() == 1
+        assert session.query(NutritionPatientPreferenceTriple).count() == 1
+
+
+def test_cancelled_nutrition_preference_confirmation_keeps_domain_state_unchanged():
+    engine = _engine()
+    with Session(engine) as session:
+        request = _seed_preference_request(session)
+        prepared = prepare_mutation_confirmation(session, request)
+        session.commit()
+
+        row = begin_mutation_resolution(
+            session,
+            prepared.confirmation_id,
+            "cancel",
+            patient_id="demo-patient",
+        )
+        session.commit()
+
+        assert row.status == CANCELLED
+        assert session.query(NutritionOntologyNode).count() == 0
+        assert session.query(NutritionPatientPreferenceTriple).count() == 0
+
+
+def test_nutrition_preference_confirmation_becomes_stale_when_target_changes():
+    engine = _engine()
+    with Session(engine) as session:
+        request = _seed_preference_request(session)
+        prepared = prepare_mutation_confirmation(session, request)
+        session.commit()
+        begin_mutation_resolution(
+            session,
+            prepared.confirmation_id,
+            "confirm",
+            patient_id="demo-patient",
+        )
+        session.commit()
+
+        record_preference_fact(
+            session,
+            patient_id="demo-patient",
+            predicate="allergic_to",
+            object_label="apple",
+            object_type="ingredient",
+            strength=0.4,
+            evidence_text="concurrent change",
+        )
+        session.commit()
+
+        result = execute_confirmed_mutation(
+            session,
+            prepared.confirmation_id,
+            ConfirmedMutationExecutionRequest(
+                confirmation_id=prepared.confirmation_id,
+                action_name=UPSERT_NUTRITION_PREFERENCE_FACT,
+                action_fingerprint=prepared.action_fingerprint,
+                trace_id="trace-preference-stale",
+                source_event_type="nutrition_management_agent",
+            ),
+        )
+        session.commit()
+
+        fact = session.query(NutritionPatientPreferenceTriple).one()
+        assert result.status == STALE
+        assert fact.strength == 0.4
+
 
 
 @pytest.mark.parametrize(
@@ -600,3 +831,116 @@ def test_mcp_protocol_preserves_confirmation_required_status():
 
     assert restored.status == "confirmation_required"
     assert restored.response == original.response
+def test_revise_reply_supersedes_previous_confirmation_and_keeps_replacement_pending():
+    engine = _engine()
+    with Session(engine) as session:
+        original_request = _seed_preference_request(session)
+        original_request.arguments = {
+            "predicate": "avoids_by_preference",
+            "object_label": "watermelon",
+            "object_type": "food",
+            "safety_level": "soft",
+            "evidence_text": "Record that I cannot eat watermelon.",
+        }
+        original = prepare_mutation_confirmation(session, original_request)
+        reply_notification = _seed_confirmation_reply_notification(
+            session,
+            original.confirmation_id,
+            message="Apply it as a hard ingestion restriction.",
+        )
+
+        replacement_request = original_request.model_copy(deep=True)
+        replacement_request.trace_id = "trace-preference-revision"
+        replacement_request.tool_call_id = "tool-call-preference-revision"
+        replacement_request.arguments = {
+            "predicate": "cannot_consume",
+            "object_label": "watermelon",
+            "object_type": "food",
+            "safety_level": "hard",
+            "evidence_text": "Apply it as a hard ingestion restriction.",
+        }
+        replacement_request.request_context = {
+            **replacement_request.request_context,
+            "message": "Apply it as a hard ingestion restriction.",
+            "callback_context": {
+                "notification_id": reply_notification.id,
+                "conversation_id": "conversation-preference",
+            },
+        }
+        replacement = prepare_mutation_confirmation(session, replacement_request)
+        session.commit()
+
+        callback = _confirmation_reply_callback(
+            reply_notification,
+            intent="revise",
+            message="Apply it as a hard ingestion restriction.",
+        )
+        callback.response.structured_payload.update(
+            {
+                "mutation_confirmation_required": True,
+                "mutation_confirmation": {
+                    "confirmation_required": True,
+                    "confirmation_id": replacement.confirmation_id,
+                    "action_type": "agent_tool",
+                    "action_name": UPSERT_NUTRITION_PREFERENCE_FACT,
+                    "tool_call_id": replacement.tool_call_id,
+                    "action_fingerprint": replacement.action_fingerprint,
+                    "status": replacement.status,
+                    "display": replacement.display,
+                },
+            }
+        )
+
+        result = process_async_chat_result_callback(session, callback)
+
+        original_row = session.scalar(
+            select(MutationConfirmation).where(MutationConfirmation.public_id == original.confirmation_id)
+        )
+        replacement_row = session.scalar(
+            select(MutationConfirmation).where(MutationConfirmation.public_id == replacement.confirmation_id)
+        )
+        assert result["status"] == "ok"
+        assert original_row.status == SUPERSEDED
+        assert replacement_row.status == PENDING
+        assert replacement_row.chat_message_id is not None
+        assert session.query(NutritionPatientPreferenceTriple).count() == 0
+def test_cannot_consume_confirmation_applies_as_a_hard_constraint():
+    engine = _engine()
+    with Session(engine) as session:
+        request = _seed_preference_request(session)
+        request.arguments = {
+            "predicate": "cannot_consume",
+            "object_label": "watermelon",
+            "object_type": "food",
+            "evidence_text": "I cannot consume watermelon.",
+        }
+        prepared = prepare_mutation_confirmation(session, request)
+        session.commit()
+
+        assert prepared.confirmation_required is True
+        assert prepared.display["title"] == "\uc601\uc591 \uc81c\uc57d \uc815\ubcf4 \uae30\ub85d"
+        assert prepared.display["details"][0]["value"] == "\uc12d\ucde8 \ubd88\uac00"
+
+        begin_mutation_resolution(
+            session,
+            prepared.confirmation_id,
+            "confirm",
+            patient_id="demo-patient",
+        )
+        session.commit()
+        result = execute_confirmed_mutation(
+            session,
+            prepared.confirmation_id,
+            ConfirmedMutationExecutionRequest(
+                confirmation_id=prepared.confirmation_id,
+                action_name=UPSERT_NUTRITION_PREFERENCE_FACT,
+                action_fingerprint=prepared.action_fingerprint,
+                trace_id="trace-cannot-consume-confirmed",
+                source_event_type="nutrition_management_agent",
+            ),
+        )
+
+        fact = session.query(NutritionPatientPreferenceTriple).one()
+        assert result.status == APPLIED
+        assert fact.predicate == "cannot_consume"
+        assert fact.safety_level == "hard"

@@ -623,6 +623,7 @@ class NutritionPreferenceFactRequest(BaseModel):
         "dislikes",
         "prefers",
         "avoids_by_preference",
+        "cannot_consume",
         "allergic_to",
         "medically_avoids",
         "religious_avoids",

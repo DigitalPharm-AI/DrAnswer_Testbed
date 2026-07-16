@@ -29,6 +29,13 @@ from system_app.services.missed_dose_reply_understanding import (
     MISSED_DOSE_REPLY_METADATA_KEY,
     merge_missed_dose_reply_understanding_from_agent_response,
 )
+from system_app.services.mutation_confirmation_service import (
+    PENDING,
+    attach_confirmation_chat_message,
+    begin_mutation_resolution,
+    confirmation_for_response,
+    supersede_mutation_confirmation,
+)
 from system_app.services.notification_service import create_notification
 from system_app.services.nutrition_service import build_nutrition_context
 from system_app.services.patient_profile_service import get_phr_patient_key
@@ -40,13 +47,6 @@ from system_app.services.timeline_service import (
     get_recent_chat_turns,
     get_recent_diet_recommendation_groups,
     get_today_dose_events,
-)
-from system_app.services.mutation_confirmation_service import (
-    PENDING,
-    attach_confirmation_chat_message,
-    begin_mutation_resolution,
-    confirmation_for_response,
-    supersede_mutation_confirmation,
 )
 
 settings = get_settings()
@@ -377,7 +377,7 @@ def _apply_mutation_confirmation_reply(
     if not isinstance(reply, dict):
         return None
     intent = str(reply.get("intent") or "")
-    if intent not in {"confirm", "cancel", "unclear", "new_request"}:
+    if intent not in {"confirm", "cancel", "revise", "unclear", "new_request"}:
         raise ValueError("mutation_confirmation_reply_intent_invalid")
 
     request_notification = session.get(Notification, request_notification_id)
@@ -396,7 +396,7 @@ def _apply_mutation_confirmation_reply(
             MutationConfirmation.patient_id == settings.patient_id,
         )
     )
-    if intent == "new_request":
+    if intent in {"new_request", "revise"}:
         replacement = response.structured_payload.get("mutation_confirmation")
         replaced_by_current_request = (
             isinstance(replacement, dict)
@@ -517,9 +517,13 @@ def build_async_continuation_request(request: MultiturnChatRequest, response: Ag
     continuation = request.model_copy(deep=True)
     context = dict(continuation.context or {})
     confirmation_reply = response.structured_payload.get("mutation_confirmation_reply")
-    if isinstance(confirmation_reply, dict) and confirmation_reply.get("intent") == "new_request":
+    if isinstance(confirmation_reply, dict) and confirmation_reply.get("intent") in {"new_request", "revise"}:
+        intent = str(confirmation_reply.get("intent"))
         context.pop("pending_mutation_confirmation", None)
-        context["pending_mutation_confirmation_reply_resolved"] = "new_request"
+        context["pending_mutation_confirmation_reply_resolved"] = intent
+        revision = response.structured_payload.get("mutation_confirmation_revision")
+        if intent == "revise" and isinstance(revision, dict):
+            context["mutation_confirmation_revision"] = revision
     context["execute_async_continuation"] = True
     context["async_continuation_type"] = response.structured_payload.get("async_continuation_type", "")
     context["async_tool_calls"] = response.structured_payload.get("tool_calls", [])

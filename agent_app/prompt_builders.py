@@ -86,6 +86,9 @@ def multiturn_chat_prompt() -> str:
         "If another specialist is needed, call the appropriate delegation tool and continue before answering. For dependent "
         "nutrition tasks, complete preference or record management before requesting a recommendation. Do not repeat a "
         "delegation tool for work that its specialist already completed. "
+        "When context.mutation_confirmation_revision is present, the current message corrects the pending proposal rather "
+        "than approving it. Delegate the corrected domain task using the pending display, original request, and user revision, "
+        "and require the resulting mutation to be shown as a new confirmation proposal. Do not apply or restate the old proposal. "
         f"For medication taking, medication questions, medication adherence, side-effect symptoms, medication-causality questions, "
         f"or PRO-CTCAE assessment, always call {DELEGATE_TO_MEDICATION_AGENT} with a short task and reason. Do not call medication or "
         "side-effect tools directly from the supervisor. "
@@ -130,12 +133,15 @@ def mutation_confirmation_reply_prompt() -> str:
         "You are the Korean MultiturnChatAgent supervisor interpreting a user's chat reply while one database-change "
         "confirmation card is pending. Tools are unavailable. Classify only the semantic relationship between the "
         "user reply and the pending change. Return JSON only in this exact shape: "
-        '{"intent":"confirm|cancel|unclear|new_request","message":"<concise polite Korean response>"}. '
+        '{"intent":"confirm|cancel|revise|unclear|new_request","message":"<concise polite Korean response>"}. '
         "Use confirm only for clear consent to the pending change, cancel only for clear rejection, unclear when the "
-        "reply is ambiguous or combines a confirmation decision with another request, and new_request when it is an "
-        "independent question or task that does not answer the card. Do not use keyword rules. Do not return or invent "
+        "reply is ambiguous or combines a confirmation decision with another request, revise when the user corrects the "
+        "target, classification, value, or other content of the pending change, and new_request when it is an independent "
+        "question or task that does not answer the card. A revision is not consent to the old change. Do not use keyword "
+        "rules. Do not return or invent "
         "a confirmation ID, action name, arguments, tool_call, or tool_calls. For unclear, ask whether to apply or cancel "
-        "the displayed change. The server, not you, owns the actual mutation and confirmation identifiers."
+        "the displayed change. For revise, briefly say the proposed change will be corrected and reviewed again. The "
+        "server, not you, owns the actual mutation and confirmation identifiers."
     )
 
 
@@ -190,8 +196,15 @@ def nutrition_management_agent_prompt() -> str:
         f"If one recommendation item is clear and meal_type, portion, and save/update intent are clear, use that item data for {CREATE_NUTRITION_MEAL_RECORD} or {UPDATE_NUTRITION_FOOD_RECORD}. "
         "If the referenced recommendation is ambiguous or required write details are missing, ask one concise clarification. "
         "If the user merely says they ate something and saving intent is not confirmed, ask whether to save it as a meal record. "
-        "When explicit likes, dislikes, allergies, medical avoids, religious avoids, or diet preferences are stated, call "
-        f"{UPSERT_NUTRITION_PREFERENCE_FACT} with exact evidence text. After food search results that create candidate cards, keep "
+        "When explicit likes, dislikes, allergies, ingestion restrictions, medical avoids, religious avoids, or diet preferences are stated, call "
+        f"{UPSERT_NUTRITION_PREFERENCE_FACT} with exact evidence text. Use preference predicates only for statements of liking, "
+        "disliking, or voluntary preference. Treat an explicit inability or prohibition to consume as cannot_consume, a hard "
+        "restriction, when the cause is not specified. Use allergic_to, medically_avoids, or religious_avoids only when the user "
+        "explicitly states the corresponding cause. Never convert an inability to consume into avoids_by_preference, and do not "
+        "invent an allergy or medical reason. When context.mutation_confirmation_revision is present, "
+        "use the pending proposal and the user's correction together to prepare a replacement proposal for the same target. "
+        "A mutation tool may return confirmation_required; in that "
+        "case stop and return control without claiming the preference was saved. After food search results that create candidate cards, keep "
         "the final text to 1-2 short Korean sentences and do not repeat candidate names, nutrient values, or card fields. "
         "Return JSON only."
     )

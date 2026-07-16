@@ -5,11 +5,14 @@ import json
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from agent_app.confirmation_actions import ConfirmationActionRegistry
-from agent_app.tool_names import UPDATE_MEDICATION_DOSE_EVENT_STATUS
+from agent_app.tool_names import (
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+    UPSERT_NUTRITION_PREFERENCE_FACT,
+)
 from shared.json_utils import dump_json, parse_json_object
 from shared.schemas import (
     ConfirmedMutationExecutionRequest,
@@ -18,11 +21,28 @@ from shared.schemas import (
     DoseTakenToolResult,
     MutationConfirmationPrepareRequest,
     MutationConfirmationPrepareResult,
+    NutritionPreferenceFactRequest,
+    NutritionPreferenceFactResult,
 )
 from shared.time_utils import utc_now
-from system_app.models import ChatMessage, DoseEvent, MutationConfirmation, Notification
+from system_app.models import (
+    ChatMessage,
+    DoseEvent,
+    MutationConfirmation,
+    Notification,
+    NutritionOntologyNode,
+    NutritionPatientPreferenceTriple,
+)
 from system_app.services.agent_callback_service import apply_agent_dose_taken_request
 from system_app.services.clock_service import ensure_clock
+from system_app.services.nutrition_preference_service import (
+    HARD_CONSTRAINT_PREDICATES,
+    normalize_ontology_label,
+    nutrition_preference_summary,
+    ontology_node_key,
+    preference_fact_view,
+    record_preference_fact,
+)
 
 PENDING = "pending"
 EXECUTING = "executing"
@@ -41,6 +61,12 @@ def prepare_mutation_confirmation(
     action = ConfirmationActionRegistry.get(payload.action_name)
     if action is None or not ConfirmationActionRegistry.requires_confirmation(payload.action_name):
         raise ValueError("mutation_confirmation_action_not_enabled")
+    if payload.action_name == UPSERT_NUTRITION_PREFERENCE_FACT:
+        return _prepare_nutrition_preference_confirmation(
+            session,
+            payload,
+            action_type=action.action_type,
+        )
     if payload.action_name != UPDATE_MEDICATION_DOSE_EVENT_STATUS:
         raise ValueError("mutation_confirmation_action_not_implemented")
 
@@ -163,6 +189,8 @@ def execute_confirmed_mutation(
         raise ValueError("mutation_confirmation_action_mismatch")
     if payload.action_fingerprint != row.action_fingerprint:
         raise ValueError("mutation_confirmation_fingerprint_mismatch")
+    if row.action_name == UPSERT_NUTRITION_PREFERENCE_FACT:
+        return _execute_nutrition_preference_mutation(session, row)
 
     if row.action_name != UPDATE_MEDICATION_DOSE_EVENT_STATUS:
         row.status = FAILED
@@ -369,6 +397,323 @@ def confirmation_card_payload(row: MutationConfirmation) -> dict:
         "display": parse_json_object(row.display_json),
         "error": row.error_message,
     }
+
+
+def _prepare_nutrition_preference_confirmation(
+    session: Session,
+    payload: MutationConfirmationPrepareRequest,
+    *,
+    action_type: str,
+) -> MutationConfirmationPrepareResult:
+    arguments, request, node, fact = _prepare_nutrition_preference_arguments(session, payload)
+    snapshot = _nutrition_preference_snapshot(node, fact)
+    snapshot_hash = _hash_payload(snapshot)
+    desired_state = _nutrition_preference_desired_state(request)
+    fingerprint = _hash_payload(
+        {
+            "patient_id": payload.patient_id,
+            "action_name": payload.action_name,
+            "desired_state": desired_state,
+        }
+    )
+
+    resolution = payload.request_context.get("mutation_resolution")
+    if isinstance(resolution, dict) and resolution.get("action_fingerprint") == fingerprint:
+        status = str(resolution.get("status") or "")
+        return MutationConfirmationPrepareResult(
+            confirmation_required=False,
+            action_name=payload.action_name,
+            tool_call_id=payload.tool_call_id,
+            action_fingerprint=fingerprint,
+            status="already_applied" if status == APPLIED else status or "skipped",
+            execution_result=resolution.get("tool_result") if isinstance(resolution.get("tool_result"), dict) else {},
+        )
+
+    if _nutrition_preference_is_applied(fact, desired_state):
+        result = NutritionPreferenceFactResult(
+            success=True,
+            fact=preference_fact_view(fact, node),
+            preferences=nutrition_preference_summary(session, patient_id=payload.patient_id),
+        )
+        return MutationConfirmationPrepareResult(
+            confirmation_required=False,
+            action_name=payload.action_name,
+            tool_call_id=payload.tool_call_id,
+            action_fingerprint=fingerprint,
+            status="already_applied",
+            execution_result=result.model_dump(mode="json"),
+        )
+
+    notification_id, conversation_id, origin_chat_id = _origin_context(session, payload.request_context)
+    idempotency_key = f"{payload.trace_id}:{payload.action_name}:{fingerprint}:{snapshot_hash}"
+    existing = session.scalar(
+        select(MutationConfirmation).where(MutationConfirmation.idempotency_key == idempotency_key)
+    )
+    if existing is not None:
+        return _prepare_result(existing)
+
+    pending_duplicate = session.scalar(
+        select(MutationConfirmation)
+        .where(
+            MutationConfirmation.patient_id == payload.patient_id,
+            MutationConfirmation.action_name == payload.action_name,
+            MutationConfirmation.action_fingerprint == fingerprint,
+            MutationConfirmation.target_snapshot_hash == snapshot_hash,
+            MutationConfirmation.status == PENDING,
+        )
+        .order_by(MutationConfirmation.id.desc())
+    )
+    if pending_duplicate is not None:
+        return _prepare_result(pending_duplicate)
+
+    _supersede_pending(session, payload.patient_id)
+    status = SUPERSEDED if _has_newer_general_message(session, payload.patient_id, origin_chat_id) else PENDING
+    display = _nutrition_preference_display(request, fact)
+    row = MutationConfirmation(
+        public_id=uuid4().hex,
+        patient_id=payload.patient_id,
+        origin_request_notification_id=notification_id,
+        conversation_id=conversation_id,
+        origin_trace_id=payload.trace_id,
+        origin_agent=payload.source_event_type,
+        source_event_type=payload.source_event_type,
+        action_type=action_type,
+        action_name=payload.action_name,
+        tool_call_id=payload.tool_call_id,
+        arguments_json=dump_json(arguments),
+        action_fingerprint=fingerprint,
+        target_snapshot_json=dump_json(snapshot),
+        target_snapshot_hash=snapshot_hash,
+        display_json=dump_json(display),
+        continuation_json=dump_json(_continuation_context(payload.request_context)),
+        idempotency_key=idempotency_key,
+        status=status,
+        resolved_at=utc_now() if status == SUPERSEDED else None,
+    )
+    session.add(row)
+    session.flush()
+    return _prepare_result(row)
+
+
+def _execute_nutrition_preference_mutation(
+    session: Session,
+    row: MutationConfirmation,
+) -> ConfirmedMutationExecutionResult:
+    arguments = parse_json_object(row.arguments_json)
+    request = NutritionPreferenceFactRequest.model_validate(arguments)
+    node, fact = _find_nutrition_preference_target(session, request)
+    current_snapshot = _nutrition_preference_snapshot(node, fact)
+    if _hash_payload(current_snapshot) != row.target_snapshot_hash:
+        row.status = STALE
+        row.error_message = "mutation_confirmation_snapshot_changed"
+        row.resolved_at = utc_now()
+        session.flush()
+        return _execution_result(row)
+
+    result = NutritionPreferenceFactResult.model_validate(
+        record_preference_fact(
+            session,
+            patient_id=request.patient_id,
+            predicate=request.predicate,
+            object_label=request.object_label,
+            object_type=request.object_type,
+            strength=request.strength,
+            safety_level=request.safety_level,
+            confidence=request.confidence,
+            source=request.source,
+            evidence_text=request.evidence_text,
+            source_trace_id=request.source_trace_id,
+        )
+    )
+    if not result.success:
+        row.status = FAILED
+        row.error_message = "nutrition_preference_write_failed"
+    else:
+        row.status = APPLIED
+        row.result_json = dump_json(result.model_dump(mode="json"))
+        row.error_message = ""
+    row.resolved_at = utc_now()
+    session.flush()
+    return _execution_result(row)
+
+
+def _prepare_nutrition_preference_arguments(
+    session: Session,
+    payload: MutationConfirmationPrepareRequest,
+) -> tuple[
+    dict,
+    NutritionPreferenceFactRequest,
+    NutritionOntologyNode | None,
+    NutritionPatientPreferenceTriple | None,
+]:
+    request_data = {
+        **payload.arguments,
+        "patient_id": payload.patient_id,
+        "object_label": str(payload.arguments.get("object_label") or "").strip(),
+        "source": "agent_tool",
+        "source_trace_id": payload.trace_id,
+    }
+    request = NutritionPreferenceFactRequest.model_validate(request_data)
+    if not normalize_ontology_label(request.object_label):
+        raise ValueError("nutrition_preference_object_label_required")
+    node, fact = _find_nutrition_preference_target(session, request)
+    return request.model_dump(mode="json"), request, node, fact
+
+
+def _find_nutrition_preference_target(
+    session: Session,
+    request: NutritionPreferenceFactRequest,
+) -> tuple[NutritionOntologyNode | None, NutritionPatientPreferenceTriple | None]:
+    node_key = ontology_node_key(request.object_type, request.object_label)
+    node = session.scalar(
+        select(NutritionOntologyNode).where(NutritionOntologyNode.node_key == node_key)
+    )
+    if node is None:
+        return None, None
+    fact = session.scalar(
+        select(NutritionPatientPreferenceTriple).where(
+            NutritionPatientPreferenceTriple.patient_id == request.patient_id,
+            NutritionPatientPreferenceTriple.predicate == request.predicate,
+            NutritionPatientPreferenceTriple.object_node_id == node.id,
+        )
+    )
+    return node, fact
+
+
+def _nutrition_preference_snapshot(
+    node: NutritionOntologyNode | None,
+    fact: NutritionPatientPreferenceTriple | None,
+) -> dict:
+    return {
+        "node": (
+            {
+                "id": node.id,
+                "node_key": node.node_key,
+                "node_type": node.node_type,
+                "label": node.label,
+                "normalized_label": node.normalized_label,
+                "source": node.source,
+                "metadata_json": node.metadata_json,
+                "updated_at": node.updated_at.isoformat() if node.updated_at else None,
+            }
+            if node is not None
+            else None
+        ),
+        "fact": (
+            {
+                "id": fact.id,
+                "patient_id": fact.patient_id,
+                "predicate": fact.predicate,
+                "object_node_id": fact.object_node_id,
+                "strength": fact.strength,
+                "safety_level": fact.safety_level,
+                "confidence": fact.confidence,
+                "source": fact.source,
+                "evidence_text": fact.evidence_text,
+                "source_trace_id": fact.source_trace_id,
+                "status": fact.status,
+                "updated_at": fact.updated_at.isoformat() if fact.updated_at else None,
+            }
+            if fact is not None
+            else None
+        ),
+    }
+
+
+def _nutrition_preference_desired_state(request: NutritionPreferenceFactRequest) -> dict:
+    safety_level = "hard" if request.predicate in HARD_CONSTRAINT_PREDICATES else "soft"
+    if request.safety_level in {"hard", "soft"} and request.predicate not in HARD_CONSTRAINT_PREDICATES:
+        safety_level = request.safety_level
+    return {
+        "patient_id": request.patient_id,
+        "predicate": request.predicate,
+        "object_key": ontology_node_key(request.object_type, request.object_label),
+        "object_type": request.object_type,
+        "strength": request.strength,
+        "safety_level": safety_level,
+        "confidence": request.confidence,
+        "status": "active",
+    }
+
+
+def _nutrition_preference_is_applied(
+    fact: NutritionPatientPreferenceTriple | None,
+    desired_state: dict,
+) -> bool:
+    if fact is None:
+        return False
+    return (
+        fact.status == desired_state["status"]
+        and fact.safety_level == desired_state["safety_level"]
+        and abs(float(fact.strength) - float(desired_state["strength"])) < 1e-9
+        and abs(float(fact.confidence) - float(desired_state["confidence"])) < 1e-9
+    )
+
+
+def _nutrition_preference_display(
+    request: NutritionPreferenceFactRequest,
+    fact: NutritionPatientPreferenceTriple | None,
+) -> dict:
+    predicate_label = _nutrition_preference_predicate_label(request.predicate)
+    object_label = request.object_label.strip()
+    desired_state = _nutrition_preference_desired_state(request)
+    safety_label = "\uac15\uc81c \uc81c\uc57d" if desired_state["safety_level"] == "hard" else "\uc77c\ubc18 \uc120\ud638"
+    before = "\ub4f1\ub85d\ub418\uc9c0 \uc54a\uc74c"
+    if fact is not None:
+        status_label = "\ud65c\uc131" if fact.status == "active" else "\ube44\ud65c\uc131"
+        before = (
+            f"{_nutrition_preference_predicate_label(fact.predicate)} / "
+            f"{_nutrition_preference_safety_label(fact.safety_level)} / "
+            f"{status_label}"
+        )
+    if request.predicate == "allergic_to":
+        question = f"{object_label} \uc54c\ub808\ub974\uae30\ub97c \uc601\uc591 \uc81c\uc57d \uc815\ubcf4\ub85c \uae30\ub85d\ud560\uae4c\uc694?"
+    else:
+        question = f"{object_label}\uc5d0 \ub300\ud55c {predicate_label} \uc815\ubcf4\ub97c \uae30\ub85d\ud560\uae4c\uc694?"
+    return {
+        "title": "\uc601\uc591 \uc81c\uc57d \uc815\ubcf4 \uae30\ub85d" if desired_state["safety_level"] == "hard" else "\uc601\uc591 \uc120\ud638\ub3c4 \uae30\ub85d",
+        "question": question,
+        "action_label": "\ubcc0\uacbd" if fact is not None else "\uae30\ub85d",
+        "target": object_label,
+        "details": [
+            {"label": "\uc815\ubcf4 \uc720\ud615", "value": predicate_label},
+            {"label": "\ub300\uc0c1 \uc720\ud615", "value": _nutrition_preference_object_type_label(request.object_type)},
+            {"label": "\ubcc0\uacbd \uc804", "value": before},
+            {"label": "\ubcc0\uacbd \ud6c4", "value": f"{predicate_label} / {safety_label} / \ud65c\uc131"},
+        ],
+    }
+
+
+def _nutrition_preference_predicate_label(predicate: str) -> str:
+    return {
+        "likes": "\uc120\ud638",
+        "dislikes": "\ube44\uc120\ud638",
+        "prefers": "\uc120\ud638 \uacbd\ud5a5",
+        "avoids_by_preference": "\uae30\ud638\uc0c1 \ud68c\ud53c",
+        "cannot_consume": "\uc12d\ucde8 \ubd88\uac00",
+        "allergic_to": "\uc54c\ub808\ub974\uae30",
+        "medically_avoids": "\uc758\ud559\uc801 \uc81c\ud55c",
+        "religious_avoids": "\uc885\uad50\u00b7\uc2e0\ub150 \uc81c\ud55c",
+    }.get(predicate, predicate)
+
+
+def _nutrition_preference_object_type_label(object_type: str) -> str:
+    return {
+        "food": "\uc74c\uc2dd",
+        "ingredient": "\uc2dd\uc7ac\ub8cc",
+        "food_category": "\uc74c\uc2dd \ubd84\ub958",
+        "cuisine": "\uc694\ub9ac \uc720\ud615",
+        "preparation": "\uc870\ub9ac\ubc95",
+        "nutrient": "\uc601\uc591\uc18c",
+        "nutrient_risk": "\uc601\uc591 \uc704\ud5d8",
+        "restriction": "\uc81c\ud55c \uc0ac\ud56d",
+        "diet_style": "\uc2dd\ub2e8 \uc720\ud615",
+    }.get(object_type, object_type)
+
+
+def _nutrition_preference_safety_label(safety_level: str) -> str:
+    return "\uac15\uc81c \uc81c\uc57d" if safety_level == "hard" else "\uc77c\ubc18 \uc120\ud638"
+
 
 
 def _prepare_dose_arguments(
