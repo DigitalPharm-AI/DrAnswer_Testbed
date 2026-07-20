@@ -324,8 +324,18 @@ def apply_system_event_response(
         )
         return None
     policy_tool_response = is_policy_tool_response(response)
+    persisted_message = None
     if not policy_tool_response:
-        persist_agent_summary(session, response, category="multiturn_chat")
+        persisted_message = persist_agent_summary(session, response, category="multiturn_chat")
+    if persisted_message is not None:
+        persisted_metadata = parse_json_object(persisted_message.metadata_json)
+        food_selection = persisted_metadata.get("food_selection")
+        if isinstance(food_selection, dict):
+            food_selection["origin_request_notification_id"] = request_notification_id
+            food_selection["origin_trace_id"] = response.trace_id
+            persisted_metadata["food_selection"] = food_selection
+            persisted_message.metadata_json = dump_json(persisted_metadata)
+            session.flush()
     dose_taken_result = maybe_apply_dose_taken_response(session, response, "multiturn_chat")
     if dose_taken_result is not None:
         applied, result_message = dose_taken_result

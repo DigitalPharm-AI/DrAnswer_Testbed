@@ -80,6 +80,7 @@ CHAT_CATEGORY_LABELS = {
     "ae_pro_ctcae": "부작용 문항",
     "ae_response": "문항 응답",
     "nutrition": "영양 대화",
+    "mutation_confirmation": "변경 확인",
     "error": "오류",
 }
 PENDING_AGENT_CHAT_STATUSES = {"sent", "awaiting_agent"}
@@ -93,6 +94,7 @@ AGENT_CONVERSATION_CATEGORIES = {
     "ae_pro_ctcae",
     "ae_response",
     "nutrition",
+    "mutation_confirmation",
 }
 CHAT_PROMPT_CATEGORIES = {"missed_dose", "policy_confirmation", "side_effect_reminder_safety"}
 NOTIFICATION_TYPE_LABELS = {

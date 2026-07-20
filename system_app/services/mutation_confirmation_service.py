@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session
 
 from agent_app.confirmation_actions import ConfirmationActionRegistry
 from agent_app.tool_names import (
+    CREATE_NUTRITION_MEAL_RECORD,
+    DELETE_NUTRITION_FOOD_RECORD,
+    DELETE_NUTRITION_MEAL_RECORD,
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+    UPDATE_NUTRITION_FOOD_RECORD,
+    UPDATE_NUTRITION_MEAL_RECORD,
     UPSERT_NUTRITION_PREFERENCE_FACT,
 )
 from shared.json_utils import dump_json, parse_json_object
@@ -21,6 +26,16 @@ from shared.schemas import (
     DoseTakenToolResult,
     MutationConfirmationPrepareRequest,
     MutationConfirmationPrepareResult,
+    NutritionFoodDeleteRequest,
+    NutritionFoodDeleteResult,
+    NutritionFoodUpdateRequest,
+    NutritionFoodUpdateResult,
+    NutritionMealDeleteRequest,
+    NutritionMealDeleteResult,
+    NutritionMealRecordRequest,
+    NutritionMealRecordResult,
+    NutritionMealUpdateRequest,
+    NutritionMealUpdateResult,
     NutritionPreferenceFactRequest,
     NutritionPreferenceFactResult,
 )
@@ -30,6 +45,8 @@ from system_app.models import (
     DoseEvent,
     MutationConfirmation,
     Notification,
+    NutritionFood,
+    NutritionMeal,
     NutritionOntologyNode,
     NutritionPatientPreferenceTriple,
 )
@@ -43,6 +60,17 @@ from system_app.services.nutrition_preference_service import (
     preference_fact_view,
     record_preference_fact,
 )
+from system_app.services.nutrition_service import (
+    MEAL_TYPE_LABELS,
+    delete_food,
+    delete_meal,
+    food_view,
+    meal_view,
+    meals_for_date,
+    record_meal,
+    update_food,
+    update_meal,
+)
 
 PENDING = "pending"
 EXECUTING = "executing"
@@ -52,6 +80,15 @@ SUPERSEDED = "superseded"
 STALE = "stale"
 FAILED = "failed"
 EXECUTION_LEASE = timedelta(minutes=2)
+NUTRITION_CRUD_ACTIONS = frozenset(
+    {
+        CREATE_NUTRITION_MEAL_RECORD,
+        UPDATE_NUTRITION_MEAL_RECORD,
+        DELETE_NUTRITION_MEAL_RECORD,
+        UPDATE_NUTRITION_FOOD_RECORD,
+        DELETE_NUTRITION_FOOD_RECORD,
+    }
+)
 
 
 def prepare_mutation_confirmation(
@@ -61,6 +98,12 @@ def prepare_mutation_confirmation(
     action = ConfirmationActionRegistry.get(payload.action_name)
     if action is None or not ConfirmationActionRegistry.requires_confirmation(payload.action_name):
         raise ValueError("mutation_confirmation_action_not_enabled")
+    if payload.action_name in NUTRITION_CRUD_ACTIONS:
+        return _prepare_nutrition_crud_confirmation(
+            session,
+            payload,
+            action_type=action.action_type,
+        )
     if payload.action_name == UPSERT_NUTRITION_PREFERENCE_FACT:
         return _prepare_nutrition_preference_confirmation(
             session,
@@ -189,6 +232,8 @@ def execute_confirmed_mutation(
         raise ValueError("mutation_confirmation_action_mismatch")
     if payload.action_fingerprint != row.action_fingerprint:
         raise ValueError("mutation_confirmation_fingerprint_mismatch")
+    if row.action_name in NUTRITION_CRUD_ACTIONS:
+        return _execute_nutrition_crud_mutation(session, row)
     if row.action_name == UPSERT_NUTRITION_PREFERENCE_FACT:
         return _execute_nutrition_preference_mutation(session, row)
 
@@ -397,6 +442,536 @@ def confirmation_card_payload(row: MutationConfirmation) -> dict:
         "display": parse_json_object(row.display_json),
         "error": row.error_message,
     }
+
+
+def _prepare_nutrition_crud_confirmation(
+    session: Session,
+    payload: MutationConfirmationPrepareRequest,
+    *,
+    action_type: str,
+) -> MutationConfirmationPrepareResult:
+    arguments = _prepare_nutrition_crud_arguments(session, payload)
+    snapshot = _nutrition_crud_snapshot(
+        session,
+        payload.action_name,
+        arguments,
+        require_target=True,
+    )
+    snapshot_hash = _hash_payload(snapshot)
+    fingerprint = _hash_payload(
+        {
+            "patient_id": payload.patient_id,
+            "action_name": payload.action_name,
+            "arguments": arguments,
+        }
+    )
+
+    resolution = payload.request_context.get("mutation_resolution")
+    if isinstance(resolution, dict) and resolution.get("action_fingerprint") == fingerprint:
+        status = str(resolution.get("status") or "")
+        return MutationConfirmationPrepareResult(
+            confirmation_required=False,
+            action_name=payload.action_name,
+            tool_call_id=payload.tool_call_id,
+            action_fingerprint=fingerprint,
+            status="already_applied" if status == APPLIED else status or "skipped",
+            execution_result=resolution.get("tool_result") if isinstance(resolution.get("tool_result"), dict) else {},
+        )
+
+    notification_id, conversation_id, origin_chat_id = _origin_context(session, payload.request_context)
+    idempotency_key = f"{payload.trace_id}:{payload.action_name}:{fingerprint}:{snapshot_hash}"
+    existing = session.scalar(
+        select(MutationConfirmation).where(MutationConfirmation.idempotency_key == idempotency_key)
+    )
+    if existing is not None:
+        return _prepare_result(existing)
+
+    pending_duplicate = session.scalar(
+        select(MutationConfirmation)
+        .where(
+            MutationConfirmation.patient_id == payload.patient_id,
+            MutationConfirmation.action_name == payload.action_name,
+            MutationConfirmation.action_fingerprint == fingerprint,
+            MutationConfirmation.target_snapshot_hash == snapshot_hash,
+            MutationConfirmation.status == PENDING,
+        )
+        .order_by(MutationConfirmation.id.desc())
+    )
+    if pending_duplicate is not None:
+        return _prepare_result(pending_duplicate)
+
+    _supersede_pending(session, payload.patient_id)
+    status = SUPERSEDED if _has_newer_general_message(session, payload.patient_id, origin_chat_id) else PENDING
+    row = MutationConfirmation(
+        public_id=uuid4().hex,
+        patient_id=payload.patient_id,
+        origin_request_notification_id=notification_id,
+        conversation_id=conversation_id,
+        origin_trace_id=payload.trace_id,
+        origin_agent=payload.source_event_type,
+        source_event_type=payload.source_event_type,
+        action_type=action_type,
+        action_name=payload.action_name,
+        tool_call_id=payload.tool_call_id,
+        arguments_json=dump_json(arguments),
+        action_fingerprint=fingerprint,
+        target_snapshot_json=dump_json(snapshot),
+        target_snapshot_hash=snapshot_hash,
+        display_json=dump_json(
+            _nutrition_crud_display(payload.action_name, arguments, snapshot)
+        ),
+        continuation_json=dump_json(_continuation_context(payload.request_context)),
+        idempotency_key=idempotency_key,
+        status=status,
+        resolved_at=utc_now() if status == SUPERSEDED else None,
+    )
+    session.add(row)
+    session.flush()
+    return _prepare_result(row)
+
+
+def _execute_nutrition_crud_mutation(
+    session: Session,
+    row: MutationConfirmation,
+) -> ConfirmedMutationExecutionResult:
+    arguments = parse_json_object(row.arguments_json)
+    current_snapshot = _nutrition_crud_snapshot(
+        session,
+        row.action_name,
+        arguments,
+        require_target=False,
+    )
+    if _hash_payload(current_snapshot) != row.target_snapshot_hash:
+        row.status = STALE
+        row.error_message = "mutation_confirmation_snapshot_changed"
+        row.resolved_at = utc_now()
+        session.flush()
+        return _execution_result(row)
+
+    try:
+        with session.begin_nested():
+            result = _run_nutrition_crud_mutation(session, row.action_name, arguments)
+    except ValueError as exc:
+        row.status = FAILED
+        row.error_message = str(exc)
+        row.resolved_at = utc_now()
+        session.flush()
+        return _execution_result(row)
+
+    row.status = APPLIED
+    row.result_json = dump_json(result)
+    row.error_message = ""
+    row.resolved_at = utc_now()
+    session.flush()
+    return _execution_result(row)
+
+
+def _run_nutrition_crud_mutation(
+    session: Session,
+    action_name: str,
+    arguments: dict,
+) -> dict:
+    if action_name == CREATE_NUTRITION_MEAL_RECORD:
+        request = NutritionMealRecordRequest.model_validate(arguments)
+        result = record_meal(
+            session,
+            patient_id=request.patient_id,
+            foods=[food.model_dump(mode="json") for food in request.foods],
+            meal_type=request.meal_type,
+            meal_date=request.meal_date,
+            meal_time=request.meal_time,
+            scenario_key=request.scenario_key,
+            description=request.description,
+        )
+        NutritionMealRecordResult.model_validate(result)
+        return result
+
+    if action_name == UPDATE_NUTRITION_MEAL_RECORD:
+        meal_id = _positive_int(arguments, "meal_id")
+        request = NutritionMealUpdateRequest.model_validate(
+            {key: value for key, value in arguments.items() if key != "meal_id"}
+        )
+        result = update_meal(
+            session,
+            meal_id=meal_id,
+            patient_id=request.patient_id,
+            foods=[food.model_dump(mode="json") for food in request.foods]
+            if request.foods is not None
+            else None,
+            meal_type=request.meal_type,
+            meal_date=request.meal_date,
+            meal_time=request.meal_time,
+            scenario_key=request.scenario_key,
+            description=request.description,
+            reason=request.reason,
+        )
+        NutritionMealUpdateResult.model_validate(result)
+        return result
+
+    if action_name == DELETE_NUTRITION_MEAL_RECORD:
+        meal_id = _positive_int(arguments, "meal_id")
+        request = NutritionMealDeleteRequest.model_validate(
+            {key: value for key, value in arguments.items() if key != "meal_id"}
+        )
+        result = delete_meal(
+            session,
+            meal_id=meal_id,
+            patient_id=request.patient_id,
+            reason=request.reason,
+        )
+        NutritionMealDeleteResult.model_validate(result)
+        return result
+
+    if action_name == UPDATE_NUTRITION_FOOD_RECORD:
+        meal_id = _positive_int(arguments, "meal_id")
+        food_id = _positive_int(arguments, "food_id")
+        request = NutritionFoodUpdateRequest.model_validate(
+            {
+                key: value
+                for key, value in arguments.items()
+                if key not in {"meal_id", "food_id"}
+            }
+        )
+        result = update_food(
+            session,
+            meal_id=meal_id,
+            food_id=food_id,
+            patient_id=request.patient_id,
+            food_ref_id=request.food_ref_id,
+            food_name=request.food_name,
+            portion=request.portion,
+            nutrients=request.nutrients,
+            reason=request.reason,
+        )
+        NutritionFoodUpdateResult.model_validate(result)
+        return result
+
+    if action_name == DELETE_NUTRITION_FOOD_RECORD:
+        meal_id = _positive_int(arguments, "meal_id")
+        food_id = _positive_int(arguments, "food_id")
+        request = NutritionFoodDeleteRequest.model_validate(
+            {
+                key: value
+                for key, value in arguments.items()
+                if key not in {"meal_id", "food_id"}
+            }
+        )
+        result = delete_food(
+            session,
+            meal_id=meal_id,
+            food_id=food_id,
+            patient_id=request.patient_id,
+            reason=request.reason,
+            delete_empty_meal=request.delete_empty_meal,
+        )
+        NutritionFoodDeleteResult.model_validate(result)
+        return result
+
+    raise ValueError("mutation_confirmation_action_not_implemented")
+
+
+def _prepare_nutrition_crud_arguments(
+    session: Session,
+    payload: MutationConfirmationPrepareRequest,
+) -> dict:
+    raw = {**payload.arguments, "patient_id": payload.patient_id}
+    if payload.action_name == CREATE_NUTRITION_MEAL_RECORD:
+        request = NutritionMealRecordRequest.model_validate(raw)
+        if not request.foods:
+            raise ValueError("foods_required")
+        clock = ensure_clock(session)
+        if request.meal_date is None:
+            request.meal_date = clock.current_time.date()
+        if request.meal_time is None:
+            request.meal_time = clock.current_time.strftime("%H:%M:%S")
+        return request.model_dump(mode="json")
+
+    if payload.action_name == UPDATE_NUTRITION_MEAL_RECORD:
+        meal_id = _positive_int(raw, "meal_id")
+        request = NutritionMealUpdateRequest.model_validate(
+            {key: value for key, value in raw.items() if key != "meal_id"}
+        )
+        if request.foods is not None and not request.foods:
+            raise ValueError("foods_required")
+        if all(
+            value is None
+            for value in (
+                request.foods,
+                request.meal_type,
+                request.meal_date,
+                request.meal_time,
+                request.scenario_key,
+                request.description,
+            )
+        ):
+            raise ValueError("nutrition_meal_update_empty")
+        return {
+            "meal_id": meal_id,
+            **request.model_dump(mode="json", exclude_none=True),
+        }
+
+    if payload.action_name == DELETE_NUTRITION_MEAL_RECORD:
+        meal_id = _positive_int(raw, "meal_id")
+        request = NutritionMealDeleteRequest.model_validate(
+            {key: value for key, value in raw.items() if key != "meal_id"}
+        )
+        return {"meal_id": meal_id, **request.model_dump(mode="json")}
+
+    if payload.action_name == UPDATE_NUTRITION_FOOD_RECORD:
+        meal_id = _positive_int(raw, "meal_id")
+        food_id = _positive_int(raw, "food_id")
+        request = NutritionFoodUpdateRequest.model_validate(
+            {
+                key: value
+                for key, value in raw.items()
+                if key not in {"meal_id", "food_id"}
+            }
+        )
+        if all(
+            value is None
+            for value in (
+                request.food_ref_id,
+                request.food_name,
+                request.portion,
+                request.nutrients,
+            )
+        ):
+            raise ValueError("nutrition_food_update_empty")
+        return {
+            "meal_id": meal_id,
+            "food_id": food_id,
+            **request.model_dump(mode="json", exclude_none=True),
+        }
+
+    if payload.action_name == DELETE_NUTRITION_FOOD_RECORD:
+        meal_id = _positive_int(raw, "meal_id")
+        food_id = _positive_int(raw, "food_id")
+        request = NutritionFoodDeleteRequest.model_validate(
+            {
+                key: value
+                for key, value in raw.items()
+                if key not in {"meal_id", "food_id"}
+            }
+        )
+        return {
+            "meal_id": meal_id,
+            "food_id": food_id,
+            **request.model_dump(mode="json"),
+        }
+
+    raise ValueError("mutation_confirmation_action_not_implemented")
+
+
+def _nutrition_crud_snapshot(
+    session: Session,
+    action_name: str,
+    arguments: dict,
+    *,
+    require_target: bool,
+) -> dict:
+    patient_id = str(arguments.get("patient_id") or "")
+    if action_name == CREATE_NUTRITION_MEAL_RECORD:
+        target_date = date.fromisoformat(str(arguments.get("meal_date") or ""))
+        return {
+            "patient_id": patient_id,
+            "meal_date": target_date.isoformat(),
+            "meals": [
+                meal_view(session, meal)
+                for meal in meals_for_date(session, patient_id, target_date)
+            ],
+        }
+
+    meal_id = _positive_int(arguments, "meal_id")
+    meal = session.scalar(
+        select(NutritionMeal).where(
+            NutritionMeal.id == meal_id,
+            NutritionMeal.patient_id == patient_id,
+        )
+    )
+    if meal is None:
+        if require_target:
+            raise ValueError("nutrition_meal_not_found")
+        return {}
+
+    if action_name in {
+        UPDATE_NUTRITION_MEAL_RECORD,
+        DELETE_NUTRITION_MEAL_RECORD,
+    }:
+        return {"meal": meal_view(session, meal)}
+
+    food_id = _positive_int(arguments, "food_id")
+    food = session.scalar(
+        select(NutritionFood).where(
+            NutritionFood.id == food_id,
+            NutritionFood.meal_id == meal.id,
+        )
+    )
+    if food is None:
+        if require_target:
+            raise ValueError("nutrition_food_not_found")
+        return {}
+    return {
+        "meal": {
+            "id": meal.id,
+            "patient_id": meal.patient_id,
+            "meal_type": meal.meal_type,
+            "meal_date": meal.meal_date.isoformat(),
+            "meal_time": meal.meal_time,
+        },
+        "food": food_view(food),
+    }
+
+
+def _nutrition_crud_display(
+    action_name: str,
+    arguments: dict,
+    snapshot: dict,
+) -> dict:
+    if action_name == CREATE_NUTRITION_MEAL_RECORD:
+        meal_label = MEAL_TYPE_LABELS.get(
+            str(arguments.get("meal_type") or ""),
+            str(arguments.get("meal_type") or ""),
+        )
+        food_names = _food_payload_names(arguments.get("foods"))
+        return {
+            "title": "\uc2dd\uc0ac \uae30\ub85d",
+            "question": f"{arguments.get('meal_date')} {meal_label} \uc2dd\uc0ac\ub85c {food_names}\uc744(\ub97c) \uae30\ub85d\ud560\uae4c\uc694?",
+            "action_label": "\uae30\ub85d",
+            "target": food_names,
+            "details": [
+                {"label": "\ub0a0\uc9dc", "value": str(arguments.get("meal_date") or "")},
+                {"label": "\uc2dd\uc0ac \uc885\ub958", "value": meal_label},
+                {"label": "\uc74c\uc2dd", "value": food_names},
+                {"label": "\uc12d\ucde8\ub7c9", "value": _food_payload_portions(arguments.get("foods"))},
+            ],
+        }
+
+    meal = snapshot.get("meal") if isinstance(snapshot.get("meal"), dict) else {}
+    meal_label = str(meal.get("meal_label") or MEAL_TYPE_LABELS.get(str(meal.get("meal_type") or ""), ""))
+    meal_date = str(meal.get("meal_date") or "")
+    if action_name == UPDATE_NUTRITION_MEAL_RECORD:
+        before_foods = _food_payload_names(meal.get("foods"))
+        after_foods = (
+            _food_payload_names(arguments.get("foods"))
+            if "foods" in arguments
+            else before_foods
+        )
+        after_label = MEAL_TYPE_LABELS.get(
+            str(arguments.get("meal_type") or meal.get("meal_type") or ""),
+            str(arguments.get("meal_type") or meal.get("meal_type") or ""),
+        )
+        before_time = str(meal.get("meal_time") or "")
+        after_date = str(arguments.get("meal_date") or meal_date)
+        after_time = str(arguments.get("meal_time") or before_time)
+        details = [
+            {
+                "label": "\ubcc0\uacbd \uc804",
+                "value": f"{meal_date} {before_time} {meal_label}: {before_foods}".strip(),
+            },
+            {
+                "label": "\ubcc0\uacbd \ud6c4",
+                "value": f"{after_date} {after_time} {after_label}: {after_foods}".strip(),
+            },
+        ]
+        if "description" in arguments:
+            details.append(
+                {
+                    "label": "\uc124\uba85",
+                    "value": str(arguments.get("description") or "\uc5c6\uc74c"),
+                }
+            )
+        return {
+            "title": "\uc2dd\uc0ac \uae30\ub85d \uc218\uc815",
+            "question": f"{meal_date} {meal_label} \uc2dd\uc0ac \uae30\ub85d\uc744 \uc218\uc815\ud560\uae4c\uc694?",
+            "action_label": "\uc218\uc815",
+            "target": before_foods or meal_label,
+            "details": details,
+        }
+
+    if action_name == DELETE_NUTRITION_MEAL_RECORD:
+        food_names = _food_payload_names(meal.get("foods"))
+        return {
+            "title": "\uc2dd\uc0ac \uae30\ub85d \uc0ad\uc81c",
+            "question": f"{meal_date} {meal_label} \uc2dd\uc0ac \uae30\ub85d\uc744 \uc0ad\uc81c\ud560\uae4c\uc694?",
+            "action_label": "\uc0ad\uc81c",
+            "target": food_names or meal_label,
+            "details": [
+                {"label": "\ub0a0\uc9dc", "value": meal_date},
+                {"label": "\uc2dd\uc0ac \uc885\ub958", "value": meal_label},
+                {"label": "\uc74c\uc2dd", "value": food_names},
+            ],
+        }
+
+    food = snapshot.get("food") if isinstance(snapshot.get("food"), dict) else {}
+    food_name = str(food.get("food_name") or "")
+    if action_name == UPDATE_NUTRITION_FOOD_RECORD:
+        next_name = str(arguments.get("food_name") or food_name)
+        before_portion = str(food.get("portion") or "")
+        next_portion = str(arguments.get("portion") or before_portion)
+        details = [
+            {"label": "\ubcc0\uacbd \uc804", "value": f"{food_name} {before_portion}".strip()},
+            {"label": "\ubcc0\uacbd \ud6c4", "value": f"{next_name} {next_portion}".strip()},
+        ]
+        if "nutrients" in arguments:
+            details.append({"label": "\uc601\uc591\uc131\ubd84", "value": "\uc120\ud0dd\ud55c \uae30\uc900\ub7c9\uc73c\ub85c \uc7ac\uacc4\uc0b0"})
+        if next_name != food_name:
+            question = f"{food_name} \uae30\ub85d\uc744 {next_name}(\uc73c)\ub85c \uc218\uc815\ud560\uae4c\uc694?"
+        elif next_portion != before_portion:
+            question = f"{food_name} \uc12d\ucde8\ub7c9\uc744 {next_portion}(\uc73c)\ub85c \uc218\uc815\ud560\uae4c\uc694?"
+        else:
+            question = f"{food_name} \uc601\uc591\uc131\ubd84 \uae30\ub85d\uc744 \uc218\uc815\ud560\uae4c\uc694?"
+        return {
+            "title": "\uc74c\uc2dd \uae30\ub85d \uc218\uc815",
+            "question": question,
+            "action_label": "\uc218\uc815",
+            "target": food_name,
+            "details": details,
+        }
+
+    return {
+        "title": "\uc74c\uc2dd \uae30\ub85d \uc0ad\uc81c",
+        "question": f"{meal_date} {meal_label} \uc2dd\uc0ac\uc5d0\uc11c {food_name}\uc744(\ub97c) \uc0ad\uc81c\ud560\uae4c\uc694?",
+        "action_label": "\uc0ad\uc81c",
+        "target": food_name,
+        "details": [
+            {"label": "\ub0a0\uc9dc", "value": meal_date},
+            {"label": "\uc2dd\uc0ac \uc885\ub958", "value": meal_label},
+            {"label": "\uc74c\uc2dd", "value": food_name},
+            {"label": "\uc12d\ucde8\ub7c9", "value": str(food.get("portion") or "")},
+        ],
+    }
+
+
+def _food_payload_names(value: object) -> str:
+    if not isinstance(value, list):
+        return ""
+    names = [
+        str(item.get("food_name") or item.get("name") or "").strip()
+        for item in value
+        if isinstance(item, dict)
+    ]
+    return ", ".join(name for name in names if name)
+
+
+def _food_payload_portions(value: object) -> str:
+    if not isinstance(value, list):
+        return ""
+    portions = [
+        f"{str(item.get('food_name') or item.get('name') or '').strip()} {str(item.get('portion') or '').strip()}".strip()
+        for item in value
+        if isinstance(item, dict)
+    ]
+    return ", ".join(portion for portion in portions if portion)
+
+
+def _positive_int(arguments: dict, key: str) -> int:
+    try:
+        value = int(arguments.get(key))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key}_required") from exc
+    if value <= 0:
+        raise ValueError(f"{key}_required")
+    return value
 
 
 def _prepare_nutrition_preference_confirmation(

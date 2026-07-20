@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agent_app.tool_names import (
+    CREATE_NUTRITION_MEAL_RECORD,
+    DELETE_NUTRITION_FOOD_RECORD,
+    DELETE_NUTRITION_MEAL_RECORD,
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+    UPDATE_NUTRITION_FOOD_RECORD,
+    UPDATE_NUTRITION_MEAL_RECORD,
     UPSERT_NUTRITION_PREFERENCE_FACT,
 )
 
@@ -28,6 +33,31 @@ class ConfirmationActionRegistry:
         ),
         UPSERT_NUTRITION_PREFERENCE_FACT: ConfirmationAction(
             action_name=UPSERT_NUTRITION_PREFERENCE_FACT,
+            action_type="agent_tool",
+            confirmation_policy=CONFIRMATION_USER_REQUIRED,
+        ),
+        CREATE_NUTRITION_MEAL_RECORD: ConfirmationAction(
+            action_name=CREATE_NUTRITION_MEAL_RECORD,
+            action_type="agent_tool",
+            confirmation_policy=CONFIRMATION_USER_REQUIRED,
+        ),
+        UPDATE_NUTRITION_MEAL_RECORD: ConfirmationAction(
+            action_name=UPDATE_NUTRITION_MEAL_RECORD,
+            action_type="agent_tool",
+            confirmation_policy=CONFIRMATION_USER_REQUIRED,
+        ),
+        DELETE_NUTRITION_MEAL_RECORD: ConfirmationAction(
+            action_name=DELETE_NUTRITION_MEAL_RECORD,
+            action_type="agent_tool",
+            confirmation_policy=CONFIRMATION_USER_REQUIRED,
+        ),
+        UPDATE_NUTRITION_FOOD_RECORD: ConfirmationAction(
+            action_name=UPDATE_NUTRITION_FOOD_RECORD,
+            action_type="agent_tool",
+            confirmation_policy=CONFIRMATION_USER_REQUIRED,
+        ),
+        DELETE_NUTRITION_FOOD_RECORD: ConfirmationAction(
+            action_name=DELETE_NUTRITION_FOOD_RECORD,
             action_type="agent_tool",
             confirmation_policy=CONFIRMATION_USER_REQUIRED,
         ),

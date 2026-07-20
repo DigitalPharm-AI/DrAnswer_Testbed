@@ -1,6 +1,6 @@
 # 대화 기반 DB 변경 공통 확인 계약 진행 계획
 
-> 마지막 갱신: 2026-07-16
+> 마지막 갱신: 2026-07-20
 
 ## 목표
 
@@ -8,7 +8,17 @@
 
 ## 현재 단계
 
-**2단계: 영양 선호도 확인 흐름 구현을 완료하고 사용자 수동 검증 대기 중**
+**3단계: 영양 CRUD 공통 확인 흐름 구현을 완료하고 사용자 수동 검증 대기 중**
+
+- 식사 생성·수정·삭제와 음식 수정·삭제 5개 Tool을 중앙 `ConfirmationActionRegistry`에 등록했다.
+- prepare 단계는 대상 식사·음식과 같은 날짜 식사 목록을 조회해 snapshot과 변경 전후 요약만 만들며 영양 도메인 DB를 수정하지 않는다.
+- 승인 executor는 기존 영양 CRUD 서비스를 재사용하고 파생 일일 영양 요약·알림과 confirmation 상태를 같은 transaction에서 처리한다.
+- 도메인 실행은 savepoint로 감싸 중간 검증 실패 시 부분 식사·음식 변경을 모두 되돌리고 confirmation만 `failed`로 기록한다.
+- `/chat/food-confirm`은 더 이상 식사를 즉시 저장하지 않고 전체 음식 proposal을 완성한 뒤 공통 확인 카드를 생성한다.
+- Agent 직접 CRUD와 음식 선택 카드 경로 모두 승인 후 기존 ToolRuntime 및 MultiturnChatAgent continuation으로 돌아간다.
+- 핵심 회귀 168 passed, 전체 pytest 396 passed / 3 skipped이며 사용자 수동 검증을 기다리고 있다.
+
+### 이전 단계 안정화 기록
 
 - 자동 구현과 1차 회귀 테스트는 완료했다.
 - 사용자 수동 테스트에서 과거 승인 결과가 새 요청에 재사용되어, DB는 변경되지 않았는데 성공으로 답하는 회귀를 발견했다.
@@ -57,6 +67,11 @@
 - [x] 영양 선호도 확인에서 NutritionManagementAgent 중단 및 Supervisor 최종 안내
 - [x] 알레르기 저장 승인 후 NutritionRecommendationAgent 추천 continuation
 - [x] mutation-resolution 추천 결과의 카드 structured payload와 specialist Agent 식별자 보존
+- [x] 식사·음식 생성·수정·삭제 5개 영양 CRUD mutation 확인 계약
+- [x] 영양 CRUD read-only snapshot, stale 검증과 사용자용 변경 전후 요약
+- [x] 영양 CRUD와 파생 영양 데이터의 confirmed transaction 및 savepoint rollback
+- [x] `/chat/food-confirm`의 즉시 저장 제거와 공통 식사 proposal 카드 전환
+- [x] 음식 카드 원본 request context 보존과 승인 후 Supervisor continuation 연결
 
 ## 현재 수정 체크리스트
 
@@ -81,14 +96,16 @@
 
 ## 이후 단계
 
-1. **영양 선호도 (구현 완료, 수동 검증 대기)**
+1. **영양 선호도 (구현 및 커밋 완료)**
    - [x] `upsert_nutrition_preference_fact` 확인 계약 적용
    - [x] 알레르기 저장 승인 후 추천 요청 continuation 자동 검증
+   - [x] 사용자 수동 검증 및 커밋: `3399198`
+2. **영양 CRUD (구현 완료, 수동 검증 대기)**
+   - [x] 식사·음식 생성, 수정, 삭제 확인 계약 적용
+   - [x] `/chat/food-confirm`을 proposal 완성 단계로 변경
+   - [x] 파생 영양 요약·알림을 동일 transaction에 포함
+   - [x] stale, 중간 실패 rollback, 카드 렌더링 회귀 테스트
    - [ ] 사용자 수동 검증 후 커밋
-2. **영양 CRUD**
-   - 식사·음식 생성, 수정, 삭제 확인 계약 적용
-   - `/chat/food-confirm`을 proposal 완성 단계로 변경
-   - 파생 영양 요약 갱신을 동일 transaction에 포함
 3. **부작용 기록**
    - assessment의 숨은 자동 기록 제거
    - 부작용 기록 mutation Tool 추가
@@ -127,6 +144,30 @@
 - “저녁 뭐 먹을까? 사과 알레르기가 있어”에서는 알레르기 저장 승인 후 추천 작업이 자동으로 이어진다.
 - 추천 재개 시 이미 승인된 알레르기 저장을 다시 제안하지 않으며, 사과 제약을 반영한 후보를 보여준다.
 - 같은 알레르기가 이미 같은 상태로 저장되어 있으면 중복 confirmation이나 중복 fact를 만들지 않는다.
+
+## 3단계 수동 합격 기준
+
+- “점심에 밥을 먹었어”처럼 음식 기록을 요청하면 후보와 섭취량 선택 후에도 DB가 바로 바뀌지 않는다.
+- 마지막 음식 선택이 끝나면 날짜, 식사 종류, 음식과 섭취량이 포함된 공통 확인 카드가 표시된다.
+- 카드 승인 전에는 식사·음식 row와 일일 영양 요약이 생성되거나 변경되지 않는다.
+- 식사 생성·수정·삭제와 음식 수정·삭제 요청 모두 변경 전후 내용이 보이고 내부 Tool 이름과 DB ID는 노출되지 않는다.
+- 승인하면 mutation이 한 번만 적용되고 일일 영양 요약과 필요한 알림도 같은 transaction에서 갱신된다.
+- 취소하면 영양 DB를 변경하지 않고 Supervisor가 취소 결과를 안내한다.
+- 승인 전 대상 식사나 음식이 바뀌면 기존 proposal은 `stale`로 종료되고 새 확인을 요구한다.
+- 저장 중 한 음식 검증이 실패해도 식사나 앞선 음식이 일부만 남지 않는다.
+- 승인·취소 결과의 최종 사용자 답변은 MultiturnChatAgent가 마무리한다.
+
+## 2026-07-20 영양 CRUD 공통 확인 구현
+
+- [x] canonical 영양 CRUD 5개 action registry 활성화
+- [x] 생성은 같은 날짜 식사 목록, 수정·삭제는 대상 식사·음식 snapshot 저장
+- [x] confirmed executor의 기존 영양 CRUD 서비스 재사용과 결과 payload 보존
+- [x] 중간 실패 시 savepoint rollback
+- [x] food selection 카드에 원본 notification·trace context 보존
+- [x] `/chat/food-confirm`의 proposal-only 전환과 공통 카드 category 표시
+- [x] 관련 회귀 168 passed
+- [x] 전체 pytest 396 passed / 3 skipped
+- [ ] 사용자 수동 검증 후 3단계 커밋
 
 ## 작업 원칙
 

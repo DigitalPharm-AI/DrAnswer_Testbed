@@ -5,11 +5,22 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from agent_app.tool_names import CREATE_NUTRITION_MEAL_RECORD
 from shared.settings import get_settings
 from shared.time_utils import utc_now
 from system_app.db import SessionLocal
 from system_app.main import app
-from system_app.models import AgentDecisionAudit, AgentRunStep, AgentRunTrace, ChatMessage, DoseEvent, Notification
+from system_app.models import (
+    AgentDecisionAudit,
+    AgentRunStep,
+    AgentRunTrace,
+    ChatMessage,
+    DoseEvent,
+    MutationConfirmation,
+    Notification,
+    NutritionFood,
+    NutritionMeal,
+)
 from system_app.services.clock_service import ensure_clock
 from system_app.services.dashboard_view import chat_message_view, sorted_chat_views
 from system_app.services.notification_service import create_notification
@@ -662,6 +673,107 @@ def test_food_select_rejects_stale_card_submission_after_newer_message():
             session.query(ChatMessage).delete()
             session.commit()
 
+
+
+def test_food_confirm_creates_mutation_confirmation_without_writing_meal():
+    client = TestClient(app)
+    settings = get_settings()
+
+    with SessionLocal() as session:
+        session.query(MutationConfirmation).delete()
+        session.query(NutritionFood).delete()
+        session.query(NutritionMeal).delete()
+        session.query(ChatMessage).delete()
+        session.query(Notification).delete()
+        ensure_base_data(session)
+        clock = ensure_clock(session)
+        user_message = add_chat_message(
+            session,
+            role="user",
+            content="\uc810\uc2ec\uc5d0 \ubc25\uc744 \uba39\uc5c8\uc5b4",
+            sender_type="patient",
+            category="multiturn_chat",
+        )
+        origin = Notification(
+            patient_id=settings.patient_id,
+            notification_type="system_policy_request",
+            title="request",
+            body="request",
+            visible_at=clock.current_time,
+            metadata_json=json.dumps(
+                {
+                    "event_type": "multiturn_chat",
+                    "request_message": user_message.content,
+                    "chat_message_id": user_message.id,
+                    "agent_conversation_id": "food-confirm-conversation",
+                    "trace_id": "food-confirm-trace",
+                },
+                ensure_ascii=False,
+            ),
+        )
+        session.add(origin)
+        session.flush()
+        card = add_chat_message(
+            session,
+            role="assistant",
+            content="\uc74c\uc2dd \ud6c4\ubcf4\ub97c \ucc3e\uc558\uc2b5\ub2c8\ub2e4.",
+            sender_type="assistant",
+            category="multiturn_chat",
+            metadata={
+                "food_selection": {
+                    "stage": "awaiting_confirm",
+                    "query": "rice",
+                    "candidates": [],
+                    "selected_food": {
+                        "food_ref_id": "rice-ref",
+                        "food_name": "rice",
+                        "serving_size": 100,
+                        "scaled_nutrients": {
+                            "energy": {"value": 150, "unit": "kcal"},
+                            "protein": {"value": 3, "unit": "g"},
+                            "sodium": {"value": 5, "unit": "mg"},
+                        },
+                    },
+                    "portion_g": 120,
+                    "meal_type": "lunch",
+                    "default_meal_type": "lunch",
+                    "foods_queue": [],
+                    "confirmed_foods": [],
+                    "origin_request_notification_id": origin.id,
+                    "origin_trace_id": "food-confirm-trace",
+                }
+            },
+        )
+        session.commit()
+        card_id = card.id
+
+    try:
+        response = client.post(
+            "/chat/food-confirm",
+            data={"chat_message_id": card_id},
+        )
+
+        assert response.status_code == 200
+        with SessionLocal() as session:
+            assert session.query(NutritionMeal).count() == 0
+            confirmation = session.query(MutationConfirmation).one()
+            assert confirmation.status == "pending"
+            assert confirmation.action_name == CREATE_NUTRITION_MEAL_RECORD
+            assert confirmation.origin_request_notification_id is not None
+            card_message = session.get(ChatMessage, confirmation.chat_message_id)
+            card_metadata = json.loads(card_message.metadata_json)
+            assert card_metadata["mutation_confirmation"]["status"] == "pending"
+        refreshed = client.get("/partials/chat")
+        assert refreshed.status_code == 200
+        assert "mutation-confirmation-card" in refreshed.text
+    finally:
+        with SessionLocal() as session:
+            session.query(MutationConfirmation).delete()
+            session.query(NutritionFood).delete()
+            session.query(NutritionMeal).delete()
+            session.query(ChatMessage).delete()
+            session.query(Notification).delete()
+            session.commit()
 
 def test_food_grams_card_selects_default_meal_type_hint():
     client = TestClient(app)

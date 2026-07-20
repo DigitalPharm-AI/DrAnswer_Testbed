@@ -6,7 +6,9 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.orm import Session
 
+from agent_app.tool_names import CREATE_NUTRITION_MEAL_RECORD
 from shared.json_utils import dump_json, parse_json_object
+from shared.schemas import MutationConfirmationPrepareRequest
 from shared.settings import get_settings
 from system_app.db import get_session
 from system_app.models import ChatMessage, MutationConfirmation, Notification
@@ -25,13 +27,16 @@ from system_app.services.missed_dose_reply_understanding import (
 )
 from system_app.services.mutation_confirmation_service import (
     PENDING,
+    attach_confirmation_chat_message,
     begin_mutation_resolution,
+    confirmation_card_payload,
     has_executing_confirmation,
     pending_confirmation_for_patient,
     pending_confirmation_reply_context,
+    prepare_mutation_confirmation,
     recover_expired_confirmations,
 )
-from system_app.services.nutrition_service import MEAL_TYPE_LABELS, record_meal
+from system_app.services.nutrition_service import MEAL_TYPE_LABELS
 from system_app.services.side_effect_reminder_safety import create_side_effect_reminder_safety_prompt, handle_side_effect_reminder_safety_reply
 from system_app.services.system_request_service import create_system_event_request
 from system_app.services.timeline_service import add_chat_message, ensure_chat_message_for_conversation_alert
@@ -367,22 +372,73 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
                 fs["default_meal_type"] = next_search.get("meal_type", "") or fs.get("default_meal_type", "")
                 fs["meal_type"] = None
             else:
-                # 모든 음식 처리 완료 → 한꺼번에 기록
-                record_meal(
-                    session,
-                    foods=confirmed_foods,
-                    meal_type=meal_type,
-                )
-                fs["stage"] = "done"
+                # The completed selection becomes a proposal; DB writes wait for common confirmation.
+                origin_notification_id = fs.get("origin_request_notification_id")
+                try:
+                    origin_notification_id = int(origin_notification_id)
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(status_code=409, detail="food_selection_origin_missing") from exc
+                origin_notification = session.get(Notification, origin_notification_id)
+                if origin_notification is None:
+                    raise HTTPException(status_code=409, detail="food_selection_origin_missing")
+                origin_metadata = parse_json_object(origin_notification.metadata_json)
+                clock = ensure_clock(session)
                 meal_label = MEAL_TYPE_LABELS.get(meal_type, meal_type)
                 names = ", ".join(f["food_name"] for f in confirmed_foods)
-                add_chat_message(
+                prepared = prepare_mutation_confirmation(
+                    session,
+                    MutationConfirmationPrepareRequest(
+                        patient_id=get_settings().patient_id,
+                        action_name=CREATE_NUTRITION_MEAL_RECORD,
+                        tool_call_id=f"food-confirm:{message.id}",
+                        arguments={
+                            "patient_id": get_settings().patient_id,
+                            "foods": confirmed_foods,
+                            "meal_type": meal_type,
+                        },
+                        trace_id=str(
+                            fs.get("origin_trace_id")
+                            or origin_metadata.get("trace_id")
+                            or f"food-confirm:{message.id}"
+                        ),
+                        source_event_type="nutrition_management_agent",
+                        request_context={
+                            "message": origin_metadata.get("request_message")
+                            or f"{meal_label} 식사로 {names} 기록",
+                            "event_type": origin_metadata.get("event_type") or "multiturn_chat",
+                            "current_time": clock.current_time.isoformat(),
+                            "callback_context": {
+                                "notification_id": origin_notification.id,
+                                "conversation_id": origin_metadata.get("agent_conversation_id") or "",
+                            },
+                        },
+                    ),
+                )
+                if not prepared.confirmation_required or not prepared.confirmation_id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"nutrition_meal_confirmation_{prepared.status}",
+                    )
+                confirmation = session.scalar(
+                    select(MutationConfirmation).where(
+                        MutationConfirmation.public_id == prepared.confirmation_id
+                    )
+                )
+                if confirmation is None:
+                    raise HTTPException(status_code=409, detail="mutation_confirmation_not_found")
+
+                fs["stage"] = "done"
+                confirmation_message = add_chat_message(
                     session,
                     role="assistant",
-                    content=f"{meal_label} 식사를 기록했습니다: {names}",
+                    content="식사 기록 전에 아래 내용을 확인해주세요.",
                     sender_type="assistant",
-                    category="nutrition",
+                    category="mutation_confirmation",
+                    metadata={"mutation_confirmation": confirmation_card_payload(confirmation)},
                 )
+                attach_confirmation_chat_message(session, confirmation, confirmation_message)
+                origin_metadata["status"] = "needs_confirmation"
+                origin_notification.metadata_json = dump_json(origin_metadata)
 
             metadata["food_selection"] = fs
             message.metadata_json = dump_json(metadata)

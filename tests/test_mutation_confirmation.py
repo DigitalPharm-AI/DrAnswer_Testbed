@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -11,7 +11,12 @@ from sqlalchemy.pool import StaticPool
 from agent_app.async_worker import _continuation_payload
 from agent_app.confirmation_actions import ConfirmationActionRegistry
 from agent_app.tool_names import (
+    CREATE_NUTRITION_MEAL_RECORD,
+    DELETE_NUTRITION_FOOD_RECORD,
+    DELETE_NUTRITION_MEAL_RECORD,
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+    UPDATE_NUTRITION_FOOD_RECORD,
+    UPDATE_NUTRITION_MEAL_RECORD,
     UPSERT_NUTRITION_PREFERENCE_FACT,
 )
 from agent_app.tool_protocol import mcp_result_from_tool_result, tool_result_from_mcp_result
@@ -30,9 +35,12 @@ from system_app.models import (
     AgentDecisionAudit,
     Base,
     ChatMessage,
+    DailyNutritionCheck,
     DoseEvent,
     MutationConfirmation,
     Notification,
+    NutritionFood,
+    NutritionMeal,
     NutritionOntologyNode,
     NutritionPatientPreferenceTriple,
 )
@@ -178,6 +186,90 @@ def _seed_preference_request(session: Session) -> MutationConfirmationPrepareReq
     session.commit()
     return request
 
+
+
+
+def _seed_nutrition_crud_request(
+    session: Session,
+    action_name: str,
+    arguments: dict,
+    *,
+    trace_suffix: str,
+) -> MutationConfirmationPrepareRequest:
+    now = datetime(2026, 4, 20, 12, 30)
+    chat = ChatMessage(
+        patient_id="demo-patient",
+        role="user",
+        sender_type="patient",
+        category="multiturn_chat",
+        content=f"nutrition mutation {trace_suffix}",
+        created_at=now,
+    )
+    session.add(chat)
+    session.flush()
+    notification = Notification(
+        patient_id="demo-patient",
+        notification_type="system_policy_request",
+        title="request",
+        body="request",
+        visible_at=now,
+        metadata_json=dump_json(
+            {
+                "event_type": "multiturn_chat",
+                "request_message": chat.content,
+                "chat_message_id": chat.id,
+                "agent_conversation_id": f"conversation-{trace_suffix}",
+            }
+        ),
+    )
+    session.add(notification)
+    session.flush()
+    request = MutationConfirmationPrepareRequest(
+        patient_id="demo-patient",
+        action_name=action_name,
+        tool_call_id=f"tool-call-{trace_suffix}",
+        arguments=arguments,
+        trace_id=f"trace-{trace_suffix}",
+        source_event_type="nutrition_management_agent",
+        request_context={
+            "message": chat.content,
+            "event_type": "multiturn_chat",
+            "current_time": now.isoformat(),
+            "callback_context": {
+                "notification_id": notification.id,
+                "conversation_id": f"conversation-{trace_suffix}",
+            },
+        },
+    )
+    session.commit()
+    return request
+
+
+def _confirm_and_execute_nutrition_mutation(
+    session: Session,
+    prepared,
+    action_name: str,
+):
+    begin_mutation_resolution(
+        session,
+        prepared.confirmation_id,
+        "confirm",
+        patient_id="demo-patient",
+    )
+    session.commit()
+    result = execute_confirmed_mutation(
+        session,
+        prepared.confirmation_id,
+        ConfirmedMutationExecutionRequest(
+            confirmation_id=prepared.confirmation_id,
+            action_name=action_name,
+            action_fingerprint=prepared.action_fingerprint,
+            trace_id=f"confirmed-{prepared.confirmation_id}",
+            source_event_type="nutrition_management_agent",
+        ),
+    )
+    session.commit()
+    return result
 
 
 def _seed_confirmation_reply_notification(
@@ -944,3 +1036,266 @@ def test_cannot_consume_confirmation_applies_as_a_hard_constraint():
         assert result.status == APPLIED
         assert fact.predicate == "cannot_consume"
         assert fact.safety_level == "hard"
+
+
+def test_nutrition_crud_actions_require_confirmation_and_execute_sequentially():
+    engine = _engine()
+    with Session(engine) as session:
+        assert {
+            CREATE_NUTRITION_MEAL_RECORD,
+            UPDATE_NUTRITION_MEAL_RECORD,
+            DELETE_NUTRITION_MEAL_RECORD,
+            UPDATE_NUTRITION_FOOD_RECORD,
+            DELETE_NUTRITION_FOOD_RECORD,
+        }.issubset(ConfirmationActionRegistry.enabled_action_names())
+
+        create_request = _seed_nutrition_crud_request(
+            session,
+            CREATE_NUTRITION_MEAL_RECORD,
+            {
+                "patient_id": "untrusted-patient",
+                "meal_type": "lunch",
+                "meal_date": "2026-04-20",
+                "meal_time": "12:30:00",
+                "foods": [
+                    {
+                        "food_ref_id": "food-rice",
+                        "food_name": "rice",
+                        "portion": "150g",
+                        "nutrients": {
+                            "\uce7c\ub85c\ub9ac": {"value": 220, "unit": "kcal"},
+                            "\ub2e8\ubc31\uc9c8": {"value": 5, "unit": "g"},
+                            "\ub098\ud2b8\ub968": {"value": 5, "unit": "mg"},
+                        },
+                    },
+                    {
+                        "food_ref_id": "food-soup",
+                        "food_name": "soup",
+                        "portion": "1 bowl",
+                        "nutrients": {
+                            "\uce7c\ub85c\ub9ac": {"value": 100, "unit": "kcal"},
+                            "\ub2e8\ubc31\uc9c8": {"value": 7, "unit": "g"},
+                            "\ub098\ud2b8\ub968": {"value": 300, "unit": "mg"},
+                        },
+                    },
+                ],
+            },
+            trace_suffix="create-meal",
+        )
+        prepared_create = prepare_mutation_confirmation(session, create_request)
+        session.commit()
+        assert prepared_create.confirmation_required is True
+        assert prepared_create.display["action_label"] == "\uae30\ub85d"
+        assert session.query(NutritionMeal).count() == 0
+
+        created = _confirm_and_execute_nutrition_mutation(
+            session,
+            prepared_create,
+            CREATE_NUTRITION_MEAL_RECORD,
+        )
+        assert created.status == APPLIED
+        meal = session.query(NutritionMeal).one()
+        foods = session.scalars(
+            select(NutritionFood)
+            .where(NutritionFood.meal_id == meal.id)
+            .order_by(NutritionFood.id)
+        ).all()
+        assert meal.patient_id == "demo-patient"
+        assert [food.food_name for food in foods] == ["rice", "soup"]
+
+        update_food_request = _seed_nutrition_crud_request(
+            session,
+            UPDATE_NUTRITION_FOOD_RECORD,
+            {
+                "meal_id": meal.id,
+                "food_id": foods[0].id,
+                "food_name": "brown rice",
+                "portion": "180g",
+            },
+            trace_suffix="update-food",
+        )
+        prepared_update_food = prepare_mutation_confirmation(session, update_food_request)
+        session.commit()
+        assert session.get(NutritionFood, foods[0].id).food_name == "rice"
+        updated_food = _confirm_and_execute_nutrition_mutation(
+            session,
+            prepared_update_food,
+            UPDATE_NUTRITION_FOOD_RECORD,
+        )
+        assert updated_food.status == APPLIED
+        assert session.get(NutritionFood, foods[0].id).food_name == "brown rice"
+
+        update_meal_request = _seed_nutrition_crud_request(
+            session,
+            UPDATE_NUTRITION_MEAL_RECORD,
+            {"meal_id": meal.id, "meal_type": "dinner"},
+            trace_suffix="update-meal",
+        )
+        prepared_update_meal = prepare_mutation_confirmation(session, update_meal_request)
+        session.commit()
+        assert session.get(NutritionMeal, meal.id).meal_type == "lunch"
+        updated_meal = _confirm_and_execute_nutrition_mutation(
+            session,
+            prepared_update_meal,
+            UPDATE_NUTRITION_MEAL_RECORD,
+        )
+        assert updated_meal.status == APPLIED
+        assert session.get(NutritionMeal, meal.id).meal_type == "dinner"
+
+        delete_food_request = _seed_nutrition_crud_request(
+            session,
+            DELETE_NUTRITION_FOOD_RECORD,
+            {
+                "meal_id": meal.id,
+                "food_id": foods[1].id,
+                "delete_empty_meal": True,
+            },
+            trace_suffix="delete-food",
+        )
+        prepared_delete_food = prepare_mutation_confirmation(session, delete_food_request)
+        session.commit()
+        assert session.get(NutritionFood, foods[1].id) is not None
+        deleted_food = _confirm_and_execute_nutrition_mutation(
+            session,
+            prepared_delete_food,
+            DELETE_NUTRITION_FOOD_RECORD,
+        )
+        assert deleted_food.status == APPLIED
+        assert session.get(NutritionFood, foods[1].id) is None
+        assert session.get(NutritionMeal, meal.id) is not None
+
+        delete_meal_request = _seed_nutrition_crud_request(
+            session,
+            DELETE_NUTRITION_MEAL_RECORD,
+            {"meal_id": meal.id},
+            trace_suffix="delete-meal",
+        )
+        prepared_delete_meal = prepare_mutation_confirmation(session, delete_meal_request)
+        session.commit()
+        assert session.get(NutritionMeal, meal.id) is not None
+        deleted_meal = _confirm_and_execute_nutrition_mutation(
+            session,
+            prepared_delete_meal,
+            DELETE_NUTRITION_MEAL_RECORD,
+        )
+        assert deleted_meal.status == APPLIED
+        assert session.get(NutritionMeal, meal.id) is None
+
+
+def test_nutrition_food_update_becomes_stale_when_target_changes():
+    engine = _engine()
+    with Session(engine) as session:
+        meal = NutritionMeal(
+            patient_id="demo-patient",
+            meal_type="lunch",
+            meal_date=date(2026, 4, 20),
+            meal_time="12:00:00",
+        )
+        session.add(meal)
+        session.flush()
+        food = NutritionFood(
+            meal_id=meal.id,
+            food_ref_id="food-original",
+            food_name="original",
+            portion="100g",
+        )
+        session.add(food)
+        session.commit()
+
+        request = _seed_nutrition_crud_request(
+            session,
+            UPDATE_NUTRITION_FOOD_RECORD,
+            {
+                "meal_id": meal.id,
+                "food_id": food.id,
+                "food_name": "requested",
+            },
+            trace_suffix="stale-food",
+        )
+        prepared = prepare_mutation_confirmation(session, request)
+        session.commit()
+        begin_mutation_resolution(
+            session,
+            prepared.confirmation_id,
+            "confirm",
+            patient_id="demo-patient",
+        )
+        food.food_name = "changed elsewhere"
+        session.commit()
+
+        result = execute_confirmed_mutation(
+            session,
+            prepared.confirmation_id,
+            ConfirmedMutationExecutionRequest(
+                confirmation_id=prepared.confirmation_id,
+                action_name=UPDATE_NUTRITION_FOOD_RECORD,
+                action_fingerprint=prepared.action_fingerprint,
+                trace_id="confirmed-stale-food",
+                source_event_type="nutrition_management_agent",
+            ),
+        )
+        session.commit()
+
+        assert result.status == STALE
+        assert session.get(NutritionFood, food.id).food_name == "changed elsewhere"
+
+
+def test_failed_nutrition_create_rolls_back_partial_domain_changes():
+    engine = _engine()
+    with Session(engine) as session:
+        request = _seed_nutrition_crud_request(
+            session,
+            CREATE_NUTRITION_MEAL_RECORD,
+            {
+                "meal_type": "lunch",
+                "meal_date": "2026-04-20",
+                "foods": [
+                    {
+                        "food_ref_id": "valid-food",
+                        "food_name": "valid food",
+                        "portion": "100g",
+                        "nutrients": {},
+                    },
+                    {
+                        "food_ref_id": "invalid-food",
+                        "food_name": "   ",
+                        "portion": "100g",
+                        "nutrients": {},
+                    },
+                ],
+            },
+            trace_suffix="failed-create",
+        )
+        prepared = prepare_mutation_confirmation(session, request)
+        session.commit()
+        begin_mutation_resolution(
+            session,
+            prepared.confirmation_id,
+            "confirm",
+            patient_id="demo-patient",
+        )
+        session.commit()
+
+        result = execute_confirmed_mutation(
+            session,
+            prepared.confirmation_id,
+            ConfirmedMutationExecutionRequest(
+                confirmation_id=prepared.confirmation_id,
+                action_name=CREATE_NUTRITION_MEAL_RECORD,
+                action_fingerprint=prepared.action_fingerprint,
+                trace_id="confirmed-failed-create",
+                source_event_type="nutrition_management_agent",
+            ),
+        )
+        session.commit()
+
+        assert result.status == FAILED
+        assert session.query(NutritionMeal).count() == 0
+        assert session.query(NutritionFood).count() == 0
+        assert session.query(DailyNutritionCheck).count() == 0
+        row = session.scalar(
+            select(MutationConfirmation).where(
+                MutationConfirmation.public_id == prepared.confirmation_id
+            )
+        )
+        assert row.status == FAILED
