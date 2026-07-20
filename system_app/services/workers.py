@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import desc, select
 
+from agent_app.tool_names import CREATE_MEDICATION_SIDE_EFFECT_RECORD
 from shared.json_utils import dump_json as dump_metadata_json
 from shared.json_utils import parse_json_object as parse_metadata_json
 from shared.redaction import safe_exception_summary
@@ -33,11 +34,13 @@ from system_app.services.dose_event_service import ensure_day_events, prepare_no
 from system_app.services.failure_copy import copy_for_async_task
 from system_app.services.mutation_confirmation_service import (
     APPLIED,
+    CANCELLED,
     EXECUTING,
     FAILED,
     mirror_confirmation_card_status,
 )
 from system_app.services.patient_profile_service import can_run_simulation, ensure_base_data
+from system_app.services.side_effect_reminder_safety import create_side_effect_reminder_safety_prompt
 from system_app.services.system_request_service import (
     apply_async_continuation_ack,
     apply_system_event_response,
@@ -86,6 +89,7 @@ def attach_job_callback_context(payload: Any, job_id: int) -> Any:
     callback_context.job_id = job_id
     payload.callback_context = callback_context
     return payload
+
 
 def mark_awaiting_conversation_alert_failed(
     session,
@@ -338,11 +342,7 @@ def mutation_confirmation_worker(
     try:
         with write_lock:
             with SessionLocal() as session:
-                row = session.scalar(
-                    select(MutationConfirmation).where(
-                        MutationConfirmation.public_id == confirmation_id
-                    )
-                )
+                row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == confirmation_id))
                 if row is None:
                     raise ValueError("mutation_confirmation_not_found")
                 notification_id = row.origin_request_notification_id
@@ -374,11 +374,7 @@ def mutation_confirmation_worker(
         response = asyncio.run(agent_client.resolve_mutation_confirmation(request))
         with write_lock:
             with SessionLocal() as session:
-                row = session.scalar(
-                    select(MutationConfirmation).where(
-                        MutationConfirmation.public_id == confirmation_id
-                    )
-                )
+                row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == confirmation_id))
                 if row is not None:
                     mirror_confirmation_card_status(session, row)
                 apply_system_event_response(
@@ -388,6 +384,12 @@ def mutation_confirmation_worker(
                     notification_id,
                     response,
                 )
+                if row is not None and row.action_name == CREATE_MEDICATION_SIDE_EFFECT_RECORD and row.status in {APPLIED, CANCELLED} and row.chat_message_id is not None:
+                    create_side_effect_reminder_safety_prompt(
+                        session,
+                        row.chat_message_id,
+                        recorded=row.status == APPLIED,
+                    )
                 session.commit()
     except Exception as exc:  # pragma: no cover - defensive path
         safe_error = safe_exception_summary(exc)
@@ -398,11 +400,7 @@ def mutation_confirmation_worker(
         )
         with write_lock:
             with SessionLocal() as session:
-                row = session.scalar(
-                    select(MutationConfirmation).where(
-                        MutationConfirmation.public_id == confirmation_id
-                    )
-                )
+                row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == confirmation_id))
                 mutation_applied = row is not None and row.status == APPLIED
                 if row is not None:
                     if row.status == EXECUTING:

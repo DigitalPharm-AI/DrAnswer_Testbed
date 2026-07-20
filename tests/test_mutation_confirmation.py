@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -11,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 from agent_app.async_worker import _continuation_payload
 from agent_app.confirmation_actions import ConfirmationActionRegistry
 from agent_app.tool_names import (
+    CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
@@ -43,6 +45,7 @@ from system_app.models import (
     NutritionMeal,
     NutritionOntologyNode,
     NutritionPatientPreferenceTriple,
+    SideEffectRecord,
 )
 from system_app.services.agent_async_callback_service import process_async_chat_result_callback
 from system_app.services.mutation_confirmation_service import (
@@ -56,6 +59,7 @@ from system_app.services.mutation_confirmation_service import (
     begin_mutation_resolution,
     execute_confirmed_mutation,
     prepare_mutation_confirmation,
+    prepare_side_effect_record_confirmation_for_chat,
     recover_expired_confirmations,
 )
 from system_app.services.nutrition_preference_service import record_preference_fact
@@ -187,8 +191,6 @@ def _seed_preference_request(session: Session) -> MutationConfirmationPrepareReq
     return request
 
 
-
-
 def _seed_nutrition_crud_request(
     session: Session,
     action_name: str,
@@ -313,11 +315,7 @@ def _confirmation_reply_callback(
             trace_id=f"trace-confirmation-reply-{intent}",
             agent_name="multiturn_chat_agent",
             prompt_version_id="test",
-            decision_type=(
-                "system_guidance"
-                if intent in {"new_request", "revise"}
-                else "mutation_confirmation_reply"
-            ),
+            decision_type=("system_guidance" if intent in {"new_request", "revise"} else "mutation_confirmation_reply"),
             structured_payload={
                 "routing_mode": "mutation_confirmation_reply",
                 "mutation_confirmation_reply": {"intent": intent},
@@ -376,11 +374,7 @@ def test_nutrition_preference_mutation_waits_for_confirmation_and_commits_atomic
         session.rollback()
 
     with Session(engine) as session:
-        row = session.scalar(
-            select(MutationConfirmation).where(
-                MutationConfirmation.public_id == prepared.confirmation_id
-            )
-        )
+        row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == prepared.confirmation_id))
         assert row.status == EXECUTING
         assert session.query(NutritionOntologyNode).count() == 0
         assert session.query(NutritionPatientPreferenceTriple).count() == 0
@@ -489,7 +483,6 @@ def test_nutrition_preference_confirmation_becomes_stale_when_target_changes():
         assert fact.strength == 0.4
 
 
-
 @pytest.mark.parametrize(
     ("intent", "expected_status"),
     [("confirm", EXECUTING), ("cancel", CANCELLED)],
@@ -515,11 +508,7 @@ def test_natural_confirmation_reply_starts_existing_resolution_flow(intent, expe
             ),
         )
 
-        row = session.scalar(
-            select(MutationConfirmation).where(
-                MutationConfirmation.public_id == prepared.confirmation_id
-            )
-        )
+        row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == prepared.confirmation_id))
         assert result["start_mutation_confirmation_worker"] is True
         assert result["confirmation_id"] == prepared.confirmation_id
         assert result["intent"] == intent
@@ -544,11 +533,7 @@ def test_unclear_natural_confirmation_reply_keeps_card_pending_and_asks_again():
             _confirmation_reply_callback(reply, intent="unclear", message="maybe"),
         )
 
-        row = session.scalar(
-            select(MutationConfirmation).where(
-                MutationConfirmation.public_id == prepared.confirmation_id
-            )
-        )
+        row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == prepared.confirmation_id))
         assistant = session.query(ChatMessage).filter(ChatMessage.role == "assistant").one()
         assert "start_mutation_confirmation_worker" not in result
         assert row.status == PENDING
@@ -576,11 +561,7 @@ def test_new_request_supersedes_only_the_previous_pending_confirmation():
             ),
         )
 
-        row = session.scalar(
-            select(MutationConfirmation).where(
-                MutationConfirmation.public_id == prepared.confirmation_id
-            )
-        )
+        row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == prepared.confirmation_id))
         assistant = session.query(ChatMessage).filter(ChatMessage.role == "assistant").one()
         assert result["status"] == "ok"
         assert row.status == SUPERSEDED
@@ -645,11 +626,7 @@ def test_late_unclear_reply_does_not_reopen_executing_confirmation():
             _confirmation_reply_callback(late_reply, intent="unclear", message="maybe"),
         )
 
-        row = session.scalar(
-            select(MutationConfirmation).where(
-                MutationConfirmation.public_id == prepared.confirmation_id
-            )
-        )
+        row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == prepared.confirmation_id))
         assert row.status == EXECUTING
         assert "start_mutation_confirmation_worker" not in result
         assert session.query(ChatMessage).filter(ChatMessage.role == "assistant").count() == 0
@@ -690,11 +667,7 @@ def test_dose_mutation_waits_for_confirmation_and_commits_atomically():
         session.rollback()
 
     with Session(engine) as session:
-        row = session.scalar(
-            select(MutationConfirmation).where(
-                MutationConfirmation.public_id == prepared.confirmation_id
-            )
-        )
+        row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == prepared.confirmation_id))
         assert row.status == EXECUTING
         assert session.get(DoseEvent, event_id).status == "scheduled"
 
@@ -923,6 +896,8 @@ def test_mcp_protocol_preserves_confirmation_required_status():
 
     assert restored.status == "confirmation_required"
     assert restored.response == original.response
+
+
 def test_revise_reply_supersedes_previous_confirmation_and_keeps_replacement_pending():
     engine = _engine()
     with Session(engine) as session:
@@ -985,17 +960,15 @@ def test_revise_reply_supersedes_previous_confirmation_and_keeps_replacement_pen
 
         result = process_async_chat_result_callback(session, callback)
 
-        original_row = session.scalar(
-            select(MutationConfirmation).where(MutationConfirmation.public_id == original.confirmation_id)
-        )
-        replacement_row = session.scalar(
-            select(MutationConfirmation).where(MutationConfirmation.public_id == replacement.confirmation_id)
-        )
+        original_row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == original.confirmation_id))
+        replacement_row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == replacement.confirmation_id))
         assert result["status"] == "ok"
         assert original_row.status == SUPERSEDED
         assert replacement_row.status == PENDING
         assert replacement_row.chat_message_id is not None
         assert session.query(NutritionPatientPreferenceTriple).count() == 0
+
+
 def test_cannot_consume_confirmation_applies_as_a_hard_constraint():
     engine = _engine()
     with Session(engine) as session:
@@ -1095,11 +1068,7 @@ def test_nutrition_crud_actions_require_confirmation_and_execute_sequentially():
         )
         assert created.status == APPLIED
         meal = session.query(NutritionMeal).one()
-        foods = session.scalars(
-            select(NutritionFood)
-            .where(NutritionFood.meal_id == meal.id)
-            .order_by(NutritionFood.id)
-        ).all()
+        foods = session.scalars(select(NutritionFood).where(NutritionFood.meal_id == meal.id).order_by(NutritionFood.id)).all()
         assert meal.patient_id == "demo-patient"
         assert [food.food_name for food in foods] == ["rice", "soup"]
 
@@ -1293,9 +1262,160 @@ def test_failed_nutrition_create_rolls_back_partial_domain_changes():
         assert session.query(NutritionMeal).count() == 0
         assert session.query(NutritionFood).count() == 0
         assert session.query(DailyNutritionCheck).count() == 0
-        row = session.scalar(
-            select(MutationConfirmation).where(
-                MutationConfirmation.public_id == prepared.confirmation_id
-            )
-        )
+        row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == prepared.confirmation_id))
         assert row.status == FAILED
+
+
+def test_side_effect_record_requires_confirmation_and_applies_once():
+    engine = _engine()
+    with Session(engine) as session:
+        request = MutationConfirmationPrepareRequest(
+            patient_id="demo-patient",
+            action_type="agent_tool",
+            action_name=CREATE_MEDICATION_SIDE_EFFECT_RECORD,
+            tool_call_id="side-effect-record-call",
+            arguments={
+                "phr_patient_key": "phr-demo",
+                "medication_name": "",
+                "symptom_text": "속이 메스꺼워요",
+                "suspected": True,
+                "severity": "moderate",
+                "matched_effects": ["당뇨약: 메스꺼움"],
+                "matched_items": ["당뇨약"],
+                "evidence": "복용약 주의사항과 일치",
+                "recommendation": "증상이 지속되면 의료진과 상담",
+                "metadata": {
+                    "source_tool": "get_medication_side_effect_assessment",
+                    "pro_ctcae": {
+                        "responses": [
+                            {"question_index": 0, "response_text": "자주 있다"},
+                            {"question_index": 1, "response_text": "보통이다"},
+                        ]
+                    },
+                },
+            },
+            trace_id="trace-side-effect-confirmation",
+            source_event_type="medication_agent",
+            request_context={},
+        )
+
+        prepared = prepare_mutation_confirmation(session, request)
+        session.commit()
+
+        assert prepared.confirmation_required is True
+        assert prepared.status == PENDING
+        assert session.query(SideEffectRecord).count() == 0
+        assert prepared.display["title"] == "부작용 평가 기록"
+        assert "side_effect" not in prepared.display["question"]
+        assert "DB" not in prepared.display["question"]
+        display_details = {item["label"]: item["value"] for item in prepared.display["details"]}
+        assert display_details["관련 약"] == "당뇨약"
+
+        begin_mutation_resolution(
+            session,
+            prepared.confirmation_id,
+            "confirm",
+            patient_id="demo-patient",
+        )
+        session.commit()
+        execution_request = ConfirmedMutationExecutionRequest(
+            confirmation_id=prepared.confirmation_id,
+            action_name=CREATE_MEDICATION_SIDE_EFFECT_RECORD,
+            action_fingerprint=prepared.action_fingerprint,
+            trace_id="confirmed-side-effect",
+            source_event_type="medication_agent",
+        )
+        applied = execute_confirmed_mutation(
+            session,
+            prepared.confirmation_id,
+            execution_request,
+        )
+        session.commit()
+
+        assert applied.status == APPLIED
+        assert session.query(SideEffectRecord).count() == 1
+        record = session.scalar(select(SideEffectRecord))
+        assert record.symptom_text == "속이 메스꺼워요"
+        assert record.medication_name == "당뇨약"
+        assert record.suspected is True
+        assert record.severity == "moderate"
+
+        duplicate = execute_confirmed_mutation(
+            session,
+            prepared.confirmation_id,
+            execution_request,
+        )
+        assert duplicate.status == APPLIED
+        assert session.query(SideEffectRecord).count() == 1
+
+
+def test_side_effect_assessment_without_questionnaire_prepares_confirmation_immediately():
+    engine = _engine()
+    with Session(engine) as session:
+        patient_message = ChatMessage(
+            patient_id="demo-patient",
+            role="user",
+            sender_type="patient",
+            category="multiturn_chat",
+            content="속이 메스꺼워요",
+            created_at=datetime(2026, 4, 20, 9, 30),
+        )
+        session.add(patient_message)
+        session.flush()
+        notification = Notification(
+            patient_id="demo-patient",
+            notification_type="system_event_request",
+            title="multiturn_chat",
+            body=patient_message.content,
+            visible_at=patient_message.created_at,
+            metadata_json=dump_json(
+                {
+                    "event_type": "multiturn_chat",
+                    "request_message": patient_message.content,
+                    "chat_message_id": patient_message.id,
+                    "agent_conversation_id": "conversation-side-effect-no-questionnaire",
+                }
+            ),
+        )
+        session.add(notification)
+        assistant_message = ChatMessage(
+            patient_id="demo-patient",
+            role="assistant",
+            sender_type="assistant",
+            category="multiturn_chat",
+            content="복용 중인 약과 증상의 관련 가능성을 확인했습니다.",
+            metadata_json=dump_json(
+                {
+                    "side_effect_record_draft": {
+                        "phr_patient_key": "phr-demo",
+                        "medication_name": "당뇨약",
+                        "symptom_text": "속이 메스꺼워요",
+                        "suspected": False,
+                        "severity": "low",
+                        "matched_effects": [],
+                        "matched_items": [],
+                        "evidence": "직접 관련성은 확인되지 않음",
+                        "recommendation": "증상이 지속되면 의료진과 상담",
+                        "source_trace_id": "trace-side-effect-no-questionnaire",
+                    }
+                }
+            ),
+            created_at=datetime(2026, 4, 20, 9, 31),
+        )
+        session.add(assistant_message)
+        session.flush()
+
+        row = prepare_side_effect_record_confirmation_for_chat(
+            session,
+            assistant_message,
+            origin_request_notification_id=notification.id,
+        )
+        session.commit()
+
+        assert row is not None
+        assert row.status == PENDING
+        assert row.action_name == CREATE_MEDICATION_SIDE_EFFECT_RECORD
+        assert session.query(SideEffectRecord).count() == 0
+        card_metadata = json.loads(assistant_message.metadata_json)
+        assert card_metadata["mutation_confirmation"]["confirmation_id"] == row.public_id
+        assert "ae_pro_ctcae" not in card_metadata

@@ -5,7 +5,7 @@ from uuid import uuid4
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from phr_app.models import PhrItemPrecaution, PhrPatient, PhrPatientMedication, PhrSideEffectAssessment
+from phr_app.models import PhrItemPrecaution, PhrPatient, PhrPatientMedication
 from shared.json_utils import dump_json, parse_json_list
 from shared.schemas import (
     PhrMedicationRegistrationItem,
@@ -252,19 +252,4 @@ def assess_side_effect(session: Session, request: SideEffectAssessmentRequest) -
         evidence=evidence,
         recommendation=recommendation,
     )
-    session.add(
-        PhrSideEffectAssessment(
-            phr_patient_key=request.phr_patient_key,
-            medication_name=request.medication_name or "",
-            symptom_text=symptom_text,
-            suspected=result.suspected,
-            matched_effects_json=dump_json(result.matched_effects),
-            matched_items_json=dump_json(result.matched_items),
-            matched_precautions_json=dump_json(matched_precautions),
-            severity=result.severity,
-            evidence=result.evidence,
-            recommendation=result.recommendation,
-        )
-    )
-    session.commit()
     return result

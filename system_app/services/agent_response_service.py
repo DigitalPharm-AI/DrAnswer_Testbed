@@ -2,22 +2,21 @@ from __future__ import annotations
 
 from datetime import date
 
+from pydantic import ValidationError
+from sqlalchemy.orm import Session
+
 from agent_app.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
+    GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     GET_PRO_CTCAE_QUESTIONNAIRE,
     POLICY_TOOLS,
-    PROPOSE_NOTIFICATION_POLICY,
-    PROPOSE_SYSTEM_POLICY,
     SEARCH_NUTRITION_FOOD_CANDIDATES,
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
     UPDATE_NUTRITION_FOOD_RECORD,
     UPDATE_NUTRITION_MEAL_RECORD,
 )
-from pydantic import ValidationError
-from sqlalchemy.orm import Session
-
 from shared.json_utils import dump_json, parse_json_object
 from shared.schemas import AgentResponse, NotificationPolicyDelta
 from system_app.models import ChatMessage
@@ -78,12 +77,32 @@ def ae_pro_ctcae_payload(response: AgentResponse) -> dict | None:
     return None
 
 
+def side_effect_record_draft_payload(response: AgentResponse) -> dict | None:
+    direct = response.structured_payload.get("side_effect_record_draft")
+    if isinstance(direct, dict):
+        return direct
+    raw_results = response.structured_payload.get("tool_results")
+    if not isinstance(raw_results, list):
+        return None
+    for result in raw_results:
+        if not isinstance(result, dict):
+            continue
+        if result.get("tool_name") != GET_MEDICATION_SIDE_EFFECT_ASSESSMENT or result.get("status") != "success":
+            continue
+        result_response = result.get("response")
+        if not isinstance(result_response, dict):
+            continue
+        draft = result_response.get("side_effect_record_draft")
+        if isinstance(draft, dict):
+            return draft
+    return None
+
+
 def ae_pro_ctcae_chat_metadata(response: AgentResponse) -> dict:
+    metadata: dict = {}
     payload = ae_pro_ctcae_payload(response)
-    if payload is None:
-        return {}
-    return {
-        "ae_pro_ctcae": {
+    if payload is not None:
+        metadata["ae_pro_ctcae"] = {
             "input_symptom": payload.get("input_symptom", ""),
             "matched": bool(payload.get("matched")),
             "match_type": payload.get("match_type", ""),
@@ -96,7 +115,10 @@ def ae_pro_ctcae_chat_metadata(response: AgentResponse) -> dict:
             "candidates": payload.get("candidates", []),
             "responses": [],
         }
-    }
+    draft = side_effect_record_draft_payload(response)
+    if draft is not None:
+        metadata["side_effect_record_draft"] = draft
+    return metadata
 
 
 def ae_pro_ctcae_chat_content(response: AgentResponse) -> str:
@@ -430,6 +452,7 @@ def maybe_apply_dose_taken_response(session: Session, response: AgentResponse, s
 
     record_agent_audit(session, response, source_event_type, applied=False, error_message=f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} tool was not executed")
     return False, "실행된 복약 완료 tool result가 없습니다."
+
 
 def build_manual_pattern_analysis_payload(session: Session, target_date: date | None = None):
     clock = ensure_clock(session)

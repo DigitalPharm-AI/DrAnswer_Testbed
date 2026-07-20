@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 import system_app.main as system_main
 import system_app.routes.notifications as notifications_routes
+from agent_app.tool_names import CREATE_MEDICATION_SIDE_EFFECT_RECORD
 from shared.schemas import AgentResponse, MissedDoseEventPayload, PhrPatientRegistrationResult, PhrRegisteredMedication
 from shared.settings import get_settings
 from system_app.db import SessionLocal
@@ -22,6 +23,7 @@ from system_app.models import (
     MutationConfirmation,
     Notification,
     ReminderPolicy,
+    SideEffectRecord,
     SimulationPatientProfile,
     SystemPolicyOverride,
 )
@@ -37,6 +39,7 @@ from system_app.services.side_effect_reminder_safety import (
     set_reminder_suppressed_after_side_effect,
 )
 from system_app.services.simulation import create_notification, ensure_base_data, ensure_clock
+from system_app.services.system_request_service import create_system_event_request
 
 
 class FakePhrClient:
@@ -860,12 +863,8 @@ def test_system_chat_keeps_pending_mutation_and_attaches_confirmation_reply_cont
     assert response.status_code == 200
     assert worker_called.wait(timeout=2)
     with SessionLocal() as session:
-        confirmation = session.query(MutationConfirmation).filter_by(
-            public_id="confirmation-natural-reply"
-        ).one()
-        request_notification = session.query(Notification).filter(
-            Notification.notification_type == "system_policy_request"
-        ).one()
+        confirmation = session.query(MutationConfirmation).filter_by(public_id="confirmation-natural-reply").one()
+        request_notification = session.query(Notification).filter(Notification.notification_type == "system_policy_request").one()
         metadata = json.loads(request_notification.metadata_json)
         notification_id = request_notification.id
         assert confirmation.status == "pending"
@@ -1281,14 +1280,21 @@ def test_failed_conversation_alert_does_not_show_reply_form():
     assert "답변 보내기" not in response.text
 
 
-def test_pro_ctcae_completion_creates_side_effect_safety_prompt_once():
+def test_pro_ctcae_completion_creates_record_confirmation_before_safety_prompt():
     client = TestClient(app)
 
     with SessionLocal() as session:
+        session.query(MutationConfirmation).delete()
+        session.query(SideEffectRecord).delete()
         session.query(ChatMessage).delete()
         session.query(Notification).delete()
         session.query(SystemPolicyOverride).filter(SystemPolicyOverride.policy_key == SIDE_EFFECT_REMINDER_SUPPRESSED_POLICY_KEY).delete()
         ensure_base_data(session)
+        origin = create_system_event_request(
+            session,
+            "multiturn_chat",
+            "속이 메스꺼운데 약 때문일까?",
+        )
         prompt = ChatMessage(
             patient_id="demo-patient",
             role="assistant",
@@ -1297,6 +1303,21 @@ def test_pro_ctcae_completion_creates_side_effect_safety_prompt_once():
             content="증상에 맞는 PRO-CTCAE 자기보고 문항을 준비했습니다.",
             metadata_json=json.dumps(
                 {
+                    "side_effect_record_draft": {
+                        "origin_request_notification_id": origin.id,
+                        "phr_patient_key": "phr-demo",
+                        "medication_name": "당뇨약",
+                        "symptom_text": "속이 메스꺼운데 약 때문일까?",
+                        "suspected": True,
+                        "severity": "moderate",
+                        "matched_effects": ["당뇨약: 메스꺼움"],
+                        "matched_items": ["당뇨약"],
+                        "evidence": "복용약 주의사항과 일치",
+                        "recommendation": "증상이 지속되면 의료진과 상담",
+                        "source_trace_id": "trace-pro-ctcae-confirmation",
+                        "source_event_type": "medication_agent",
+                        "metadata": {"source_tool": "get_medication_side_effect_assessment"},
+                    },
                     "ae_pro_ctcae": {
                         "input_symptom": "속이 메스꺼운데 약 때문일까?",
                         "matched": True,
@@ -1307,7 +1328,7 @@ def test_pro_ctcae_completion_creates_side_effect_safety_prompt_once():
                             {"question": "지난 일주일 동안, 메스꺼움이 가장 심할 때는 어느 정도였습니까?", "response_options": ["보통이다"]},
                         ],
                         "responses": [],
-                    }
+                    },
                 },
                 ensure_ascii=False,
             ),
@@ -1333,29 +1354,36 @@ def test_pro_ctcae_completion_creates_side_effect_safety_prompt_once():
         assert first_response.status_code == 200
         assert complete_response.status_code == 200
         assert duplicate_response.status_code == 200
-        assert "부작용에 대해 기록했습니다." in complete_response.text
-        assert "알림 유지하기" in complete_response.text
-        assert "알림 모두 끄기" in complete_response.text
-        assert 'action="/chat/side-effect-reminder-safety"' in complete_response.text
+        assert "부작용 평가 결과를 기록할까요?" in complete_response.text
+        assert 'action="/chat/mutation-confirmation"' in complete_response.text
+        assert "알림 유지하기" not in complete_response.text
+        assert "알림 모두 끄기" not in complete_response.text
         with SessionLocal() as session:
-            prompts = [
+            confirmations = session.query(MutationConfirmation).filter(MutationConfirmation.action_name == CREATE_MEDICATION_SIDE_EFFECT_RECORD).all()
+            assert len(confirmations) == 1
+            assert confirmations[0].status == "pending"
+            assert session.query(SideEffectRecord).count() == 0
+            safety_prompts = [
                 row
                 for row in session.query(Notification).filter(Notification.notification_type == "conversation_alert").all()
                 if json.loads(row.metadata_json).get("category") == SIDE_EFFECT_REMINDER_SAFETY_CATEGORY
             ]
-            assert len(prompts) == 1
-            metadata = json.loads(prompts[0].metadata_json)
-            assert metadata["source_chat_message_id"] == prompt_id
-            assert metadata["status"] == "agent_ready"
-            assert [option["label"] for option in metadata["options"]] == ["알림 유지하기", "알림 모두 끄기"]
-            assert (
+            assert safety_prompts == []
+            completion_messages = (
                 session.query(ChatMessage)
-                .filter(ChatMessage.category == SIDE_EFFECT_REMINDER_SAFETY_CATEGORY, ChatMessage.content.contains("부작용에 대해 기록했습니다."))
-                .count()
-                == 1
+                .filter(
+                    ChatMessage.category == "ae_response",
+                    ChatMessage.sender_type == "assistant",
+                    ChatMessage.content.contains("문항 응답을 확인했습니다."),
+                )
+                .all()
             )
+            assert len(completion_messages) == 1
+            assert confirmations[0].chat_message_id == completion_messages[0].id
     finally:
         with SessionLocal() as session:
+            session.query(MutationConfirmation).delete()
+            session.query(SideEffectRecord).delete()
             session.query(ChatMessage).delete()
             session.query(Notification).delete()
             session.query(SystemPolicyOverride).filter(SystemPolicyOverride.policy_key == SIDE_EFFECT_REMINDER_SUPPRESSED_POLICY_KEY).delete()
@@ -1540,12 +1568,7 @@ def test_policy_confirmation_reply_keeps_success_result_until_confirmed():
     assert partial_response.status_code == 200
     assert "아침 08:00: 정책이 적용되었습니다." in partial_response.text
     with SessionLocal() as session:
-        assert (
-            session.query(ChatMessage)
-            .filter(ChatMessage.role == "user", ChatMessage.category == "reply", ChatMessage.content.contains("policy_confirmation"))
-            .count()
-            == 0
-        )
+        assert session.query(ChatMessage).filter(ChatMessage.role == "user", ChatMessage.category == "reply", ChatMessage.content.contains("policy_confirmation")).count() == 0
         session.query(ChatMessage).delete()
         session.query(Notification).delete()
         session.query(ReminderPolicy).delete()
@@ -1717,6 +1740,4 @@ def test_agent_error_notification_can_retry_failed_job(monkeypatch):
         assert refreshed_job.status == PENDING
         assert refreshed_notification is not None
         assert refreshed_notification.acknowledged is True
-    assert retry_calls == [
-        ("missed_dose:conversation:retry-test", "retry", "retry from agent error notification")
-    ]
+    assert retry_calls == [("missed_dose:conversation:retry-test", "retry", "retry from agent error notification")]

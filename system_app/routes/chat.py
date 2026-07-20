@@ -34,10 +34,11 @@ from system_app.services.mutation_confirmation_service import (
     pending_confirmation_for_patient,
     pending_confirmation_reply_context,
     prepare_mutation_confirmation,
+    prepare_side_effect_record_confirmation_for_chat,
     recover_expired_confirmations,
 )
 from system_app.services.nutrition_service import MEAL_TYPE_LABELS
-from system_app.services.side_effect_reminder_safety import create_side_effect_reminder_safety_prompt, handle_side_effect_reminder_safety_reply
+from system_app.services.side_effect_reminder_safety import handle_side_effect_reminder_safety_reply
 from system_app.services.system_request_service import create_system_event_request
 from system_app.services.timeline_service import add_chat_message, ensure_chat_message_for_conversation_alert
 
@@ -129,6 +130,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
                 raise HTTPException(status_code=400, detail="chat_message_has_no_ae_prompt")
             questions = ae_payload.get("questions") if isinstance(ae_payload.get("questions"), list) else []
             responses = ae_payload.get("responses") if isinstance(ae_payload.get("responses"), list) else []
+            was_complete = bool(questions) and len(responses) >= len(questions)
             if question_index is None:
                 answered = {row.get("question_index") for row in responses if isinstance(row, dict)}
                 question_index = next((index for index in range(len(questions)) if index not in answered), 0)
@@ -154,16 +156,32 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
                 category="ae_response",
                 metadata={"ae_response_to": chat_message_id, "question_index": question_index},
             )
-            if questions and len(responses) >= len(questions):
-                add_chat_message(
+            if questions and len(responses) >= len(questions) and not was_complete:
+                draft = metadata.get("side_effect_record_draft")
+                completion_metadata = {"ae_response_to": chat_message_id}
+                if isinstance(draft, dict):
+                    completion_metadata["side_effect_record_draft"] = draft
+                    completion_metadata["side_effect_questionnaire_result"] = {
+                        "matched": bool(ae_payload.get("matched")),
+                        "match_type": str(ae_payload.get("match_type") or ""),
+                        "matched_symptom_term": str(ae_payload.get("matched_symptom_term") or ""),
+                        "matched_korean_symptom_name": str(ae_payload.get("matched_korean_symptom_name") or ""),
+                        "questions": questions,
+                        "responses": responses,
+                    }
+                completion_message = add_chat_message(
                     session,
                     role="assistant",
-                    content="PRO-CTCAE 문항 응답을 기록했습니다.",
+                    content=("문항 응답을 확인했습니다. 아래에서 부작용 평가 결과를 기록할지 확인해주세요." if isinstance(draft, dict) else "PRO-CTCAE 문항 응답을 확인했습니다."),
                     sender_type="assistant",
                     category="ae_response",
-                    metadata={"ae_response_to": chat_message_id},
+                    metadata=completion_metadata,
                 )
-                create_side_effect_reminder_safety_prompt(session, chat_message_id)
+                if isinstance(draft, dict):
+                    prepare_side_effect_record_confirmation_for_chat(
+                        session,
+                        completion_message,
+                    )
             session.commit()
         return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
 
@@ -203,11 +221,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
                     session,
                     pending_confirmation,
                 )
-            missed_dose_prompt = (
-                None
-                if pending_confirmation is not None
-                else active_missed_dose_conversation_alert(session)
-            )
+            missed_dose_prompt = None if pending_confirmation is not None else active_missed_dose_conversation_alert(session)
             if missed_dose_prompt is not None:
                 prompt_message = ensure_chat_message_for_conversation_alert(session, missed_dose_prompt)
                 understanding = build_rule_based_missed_dose_reply_understanding(message)
@@ -349,13 +363,15 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
             korean_nutrients = english_to_korean_nutrients(scaled)
 
             confirmed_foods = fs.get("confirmed_foods") if isinstance(fs.get("confirmed_foods"), list) else []
-            confirmed_foods.append({
-                "food_ref_id": selected.get("food_ref_id", ""),
-                "food_name": selected["food_name"],
-                "portion": f"{int(portion_g)}g",
-                "nutrients": korean_nutrients,
-                "meal_type": meal_type,
-            })
+            confirmed_foods.append(
+                {
+                    "food_ref_id": selected.get("food_ref_id", ""),
+                    "food_name": selected["food_name"],
+                    "portion": f"{int(portion_g)}g",
+                    "nutrients": korean_nutrients,
+                    "meal_type": meal_type,
+                }
+            )
             fs["confirmed_foods"] = confirmed_foods
 
             foods_queue = fs.get("foods_queue") if isinstance(fs.get("foods_queue"), list) else []
@@ -396,15 +412,10 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
                             "foods": confirmed_foods,
                             "meal_type": meal_type,
                         },
-                        trace_id=str(
-                            fs.get("origin_trace_id")
-                            or origin_metadata.get("trace_id")
-                            or f"food-confirm:{message.id}"
-                        ),
+                        trace_id=str(fs.get("origin_trace_id") or origin_metadata.get("trace_id") or f"food-confirm:{message.id}"),
                         source_event_type="nutrition_management_agent",
                         request_context={
-                            "message": origin_metadata.get("request_message")
-                            or f"{meal_label} 식사로 {names} 기록",
+                            "message": origin_metadata.get("request_message") or f"{meal_label} 식사로 {names} 기록",
                             "event_type": origin_metadata.get("event_type") or "multiturn_chat",
                             "current_time": clock.current_time.isoformat(),
                             "callback_context": {
@@ -419,11 +430,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
                         status_code=409,
                         detail=f"nutrition_meal_confirmation_{prepared.status}",
                     )
-                confirmation = session.scalar(
-                    select(MutationConfirmation).where(
-                        MutationConfirmation.public_id == prepared.confirmation_id
-                    )
-                )
+                confirmation = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == prepared.confirmation_id))
                 if confirmation is None:
                     raise HTTPException(status_code=409, detail="mutation_confirmation_not_found")
 

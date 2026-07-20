@@ -5,7 +5,13 @@ from datetime import date, datetime
 from fastapi.testclient import TestClient
 
 from agent_app.tool_catalog import ToolCatalog
-from agent_app.tool_names import GET_MEDICATION_DOSE_STATUS, GET_SIDE_EFFECT_HISTORY, MEDICATION_CHAT_TOOLS
+from agent_app.tool_names import (
+    CREATE_MEDICATION_SIDE_EFFECT_RECORD,
+    GET_MEDICATION_DOSE_STATUS,
+    GET_SIDE_EFFECT_HISTORY,
+    MEDICATION_CHAT_TOOLS,
+    SIDE_EFFECT_TOOLS,
+)
 from shared.settings import get_settings
 from system_app.db import SessionLocal
 from system_app.main import app
@@ -21,6 +27,10 @@ def test_medication_read_tools_are_cataloged_for_medication_chat():
     tools = {tool["name"]: tool for tool in ToolCatalog.available_tools_payload()}
 
     assert GET_MEDICATION_DOSE_STATUS in MEDICATION_CHAT_TOOLS
+    assert CREATE_MEDICATION_SIDE_EFFECT_RECORD in MEDICATION_CHAT_TOOLS
+    assert CREATE_MEDICATION_SIDE_EFFECT_RECORD not in SIDE_EFFECT_TOOLS
+    assert tools[CREATE_MEDICATION_SIDE_EFFECT_RECORD]["_meta"]["mutability"] == "write"
+    assert tools[CREATE_MEDICATION_SIDE_EFFECT_RECORD]["_meta"]["confirmation_policy"] == "user_required"
     assert GET_SIDE_EFFECT_HISTORY in MEDICATION_CHAT_TOOLS
     assert tools[GET_MEDICATION_DOSE_STATUS]["_meta"]["mutability"] == "read"
     assert tools[GET_SIDE_EFFECT_HISTORY]["_meta"]["mutability"] == "read"
@@ -76,11 +86,7 @@ def test_agent_side_effect_record_and_history_api():
         assert duplicate_response.status_code == 200
         assert duplicate_response.json()["record"]["id"] == created["id"]
         with SessionLocal() as session:
-            duplicate_count = (
-                session.query(SideEffectRecord)
-                .filter(SideEffectRecord.source_trace_id == "trace-side-effect-tool-test")
-                .count()
-            )
+            duplicate_count = session.query(SideEffectRecord).filter(SideEffectRecord.source_trace_id == "trace-side-effect-tool-test").count()
         assert duplicate_count == 1
 
         second_response = client.post(
@@ -154,7 +160,7 @@ def test_agent_medication_dose_status_api_returns_patient_day_events():
                 slot_label=schedule.slot_label,
                 scheduled_for=datetime(2026, 4, 20, 9, 0),
                 taken_at=datetime(2026, 4, 20, 9, 5),
-            status="taken",
+                status="taken",
             )
         )
         session.add(

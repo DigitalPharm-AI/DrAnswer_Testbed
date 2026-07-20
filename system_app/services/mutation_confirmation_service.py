@@ -10,9 +10,11 @@ from sqlalchemy.orm import Session
 
 from agent_app.confirmation_actions import ConfirmationActionRegistry
 from agent_app.tool_names import (
+    CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
+    SOURCE_MEDICATION_AGENT,
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
     UPDATE_NUTRITION_FOOD_RECORD,
     UPDATE_NUTRITION_MEAL_RECORD,
@@ -38,6 +40,8 @@ from shared.schemas import (
     NutritionMealUpdateResult,
     NutritionPreferenceFactRequest,
     NutritionPreferenceFactResult,
+    SideEffectRecordRequest,
+    SideEffectRecordResult,
 )
 from shared.time_utils import utc_now
 from system_app.models import (
@@ -49,6 +53,7 @@ from system_app.models import (
     NutritionMeal,
     NutritionOntologyNode,
     NutritionPatientPreferenceTriple,
+    SideEffectRecord,
 )
 from system_app.services.agent_callback_service import apply_agent_dose_taken_request
 from system_app.services.clock_service import ensure_clock
@@ -71,6 +76,7 @@ from system_app.services.nutrition_service import (
     update_food,
     update_meal,
 )
+from system_app.services.side_effect_record_service import record_side_effect, side_effect_record_view
 
 PENDING = "pending"
 EXECUTING = "executing"
@@ -98,6 +104,12 @@ def prepare_mutation_confirmation(
     action = ConfirmationActionRegistry.get(payload.action_name)
     if action is None or not ConfirmationActionRegistry.requires_confirmation(payload.action_name):
         raise ValueError("mutation_confirmation_action_not_enabled")
+    if payload.action_name == CREATE_MEDICATION_SIDE_EFFECT_RECORD:
+        return _prepare_side_effect_record_confirmation(
+            session,
+            payload,
+            action_type=action.action_type,
+        )
     if payload.action_name in NUTRITION_CRUD_ACTIONS:
         return _prepare_nutrition_crud_confirmation(
             session,
@@ -152,9 +164,7 @@ def prepare_mutation_confirmation(
 
     notification_id, conversation_id, origin_chat_id = _origin_context(session, payload.request_context)
     idempotency_key = f"{payload.trace_id}:{payload.action_name}:{fingerprint}:{snapshot_hash}"
-    existing = session.scalar(
-        select(MutationConfirmation).where(MutationConfirmation.idempotency_key == idempotency_key)
-    )
+    existing = session.scalar(select(MutationConfirmation).where(MutationConfirmation.idempotency_key == idempotency_key))
     if existing is not None:
         return _prepare_result(existing)
 
@@ -217,11 +227,7 @@ def execute_confirmed_mutation(
     public_id: str,
     payload: ConfirmedMutationExecutionRequest,
 ) -> ConfirmedMutationExecutionResult:
-    row = session.scalar(
-        select(MutationConfirmation)
-        .where(MutationConfirmation.public_id == public_id)
-        .with_for_update()
-    )
+    row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == public_id).with_for_update())
     if row is None:
         raise ValueError("mutation_confirmation_not_found")
     if row.status == APPLIED:
@@ -232,6 +238,8 @@ def execute_confirmed_mutation(
         raise ValueError("mutation_confirmation_action_mismatch")
     if payload.action_fingerprint != row.action_fingerprint:
         raise ValueError("mutation_confirmation_fingerprint_mismatch")
+    if row.action_name == CREATE_MEDICATION_SIDE_EFFECT_RECORD:
+        return _execute_side_effect_record_mutation(session, row)
     if row.action_name in NUTRITION_CRUD_ACTIONS:
         return _execute_nutrition_crud_mutation(session, row)
     if row.action_name == UPSERT_NUTRITION_PREFERENCE_FACT:
@@ -323,11 +331,7 @@ def pending_confirmation_reply_context(
     session: Session,
     row: MutationConfirmation,
 ) -> dict[str, object]:
-    origin = (
-        session.get(Notification, row.origin_request_notification_id)
-        if row.origin_request_notification_id is not None
-        else None
-    )
+    origin = session.get(Notification, row.origin_request_notification_id) if row.origin_request_notification_id is not None else None
     origin_metadata = parse_json_object(origin.metadata_json) if origin is not None else {}
     return {
         "display": parse_json_object(row.display_json),
@@ -401,9 +405,7 @@ def confirmation_for_response(
     public_id = str(proposal.get("confirmation_id") or "")
     if not public_id:
         return None
-    return session.scalar(
-        select(MutationConfirmation).where(MutationConfirmation.public_id == public_id)
-    )
+    return session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == public_id))
 
 
 def attach_confirmation_chat_message(
@@ -444,6 +446,300 @@ def confirmation_card_payload(row: MutationConfirmation) -> dict:
     }
 
 
+def prepare_side_effect_record_confirmation_for_chat(
+    session: Session,
+    chat_message: ChatMessage,
+    *,
+    origin_request_notification_id: int | None = None,
+) -> MutationConfirmation | None:
+    metadata = parse_json_object(chat_message.metadata_json)
+    existing_card = metadata.get("mutation_confirmation")
+    if isinstance(existing_card, dict) and existing_card.get("confirmation_id"):
+        return session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == str(existing_card["confirmation_id"])))
+
+    draft = metadata.get("side_effect_record_draft")
+    if not isinstance(draft, dict):
+        return None
+    if origin_request_notification_id is not None:
+        draft["origin_request_notification_id"] = origin_request_notification_id
+        metadata["side_effect_record_draft"] = draft
+        chat_message.metadata_json = dump_json(metadata)
+        session.flush()
+
+    questionnaire_payload = metadata.get("side_effect_questionnaire_result")
+    questionnaire_completed = isinstance(questionnaire_payload, dict)
+    if not questionnaire_completed:
+        questionnaire_payload = metadata.get("ae_pro_ctcae")
+    if isinstance(questionnaire_payload, dict):
+        questions = questionnaire_payload.get("questions") if isinstance(questionnaire_payload.get("questions"), list) else []
+        responses = questionnaire_payload.get("responses") if isinstance(questionnaire_payload.get("responses"), list) else []
+        if not questionnaire_completed and questions and len(responses) < len(questions):
+            return None
+    else:
+        questions = []
+        responses = []
+
+    notification_id = origin_request_notification_id or draft.get("origin_request_notification_id")
+    notification_id = int(notification_id) if notification_id is not None else None
+    notification = session.get(Notification, notification_id) if notification_id is not None else None
+    request_metadata = parse_json_object(notification.metadata_json) if notification is not None else {}
+    callback_context = {
+        "notification_id": notification_id,
+        "conversation_id": str(request_metadata.get("agent_conversation_id") or ""),
+    }
+    record_metadata = dict(draft.get("metadata") or {})
+    record_metadata["source_chat_message_id"] = chat_message.id
+    if questionnaire_completed or questions:
+        record_metadata["pro_ctcae"] = {
+            "matched": bool(questionnaire_payload.get("matched")),
+            "match_type": str(questionnaire_payload.get("match_type") or ""),
+            "matched_symptom_term": str(questionnaire_payload.get("matched_symptom_term") or ""),
+            "matched_korean_symptom_name": str(questionnaire_payload.get("matched_korean_symptom_name") or ""),
+            "responses": responses,
+        }
+
+    trace_id = str(draft.get("source_trace_id") or f"side-effect-record:{chat_message.id}")
+    arguments = {
+        "patient_id": chat_message.patient_id,
+        "phr_patient_key": draft.get("phr_patient_key"),
+        "medication_name": draft.get("medication_name"),
+        "symptom_text": draft.get("symptom_text"),
+        "suspected": draft.get("suspected"),
+        "severity": draft.get("severity", "none"),
+        "matched_effects": draft.get("matched_effects", []),
+        "matched_items": draft.get("matched_items", []),
+        "evidence": draft.get("evidence", ""),
+        "recommendation": draft.get("recommendation", ""),
+        "source_trace_id": trace_id,
+        "source_event_type": SOURCE_MEDICATION_AGENT,
+        "related_dose_event_id": draft.get("related_dose_event_id"),
+        "metadata": record_metadata,
+    }
+    prepared = prepare_mutation_confirmation(
+        session,
+        MutationConfirmationPrepareRequest(
+            patient_id=chat_message.patient_id,
+            action_type="agent_tool",
+            action_name=CREATE_MEDICATION_SIDE_EFFECT_RECORD,
+            tool_call_id=f"side-effect-record:{chat_message.id}",
+            arguments=arguments,
+            trace_id=trace_id,
+            source_event_type=SOURCE_MEDICATION_AGENT,
+            request_context={
+                "message": str(request_metadata.get("request_message") or chat_message.content),
+                "event_type": str(request_metadata.get("event_type") or "multiturn_chat"),
+                "current_time": ensure_clock(session).current_time.isoformat(),
+                "callback_context": callback_context,
+                "request_metadata": request_metadata,
+            },
+        ),
+    )
+    if not prepared.confirmation_required or not prepared.confirmation_id:
+        return None
+    row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == prepared.confirmation_id))
+    if row is not None:
+        attach_confirmation_chat_message(session, row, chat_message)
+    return row
+
+
+def _prepare_side_effect_record_confirmation(
+    session: Session,
+    payload: MutationConfirmationPrepareRequest,
+    *,
+    action_type: str,
+) -> MutationConfirmationPrepareResult:
+    arguments, request, existing_record = _prepare_side_effect_record_arguments(session, payload)
+    snapshot = _side_effect_record_snapshot(existing_record)
+    snapshot_hash = _hash_payload(snapshot)
+    fingerprint = _hash_payload(
+        {
+            "patient_id": payload.patient_id,
+            "action_name": payload.action_name,
+            "arguments": arguments,
+        }
+    )
+    resolution = payload.request_context.get("mutation_resolution")
+    if isinstance(resolution, dict) and resolution.get("action_fingerprint") == fingerprint:
+        status = str(resolution.get("status") or "")
+        return MutationConfirmationPrepareResult(
+            confirmation_required=False,
+            action_name=payload.action_name,
+            tool_call_id=payload.tool_call_id,
+            action_fingerprint=fingerprint,
+            status="already_applied" if status == APPLIED else status or "skipped",
+            execution_result=resolution.get("tool_result") if isinstance(resolution.get("tool_result"), dict) else {},
+        )
+    if existing_record is not None:
+        result = SideEffectRecordResult(
+            success=True,
+            record=side_effect_record_view(existing_record),
+        )
+        return MutationConfirmationPrepareResult(
+            confirmation_required=False,
+            action_name=payload.action_name,
+            tool_call_id=payload.tool_call_id,
+            action_fingerprint=fingerprint,
+            status="already_applied",
+            execution_result=result.model_dump(mode="json"),
+        )
+
+    notification_id, conversation_id, origin_chat_id = _origin_context(session, payload.request_context)
+    idempotency_key = f"{payload.trace_id}:{payload.action_name}:{fingerprint}:{snapshot_hash}"
+    existing = session.scalar(select(MutationConfirmation).where(MutationConfirmation.idempotency_key == idempotency_key))
+    if existing is not None:
+        return _prepare_result(existing)
+    pending_duplicate = session.scalar(
+        select(MutationConfirmation)
+        .where(
+            MutationConfirmation.patient_id == payload.patient_id,
+            MutationConfirmation.action_name == payload.action_name,
+            MutationConfirmation.action_fingerprint == fingerprint,
+            MutationConfirmation.target_snapshot_hash == snapshot_hash,
+            MutationConfirmation.status == PENDING,
+        )
+        .order_by(MutationConfirmation.id.desc())
+    )
+    if pending_duplicate is not None:
+        return _prepare_result(pending_duplicate)
+
+    _supersede_pending(session, payload.patient_id)
+    status = SUPERSEDED if _has_newer_general_message(session, payload.patient_id, origin_chat_id) else PENDING
+    display = _side_effect_record_display(request)
+    row = MutationConfirmation(
+        public_id=uuid4().hex,
+        patient_id=payload.patient_id,
+        origin_request_notification_id=notification_id,
+        conversation_id=conversation_id,
+        origin_trace_id=payload.trace_id,
+        origin_agent=payload.source_event_type,
+        source_event_type=payload.source_event_type,
+        action_type=action_type,
+        action_name=payload.action_name,
+        tool_call_id=payload.tool_call_id,
+        arguments_json=dump_json(arguments),
+        action_fingerprint=fingerprint,
+        target_snapshot_json=dump_json(snapshot),
+        target_snapshot_hash=snapshot_hash,
+        display_json=dump_json(display),
+        continuation_json=dump_json(_continuation_context(payload.request_context)),
+        idempotency_key=idempotency_key,
+        status=status,
+        resolved_at=utc_now() if status == SUPERSEDED else None,
+    )
+    session.add(row)
+    session.flush()
+    return _prepare_result(row)
+
+
+def _execute_side_effect_record_mutation(
+    session: Session,
+    row: MutationConfirmation,
+) -> ConfirmedMutationExecutionResult:
+    arguments = parse_json_object(row.arguments_json)
+    request = SideEffectRecordRequest.model_validate(arguments)
+    current_record = _find_side_effect_record(session, request)
+    if _hash_payload(_side_effect_record_snapshot(current_record)) != row.target_snapshot_hash:
+        row.status = STALE
+        row.error_message = "mutation_confirmation_snapshot_changed"
+        row.resolved_at = utc_now()
+        session.flush()
+        return _execution_result(row)
+
+    try:
+        with session.begin_nested():
+            record = record_side_effect(session, request)
+            result = SideEffectRecordResult(
+                success=True,
+                record=side_effect_record_view(record),
+            ).model_dump(mode="json")
+    except ValueError as exc:
+        row.status = FAILED
+        row.error_message = str(exc)
+        row.resolved_at = utc_now()
+        session.flush()
+        return _execution_result(row)
+
+    row.status = APPLIED
+    row.result_json = dump_json(result)
+    row.error_message = ""
+    row.resolved_at = utc_now()
+    session.flush()
+    return _execution_result(row)
+
+
+def _prepare_side_effect_record_arguments(
+    session: Session,
+    payload: MutationConfirmationPrepareRequest,
+) -> tuple[dict, SideEffectRecordRequest, SideEffectRecord | None]:
+    arguments = dict(payload.arguments)
+    matched_items = [str(item).strip() for item in arguments.get("matched_items", []) if str(item).strip()]
+    if not str(arguments.get("medication_name") or "").strip() and len(matched_items) == 1:
+        arguments["medication_name"] = matched_items[0]
+    request = SideEffectRecordRequest.model_validate(
+        {
+            **arguments,
+            "patient_id": payload.patient_id,
+            "source_trace_id": payload.trace_id,
+            "source_event_type": payload.source_event_type,
+        }
+    )
+    if not request.patient_id:
+        raise ValueError("mutation_confirmation_patient_required")
+    existing_record = _find_side_effect_record(session, request)
+    return request.model_dump(mode="json"), request, existing_record
+
+
+def _find_side_effect_record(
+    session: Session,
+    request: SideEffectRecordRequest,
+) -> SideEffectRecord | None:
+    return session.scalar(
+        select(SideEffectRecord)
+        .where(
+            SideEffectRecord.patient_id == str(request.patient_id or ""),
+            SideEffectRecord.source_trace_id == str(request.source_trace_id or ""),
+            SideEffectRecord.source_event_type == request.source_event_type,
+            SideEffectRecord.medication_name == str(request.medication_name or ""),
+            SideEffectRecord.symptom_text == request.symptom_text.strip(),
+        )
+        .order_by(SideEffectRecord.id.desc())
+        .limit(1)
+    )
+
+
+def _side_effect_record_snapshot(record: SideEffectRecord | None) -> dict:
+    return {
+        "record": side_effect_record_view(record) if record is not None else None,
+    }
+
+
+def _side_effect_record_display(request: SideEffectRecordRequest) -> dict:
+    medication_names = [str(item).strip() for item in request.matched_items if str(item).strip()]
+    explicit_medication_name = str(request.medication_name or "").strip()
+    if explicit_medication_name and explicit_medication_name not in medication_names:
+        medication_names.insert(0, explicit_medication_name)
+    medication_name = ", ".join(medication_names) or "복용약 미지정"
+    relation = "관련 가능성 있음" if request.suspected else "직접 관련성 확인되지 않음"
+    severity = {
+        "none": "해당 없음",
+        "low": "낮음",
+        "moderate": "중간",
+        "high": "높음",
+    }.get(request.severity, request.severity)
+    return {
+        "title": "부작용 평가 기록",
+        "question": f"{request.symptom_text.strip()} 증상에 대한 부작용 평가 결과를 기록할까요?",
+        "action_label": "기록",
+        "target": request.symptom_text.strip(),
+        "details": [
+            {"label": "증상", "value": request.symptom_text.strip()},
+            {"label": "관련 약", "value": medication_name},
+            {"label": "평가 결과", "value": relation},
+            {"label": "주의 수준", "value": severity},
+        ],
+    }
+
+
 def _prepare_nutrition_crud_confirmation(
     session: Session,
     payload: MutationConfirmationPrepareRequest,
@@ -480,9 +776,7 @@ def _prepare_nutrition_crud_confirmation(
 
     notification_id, conversation_id, origin_chat_id = _origin_context(session, payload.request_context)
     idempotency_key = f"{payload.trace_id}:{payload.action_name}:{fingerprint}:{snapshot_hash}"
-    existing = session.scalar(
-        select(MutationConfirmation).where(MutationConfirmation.idempotency_key == idempotency_key)
-    )
+    existing = session.scalar(select(MutationConfirmation).where(MutationConfirmation.idempotency_key == idempotency_key))
     if existing is not None:
         return _prepare_result(existing)
 
@@ -517,9 +811,7 @@ def _prepare_nutrition_crud_confirmation(
         action_fingerprint=fingerprint,
         target_snapshot_json=dump_json(snapshot),
         target_snapshot_hash=snapshot_hash,
-        display_json=dump_json(
-            _nutrition_crud_display(payload.action_name, arguments, snapshot)
-        ),
+        display_json=dump_json(_nutrition_crud_display(payload.action_name, arguments, snapshot)),
         continuation_json=dump_json(_continuation_context(payload.request_context)),
         idempotency_key=idempotency_key,
         status=status,
@@ -588,16 +880,12 @@ def _run_nutrition_crud_mutation(
 
     if action_name == UPDATE_NUTRITION_MEAL_RECORD:
         meal_id = _positive_int(arguments, "meal_id")
-        request = NutritionMealUpdateRequest.model_validate(
-            {key: value for key, value in arguments.items() if key != "meal_id"}
-        )
+        request = NutritionMealUpdateRequest.model_validate({key: value for key, value in arguments.items() if key != "meal_id"})
         result = update_meal(
             session,
             meal_id=meal_id,
             patient_id=request.patient_id,
-            foods=[food.model_dump(mode="json") for food in request.foods]
-            if request.foods is not None
-            else None,
+            foods=[food.model_dump(mode="json") for food in request.foods] if request.foods is not None else None,
             meal_type=request.meal_type,
             meal_date=request.meal_date,
             meal_time=request.meal_time,
@@ -610,9 +898,7 @@ def _run_nutrition_crud_mutation(
 
     if action_name == DELETE_NUTRITION_MEAL_RECORD:
         meal_id = _positive_int(arguments, "meal_id")
-        request = NutritionMealDeleteRequest.model_validate(
-            {key: value for key, value in arguments.items() if key != "meal_id"}
-        )
+        request = NutritionMealDeleteRequest.model_validate({key: value for key, value in arguments.items() if key != "meal_id"})
         result = delete_meal(
             session,
             meal_id=meal_id,
@@ -625,13 +911,7 @@ def _run_nutrition_crud_mutation(
     if action_name == UPDATE_NUTRITION_FOOD_RECORD:
         meal_id = _positive_int(arguments, "meal_id")
         food_id = _positive_int(arguments, "food_id")
-        request = NutritionFoodUpdateRequest.model_validate(
-            {
-                key: value
-                for key, value in arguments.items()
-                if key not in {"meal_id", "food_id"}
-            }
-        )
+        request = NutritionFoodUpdateRequest.model_validate({key: value for key, value in arguments.items() if key not in {"meal_id", "food_id"}})
         result = update_food(
             session,
             meal_id=meal_id,
@@ -649,13 +929,7 @@ def _run_nutrition_crud_mutation(
     if action_name == DELETE_NUTRITION_FOOD_RECORD:
         meal_id = _positive_int(arguments, "meal_id")
         food_id = _positive_int(arguments, "food_id")
-        request = NutritionFoodDeleteRequest.model_validate(
-            {
-                key: value
-                for key, value in arguments.items()
-                if key not in {"meal_id", "food_id"}
-            }
-        )
+        request = NutritionFoodDeleteRequest.model_validate({key: value for key, value in arguments.items() if key not in {"meal_id", "food_id"}})
         result = delete_food(
             session,
             meal_id=meal_id,
@@ -688,9 +962,7 @@ def _prepare_nutrition_crud_arguments(
 
     if payload.action_name == UPDATE_NUTRITION_MEAL_RECORD:
         meal_id = _positive_int(raw, "meal_id")
-        request = NutritionMealUpdateRequest.model_validate(
-            {key: value for key, value in raw.items() if key != "meal_id"}
-        )
+        request = NutritionMealUpdateRequest.model_validate({key: value for key, value in raw.items() if key != "meal_id"})
         if request.foods is not None and not request.foods:
             raise ValueError("foods_required")
         if all(
@@ -712,21 +984,13 @@ def _prepare_nutrition_crud_arguments(
 
     if payload.action_name == DELETE_NUTRITION_MEAL_RECORD:
         meal_id = _positive_int(raw, "meal_id")
-        request = NutritionMealDeleteRequest.model_validate(
-            {key: value for key, value in raw.items() if key != "meal_id"}
-        )
+        request = NutritionMealDeleteRequest.model_validate({key: value for key, value in raw.items() if key != "meal_id"})
         return {"meal_id": meal_id, **request.model_dump(mode="json")}
 
     if payload.action_name == UPDATE_NUTRITION_FOOD_RECORD:
         meal_id = _positive_int(raw, "meal_id")
         food_id = _positive_int(raw, "food_id")
-        request = NutritionFoodUpdateRequest.model_validate(
-            {
-                key: value
-                for key, value in raw.items()
-                if key not in {"meal_id", "food_id"}
-            }
-        )
+        request = NutritionFoodUpdateRequest.model_validate({key: value for key, value in raw.items() if key not in {"meal_id", "food_id"}})
         if all(
             value is None
             for value in (
@@ -746,13 +1010,7 @@ def _prepare_nutrition_crud_arguments(
     if payload.action_name == DELETE_NUTRITION_FOOD_RECORD:
         meal_id = _positive_int(raw, "meal_id")
         food_id = _positive_int(raw, "food_id")
-        request = NutritionFoodDeleteRequest.model_validate(
-            {
-                key: value
-                for key, value in raw.items()
-                if key not in {"meal_id", "food_id"}
-            }
-        )
+        request = NutritionFoodDeleteRequest.model_validate({key: value for key, value in raw.items() if key not in {"meal_id", "food_id"}})
         return {
             "meal_id": meal_id,
             "food_id": food_id,
@@ -775,10 +1033,7 @@ def _nutrition_crud_snapshot(
         return {
             "patient_id": patient_id,
             "meal_date": target_date.isoformat(),
-            "meals": [
-                meal_view(session, meal)
-                for meal in meals_for_date(session, patient_id, target_date)
-            ],
+            "meals": [meal_view(session, meal) for meal in meals_for_date(session, patient_id, target_date)],
         }
 
     meal_id = _positive_int(arguments, "meal_id")
@@ -851,11 +1106,7 @@ def _nutrition_crud_display(
     meal_date = str(meal.get("meal_date") or "")
     if action_name == UPDATE_NUTRITION_MEAL_RECORD:
         before_foods = _food_payload_names(meal.get("foods"))
-        after_foods = (
-            _food_payload_names(arguments.get("foods"))
-            if "foods" in arguments
-            else before_foods
-        )
+        after_foods = _food_payload_names(arguments.get("foods")) if "foods" in arguments else before_foods
         after_label = MEAL_TYPE_LABELS.get(
             str(arguments.get("meal_type") or meal.get("meal_type") or ""),
             str(arguments.get("meal_type") or meal.get("meal_type") or ""),
@@ -945,22 +1196,14 @@ def _nutrition_crud_display(
 def _food_payload_names(value: object) -> str:
     if not isinstance(value, list):
         return ""
-    names = [
-        str(item.get("food_name") or item.get("name") or "").strip()
-        for item in value
-        if isinstance(item, dict)
-    ]
+    names = [str(item.get("food_name") or item.get("name") or "").strip() for item in value if isinstance(item, dict)]
     return ", ".join(name for name in names if name)
 
 
 def _food_payload_portions(value: object) -> str:
     if not isinstance(value, list):
         return ""
-    portions = [
-        f"{str(item.get('food_name') or item.get('name') or '').strip()} {str(item.get('portion') or '').strip()}".strip()
-        for item in value
-        if isinstance(item, dict)
-    ]
+    portions = [f"{str(item.get('food_name') or item.get('name') or '').strip()} {str(item.get('portion') or '').strip()}".strip() for item in value if isinstance(item, dict)]
     return ", ".join(portion for portion in portions if portion)
 
 
@@ -1021,9 +1264,7 @@ def _prepare_nutrition_preference_confirmation(
 
     notification_id, conversation_id, origin_chat_id = _origin_context(session, payload.request_context)
     idempotency_key = f"{payload.trace_id}:{payload.action_name}:{fingerprint}:{snapshot_hash}"
-    existing = session.scalar(
-        select(MutationConfirmation).where(MutationConfirmation.idempotency_key == idempotency_key)
-    )
+    existing = session.scalar(select(MutationConfirmation).where(MutationConfirmation.idempotency_key == idempotency_key))
     if existing is not None:
         return _prepare_result(existing)
 
@@ -1140,9 +1381,7 @@ def _find_nutrition_preference_target(
     request: NutritionPreferenceFactRequest,
 ) -> tuple[NutritionOntologyNode | None, NutritionPatientPreferenceTriple | None]:
     node_key = ontology_node_key(request.object_type, request.object_label)
-    node = session.scalar(
-        select(NutritionOntologyNode).where(NutritionOntologyNode.node_key == node_key)
-    )
+    node = session.scalar(select(NutritionOntologyNode).where(NutritionOntologyNode.node_key == node_key))
     if node is None:
         return None, None
     fact = session.scalar(
@@ -1236,11 +1475,7 @@ def _nutrition_preference_display(
     before = "\ub4f1\ub85d\ub418\uc9c0 \uc54a\uc74c"
     if fact is not None:
         status_label = "\ud65c\uc131" if fact.status == "active" else "\ube44\ud65c\uc131"
-        before = (
-            f"{_nutrition_preference_predicate_label(fact.predicate)} / "
-            f"{_nutrition_preference_safety_label(fact.safety_level)} / "
-            f"{status_label}"
-        )
+        before = f"{_nutrition_preference_predicate_label(fact.predicate)} / {_nutrition_preference_safety_label(fact.safety_level)} / {status_label}"
     if request.predicate == "allergic_to":
         question = f"{object_label} \uc54c\ub808\ub974\uae30\ub97c \uc601\uc591 \uc81c\uc57d \uc815\ubcf4\ub85c \uae30\ub85d\ud560\uae4c\uc694?"
     else:
@@ -1288,7 +1523,6 @@ def _nutrition_preference_object_type_label(object_type: str) -> str:
 
 def _nutrition_preference_safety_label(safety_level: str) -> str:
     return "\uac15\uc81c \uc81c\uc57d" if safety_level == "hard" else "\uc77c\ubc18 \uc120\ud638"
-
 
 
 def _prepare_dose_arguments(
@@ -1426,11 +1660,7 @@ def _dose_snapshot(event: DoseEvent | None) -> dict:
 
 
 def _dose_fingerprint_arguments(arguments: dict) -> dict:
-    return {
-        key: value
-        for key, value in arguments.items()
-        if key not in {"source_trace_id", "source_event_type"}
-    }
+    return {key: value for key, value in arguments.items() if key not in {"source_trace_id", "source_event_type"}}
 
 
 def _dose_status_label(status: str) -> str:

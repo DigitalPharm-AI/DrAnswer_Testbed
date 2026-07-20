@@ -8,15 +8,14 @@
 
 ## 현재 단계
 
-**3단계: 영양 CRUD 공통 확인 흐름 구현을 완료하고 사용자 수동 검증 대기 중**
+**4단계: 부작용 기록 공통 확인 흐름 구현을 완료하고 사용자 수동 검증 대기 중**
 
-- 식사 생성·수정·삭제와 음식 수정·삭제 5개 Tool을 중앙 `ConfirmationActionRegistry`에 등록했다.
-- prepare 단계는 대상 식사·음식과 같은 날짜 식사 목록을 조회해 snapshot과 변경 전후 요약만 만들며 영양 도메인 DB를 수정하지 않는다.
-- 승인 executor는 기존 영양 CRUD 서비스를 재사용하고 파생 일일 영양 요약·알림과 confirmation 상태를 같은 transaction에서 처리한다.
-- 도메인 실행은 savepoint로 감싸 중간 검증 실패 시 부분 식사·음식 변경을 모두 되돌리고 confirmation만 `failed`로 기록한다.
-- `/chat/food-confirm`은 더 이상 식사를 즉시 저장하지 않고 전체 음식 proposal을 완성한 뒤 공통 확인 카드를 생성한다.
-- Agent 직접 CRUD와 음식 선택 카드 경로 모두 승인 후 기존 ToolRuntime 및 MultiturnChatAgent continuation으로 돌아간다.
-- 핵심 회귀 168 passed, 전체 pytest 396 passed / 3 skipped이며 사용자 수동 검증을 기다리고 있다.
+- PHR 부작용 assessment와 MCP 조회 경로의 숨은 자동 기록을 제거해 순수 조회로 만들었다.
+- `create_medication_side_effect_record`를 MedicationAgent 전용 mutation Tool과 공통 확인 registry에 추가했다.
+- assessment 결과는 채팅 운영 metadata의 draft로 보존하고, PRO-CTCAE가 필요한 경우 설문 완료 뒤에만 기록 확인 카드를 만든다.
+- 승인 전에는 부작용 record를 생성하지 않으며, 승인 executor가 도메인 기록과 confirmation `applied`를 같은 transaction에서 처리한다.
+- 승인·취소 후 MultiturnChatAgent의 최종 안내를 먼저 저장하고 부작용 알림 안전 설정 흐름을 이어간다.
+- 관련 회귀 테스트 82 passed, 전체 pytest 401 passed / 3 skipped이며 사용자 수동 검증을 기다리고 있다.
 
 ### 이전 단계 안정화 기록
 
@@ -72,6 +71,13 @@
 - [x] 영양 CRUD와 파생 영양 데이터의 confirmed transaction 및 savepoint rollback
 - [x] `/chat/food-confirm`의 즉시 저장 제거와 공통 식사 proposal 카드 전환
 - [x] 음식 카드 원본 request context 보존과 승인 후 Supervisor continuation 연결
+- [x] 부작용 assessment와 MCP 조회 경로의 숨은 도메인 기록 제거
+- [x] MedicationAgent 전용 `create_medication_side_effect_record` mutation Tool과 metadata·권한 등록
+- [x] assessment draft 보존과 PRO-CTCAE 완료 전 기록 확인 차단
+- [x] 설문이 없는 assessment의 즉시 기록 확인 카드 생성
+- [x] assessment? ?? matched medication? ??? ?? ??? ?? ???? ???
+- [x] 부작용 record와 confirmation 상태의 confirmed transaction 및 중복 실행 방지
+- [x] 승인·취소 후 MultiturnChatAgent 최종 안내와 안전 설정 prompt 순서 보존
 
 ## 현재 수정 체크리스트
 
@@ -100,16 +106,21 @@
    - [x] `upsert_nutrition_preference_fact` 확인 계약 적용
    - [x] 알레르기 저장 승인 후 추천 요청 continuation 자동 검증
    - [x] 사용자 수동 검증 및 커밋: `3399198`
-2. **영양 CRUD (구현 완료, 수동 검증 대기)**
+2. **영양 CRUD (구현 및 커밋 완료)**
    - [x] 식사·음식 생성, 수정, 삭제 확인 계약 적용
    - [x] `/chat/food-confirm`을 proposal 완성 단계로 변경
    - [x] 파생 영양 요약·알림을 동일 transaction에 포함
    - [x] stale, 중간 실패 rollback, 카드 렌더링 회귀 테스트
+   - [x] 사용자 수동 검증 및 커밋: `c2d8b40`
+3. **부작용 기록 (구현 완료, 수동 검증 대기)**
+   - [x] assessment와 MCP 조회의 숨은 자동 기록 제거
+   - [x] MedicationAgent 전용 부작용 기록 mutation Tool 추가
+   - [x] 설문 필요 여부에 따른 기록 확인 카드 생성 시점 분리
+   - [x] 승인 전 미기록, 승인 후 단일 transaction 적용
+   - [x] Supervisor 최종 안내 후 안전 설정 prompt 연결
+   - [x] 관련 회귀 테스트: 82 passed
+   - [x] 전체 pytest: 401 passed, 3 skipped
    - [ ] 사용자 수동 검증 후 커밋
-3. **부작용 기록**
-   - assessment의 숨은 자동 기록 제거
-   - 부작용 기록 mutation Tool 추가
-   - 설문 완료와 기록 확인 순서 정리
 4. **정책·안전 설정**
    - 정책과 부작용 알림 안전 설정을 공통 server_action 확인 흐름으로 통합
 5. **전체 감사**

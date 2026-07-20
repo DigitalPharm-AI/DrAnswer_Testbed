@@ -49,6 +49,46 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
+                "name": "create_medication_side_effect_record",
+                "title": "Create Medication Side Effect Record",
+                "description": "Create a side-effect assessment record only after the assessment is complete and the app confirmation boundary can be applied.",
+                "annotations": {
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "idempotentHint": True,
+                    "openWorldHint": False,
+                },
+                "required_arguments": ["symptom_text", "suspected"],
+                "optional_arguments": [
+                    "phr_patient_key",
+                    "medication_name",
+                    "severity",
+                    "matched_effects",
+                    "matched_items",
+                    "evidence",
+                    "recommendation",
+                    "related_dose_event_id",
+                    "metadata",
+                ],
+                "inputSchema": _object_schema(
+                    {
+                        "phr_patient_key": {"type": "string", "description": "Current patient PHR key."},
+                        "medication_name": {"type": "string", "description": "Medication related to the assessment, when known."},
+                        "symptom_text": {"type": "string", "description": "Patient-reported symptom text."},
+                        "suspected": {"type": "boolean", "description": "Whether the medication assessment found a possible relationship."},
+                        "severity": {"type": "string", "enum": ["none", "low", "moderate", "high"]},
+                        "matched_effects": {"type": "array", "items": {"type": "string"}},
+                        "matched_items": {"type": "array", "items": {"type": "string"}},
+                        "evidence": {"type": "string"},
+                        "recommendation": {"type": "string"},
+                        "related_dose_event_id": {"type": "integer"},
+                        "metadata": {"type": "object"},
+                    },
+                    ["symptom_text", "suspected"],
+                ),
+                "outputSchema": _tool_result_schema(),
+            },
+            {
                 "name": "get_side_effect_history",
                 "title": "Get Side Effect History",
                 "description": "Read previously recorded side-effect assessment records for the current patient. Use target_date for one day, or start_date and end_date for a date range.",
@@ -139,10 +179,7 @@ class ToolCatalog:
             {
                 "name": "record_meal",
                 "title": "Record Nutrition Meal",
-                "description": (
-                    "환자가 먹은 음식이 충분히 명확할 때 식사 기록을 저장하고 오늘 영양 요약을 갱신합니다. "
-                    "meal_type은 breakfast, lunch, dinner, snack 중 하나입니다."
-                ),
+                "description": ("환자가 먹은 음식이 충분히 명확할 때 식사 기록을 저장하고 오늘 영양 요약을 갱신합니다. meal_type은 breakfast, lunch, dinner, snack 중 하나입니다."),
                 "required_arguments": ["meal_type", "foods"],
                 "optional_arguments": ["patient_id", "meal_date", "meal_time", "description"],
                 "inputSchema": _object_schema(
@@ -447,7 +484,7 @@ class ToolCatalog:
                             "description": (
                                 "영양소별 제약 수준. 키: 나트륨|단백질|칼로리|지방|탄수화물, "
                                 "값: low(낮게 유지) 또는 moderate(적정 범위). "
-                                "예: {\"나트륨\": \"low\", \"단백질\": \"low\", \"칼로리\": \"moderate\"}"
+                                '예: {"나트륨": "low", "단백질": "low", "칼로리": "moderate"}'
                             ),
                         },
                         "randomize": {

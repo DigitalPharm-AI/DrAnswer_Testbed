@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agent_app.tool_names import (
+    CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     CREATE_NUTRITION_MEAL_RECORD,
     DELEGATE_TO_MEDICATION_AGENT,
     DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT,
@@ -171,6 +172,8 @@ def medication_agent_prompt() -> str:
         "A mutation tool may return confirmation_required. In that case stop and return control without claiming the update was applied. "
         f"For side-effect or medication-causality questions with phr_patient_key available, first call {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}. "
         f"Do not call {GET_PRO_CTCAE_QUESTIONNAIRE} before {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}; the runtime may continue to {GET_PRO_CTCAE_QUESTIONNAIRE} after a positive lookup. "
+        f"Use {CREATE_MEDICATION_SIDE_EFFECT_RECORD} only when an assessment result is already available and no PRO-CTCAE questionnaire is pending. "
+        "Do not create a side-effect record immediately after questionnaire generation; the app creates the confirmation proposal after the patient completes the questionnaire. "
         f"After {GET_PRO_CTCAE_QUESTIONNAIRE} tool results, briefly say that the symptom may be related and that questions are ready below; "
         "do not repeat the questions, response options, match type, or scoring details. "
         "If more information is needed, ask one concise Korean question. Return JSON only."

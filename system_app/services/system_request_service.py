@@ -34,6 +34,7 @@ from system_app.services.mutation_confirmation_service import (
     attach_confirmation_chat_message,
     begin_mutation_resolution,
     confirmation_for_response,
+    prepare_side_effect_record_confirmation_for_chat,
     supersede_mutation_confirmation,
 )
 from system_app.services.notification_service import create_notification
@@ -59,6 +60,7 @@ async def handle_system_event(session: Session, agent_client: AgentClient, event
     request_notification = create_system_event_request(session, event_type, message, clock.current_time)
     session.commit()
     await complete_system_event_request(session, agent_client, event_type, message, request_notification.id)
+
 
 def create_system_event_request(
     session: Session,
@@ -97,6 +99,7 @@ def create_system_event_request(
         message=trace_logging.snippet(message),
     )
     return notification
+
 
 def update_system_event_request_notification(
     session: Session,
@@ -137,11 +140,7 @@ def update_system_event_request_notification(
     if status == "needs_confirmation":
         notification.title = "정책 변경 확인 대기"
         notification.body = f"정책 적용 전에 환자 확인이 필요합니다: {request_message}"
-    if (
-        status == "needs_confirmation"
-        and response is not None
-        and isinstance(response.structured_payload.get("mutation_confirmation"), dict)
-    ):
+    if status == "needs_confirmation" and response is not None and isinstance(response.structured_payload.get("mutation_confirmation"), dict):
         notification.title = "\ubcc0\uacbd \ud655\uc778 \ub300\uae30"
         notification.body = f"\ubcc0\uacbd \uc801\uc6a9 \uc804\uc5d0 \ud658\uc790 \ud655\uc778\uc774 \ud544\uc694\ud569\ub2c8\ub2e4: {request_message}"
     if status == "failed":
@@ -157,6 +156,7 @@ def update_system_event_request_notification(
         decision=response.decision_type if response is not None else None,
         result=trace_logging.snippet(result_message),
     )
+
 
 async def complete_system_event_request(
     session: Session,
@@ -200,21 +200,17 @@ def build_multiturn_chat_request(
         context={
             "schedule_slots": schedule_slots,
             "resolved_policies": [
-                resolve_policy_for_slot(session, settings.patient_id, slot_label, clock.current_time.date()).model_dump(mode="json")
-                for slot_label in schedule_slots
+                resolve_policy_for_slot(session, settings.patient_id, slot_label, clock.current_time.date()).model_dump(mode="json") for slot_label in schedule_slots
             ],
             "policy_boundaries": [
-                resolve_policy_boundary_for_slot(session, settings.patient_id, slot_label, clock.current_time.date()).model_dump(mode="json")
-                for slot_label in schedule_slots
+                resolve_policy_boundary_for_slot(session, settings.patient_id, slot_label, clock.current_time.date()).model_dump(mode="json") for slot_label in schedule_slots
             ],
             "system_policies": [daily_pattern_conversation_time_view(session)],
             "recent_notifications": [row.body for row in get_notifications(session, clock.current_time)[:5]],
             "nutrition": build_nutrition_context(session, patient_id=settings.patient_id),
             "recent_diet_recommendations": recent_diet_recommendations,
             "recent_nutrition_alerts": [
-                row.body
-                for row in get_notifications(session, clock.current_time)
-                if row.notification_type == "nutrition_alert" and row.patient_id == settings.patient_id
+                row.body for row in get_notifications(session, clock.current_time) if row.notification_type == "nutrition_alert" and row.patient_id == settings.patient_id
             ][:5],
             "request_metadata": request_metadata,
             "pending_mutation_confirmation": request_metadata.get(
@@ -336,6 +332,28 @@ def apply_system_event_response(
             persisted_metadata["food_selection"] = food_selection
             persisted_message.metadata_json = dump_json(persisted_metadata)
             session.flush()
+    if persisted_message is not None:
+        side_effect_confirmation = prepare_side_effect_record_confirmation_for_chat(
+            session,
+            persisted_message,
+            origin_request_notification_id=request_notification_id,
+        )
+        if side_effect_confirmation is not None and side_effect_confirmation.status == PENDING:
+            update_system_event_request_notification(
+                session,
+                request_notification_id,
+                status="needs_confirmation",
+                request_message=message,
+                result_message=response.human_summary,
+                response=response,
+            )
+            trace_logging.log_info(
+                "system_event_side_effect_record_confirmation_pending",
+                notification_id=request_notification_id,
+                trace_id=response.trace_id,
+                confirmation_id=side_effect_confirmation.public_id,
+            )
+            return None
     dose_taken_result = maybe_apply_dose_taken_response(session, response, "multiturn_chat")
     if dose_taken_result is not None:
         applied, result_message = dose_taken_result
@@ -391,11 +409,7 @@ def _apply_mutation_confirmation_reply(
         raise ValueError("mutation_confirmation_reply_intent_invalid")
 
     request_notification = session.get(Notification, request_notification_id)
-    request_metadata = (
-        parse_json_object(request_notification.metadata_json)
-        if request_notification is not None
-        else {}
-    )
+    request_metadata = parse_json_object(request_notification.metadata_json) if request_notification is not None else {}
     confirmation_id = str(request_metadata.get("pending_mutation_confirmation_id") or "")
     if not confirmation_id:
         raise ValueError("mutation_confirmation_reply_target_missing")
@@ -408,10 +422,7 @@ def _apply_mutation_confirmation_reply(
     )
     if intent in {"new_request", "revise"}:
         replacement = response.structured_payload.get("mutation_confirmation")
-        replaced_by_current_request = (
-            isinstance(replacement, dict)
-            and str(replacement.get("confirmation_id") or "") not in {"", confirmation_id}
-        )
+        replaced_by_current_request = isinstance(replacement, dict) and str(replacement.get("confirmation_id") or "") not in {"", confirmation_id}
         superseded = supersede_mutation_confirmation(
             session,
             confirmation_id,
@@ -581,9 +592,7 @@ def apply_async_continuation_ack(
             {
                 "async_continuation_status": "pending",
                 "async_continuation_type": response.structured_payload.get("async_continuation_type", ""),
-                "async_tool_count": len(response.structured_payload.get("tool_calls", []))
-                if isinstance(response.structured_payload.get("tool_calls"), list)
-                else 0,
+                "async_tool_count": len(response.structured_payload.get("tool_calls", [])) if isinstance(response.structured_payload.get("tool_calls"), list) else 0,
             }
         )
         notification.metadata_json = dump_json(metadata)

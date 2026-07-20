@@ -4,6 +4,7 @@ from datetime import date
 from typing import Any
 
 from agent_app.tool_names import (
+    CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
@@ -85,6 +86,13 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
         return f"{tool_name} is only allowed as a deferred confirmation candidate"
     if tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT and not str(arguments.get("symptom_text") or "").strip():
         return f"{GET_MEDICATION_SIDE_EFFECT_ASSESSMENT} requires symptom_text"
+    if tool_name == CREATE_MEDICATION_SIDE_EFFECT_RECORD:
+        if not str(arguments.get("symptom_text") or "").strip():
+            return f"{CREATE_MEDICATION_SIDE_EFFECT_RECORD} requires symptom_text"
+        if not isinstance(arguments.get("suspected"), bool):
+            return f"{CREATE_MEDICATION_SIDE_EFFECT_RECORD} requires suspected boolean"
+        if arguments.get("severity") not in {None, "", "none", "low", "moderate", "high"}:
+            return f"{CREATE_MEDICATION_SIDE_EFFECT_RECORD} requires supported severity"
     if tool_name == GET_SIDE_EFFECT_HISTORY and "limit" in arguments and not _valid_positive_int(arguments.get("limit"), maximum=100):
         return f"{GET_SIDE_EFFECT_HISTORY} requires limit between 1 and 100"
     if tool_name == GET_SIDE_EFFECT_HISTORY:
@@ -99,9 +107,7 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
             return date_error
         if arguments.get("status") not in {None, "", "scheduled", "taken", "missed"}:
             return f"{GET_MEDICATION_DOSE_STATUS} requires supported status"
-    if tool_name == GET_PRO_CTCAE_QUESTIONNAIRE and not (
-        str(arguments.get("symptom_text") or "").strip() or str(arguments.get("symptom_normalize") or "").strip()
-    ):
+    if tool_name == GET_PRO_CTCAE_QUESTIONNAIRE and not (str(arguments.get("symptom_text") or "").strip() or str(arguments.get("symptom_normalize") or "").strip()):
         return f"{GET_PRO_CTCAE_QUESTIONNAIRE} requires symptom_text or symptom_normalize"
     if tool_name == SEARCH_NUTRITION_FOOD_CANDIDATES and not str(arguments.get("query") or "").strip():
         return f"{SEARCH_NUTRITION_FOOD_CANDIDATES} requires query"

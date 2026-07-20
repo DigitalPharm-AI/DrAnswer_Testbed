@@ -20,6 +20,11 @@ SIDE_EFFECT_REMINDER_SAFETY_MESSAGE = (
     "복약 관련해서는 의료진과 충분한 상담이 필요하니 병원에 내원해서 다시 상담을 받아보는 게 어떨까요? "
     "기존 설정되었던 복약 알림은 유지할까요, 아니면 복약 알림과 미복용 AI 알림을 모두 끌까요?"
 )
+SIDE_EFFECT_REMINDER_SAFETY_NOT_RECORDED_MESSAGE = (
+    "부작용 평가 결과는 기록하지 않았습니다. 증상이 너무 심하다고 느껴지면 병원에 내원해보는 것이 좋겠습니다. "
+    "복약 관련해서는 의료진과 충분히 상담해주세요. 기존 복약 알림은 유지할까요, 아니면 모두 끌까요?"
+)
+
 SIDE_EFFECT_REMINDER_SAFETY_OPTIONS = [
     {"action": "keep", "label": "알림 유지하기"},
     {"action": "suppress", "label": "알림 모두 끄기"},
@@ -72,10 +77,7 @@ def set_reminder_suppressed_after_side_effect(
 
 def _existing_safety_prompt(session: Session, source_chat_message_id: int) -> Notification | None:
     rows = session.scalars(
-        select(Notification)
-        .where(Notification.notification_type == "conversation_alert")
-        .order_by(desc(Notification.created_at), desc(Notification.id))
-        .limit(200)
+        select(Notification).where(Notification.notification_type == "conversation_alert").order_by(desc(Notification.created_at), desc(Notification.id)).limit(200)
     ).all()
     for notification in rows:
         metadata = parse_json_object(notification.metadata_json)
@@ -86,22 +88,29 @@ def _existing_safety_prompt(session: Session, source_chat_message_id: int) -> No
     return None
 
 
-def create_side_effect_reminder_safety_prompt(session: Session, source_chat_message_id: int) -> Notification:
+def create_side_effect_reminder_safety_prompt(
+    session: Session,
+    source_chat_message_id: int,
+    *,
+    recorded: bool = True,
+) -> Notification:
     existing = _existing_safety_prompt(session, source_chat_message_id)
     if existing is not None:
         return existing
 
+    message = SIDE_EFFECT_REMINDER_SAFETY_MESSAGE if recorded else SIDE_EFFECT_REMINDER_SAFETY_NOT_RECORDED_MESSAGE
     clock, resume_state = pause_simulation_clock_for_conversation(session)
     notification = create_notification(
         session,
         notification_type="conversation_alert",
         title="부작용 기록 후 알림 확인",
-        body=SIDE_EFFECT_REMINDER_SAFETY_MESSAGE,
+        body=message,
         visible_at=clock.current_time,
         metadata={
             "category": SIDE_EFFECT_REMINDER_SAFETY_CATEGORY,
             "status": "agent_ready",
             "source_chat_message_id": source_chat_message_id,
+            "side_effect_recorded": recorded,
             "resume_clock": resume_state,
             "options": SIDE_EFFECT_REMINDER_SAFETY_OPTIONS,
         },
@@ -109,7 +118,7 @@ def create_side_effect_reminder_safety_prompt(session: Session, source_chat_mess
     add_chat_message(
         session,
         role="assistant",
-        content=SIDE_EFFECT_REMINDER_SAFETY_MESSAGE,
+        content=message,
         sender_type="assistant",
         category=SIDE_EFFECT_REMINDER_SAFETY_CATEGORY,
         metadata={
@@ -132,10 +141,7 @@ def create_side_effect_reminder_safety_prompt(session: Session, source_chat_mess
 
 def _sync_safety_prompt_chat_metadata(session: Session, notification_id: int, metadata: dict) -> None:
     rows = session.scalars(
-        select(ChatMessage)
-        .where(ChatMessage.category == SIDE_EFFECT_REMINDER_SAFETY_CATEGORY)
-        .order_by(desc(ChatMessage.created_at), desc(ChatMessage.id))
-        .limit(50)
+        select(ChatMessage).where(ChatMessage.category == SIDE_EFFECT_REMINDER_SAFETY_CATEGORY).order_by(desc(ChatMessage.created_at), desc(ChatMessage.id)).limit(50)
     ).all()
     for message in rows:
         message_metadata = parse_json_object(message.metadata_json)
@@ -219,9 +225,7 @@ def handle_side_effect_reminder_safety_reply(
     set_reminder_suppressed_after_side_effect(session, suppressed)
     patient_reply = "알림 모두 끄기" if suppressed else "알림 유지하기"
     result_message = (
-        "복약 알림과 미복용 AI 알림을 모두 껐습니다. 복약 재개나 조정은 의료진과 상담 후 다시 설정해주세요."
-        if suppressed
-        else "기존 복약 알림과 미복용 AI 알림을 유지합니다."
+        "복약 알림과 미복용 AI 알림을 모두 껐습니다. 복약 재개나 조정은 의료진과 상담 후 다시 설정해주세요." if suppressed else "기존 복약 알림과 미복용 AI 알림을 유지합니다."
     )
     metadata.update(
         {

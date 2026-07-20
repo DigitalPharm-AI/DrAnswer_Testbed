@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
 
+from phr_app.db import SessionLocal
 from phr_app.main import app
+from phr_app.models import PhrSideEffectAssessment
 from shared.settings import get_settings
 
 
@@ -114,3 +116,24 @@ def test_phr_read_only_mode_rejects_writes_but_keeps_reads(monkeypatch):
     assert register_response.status_code == 503
     assert register_response.json()["detail"] == "phr_read_only_mode"
     assert list_response.status_code == 200
+
+
+def test_phr_side_effect_assessment_does_not_persist_domain_record():
+    with SessionLocal() as session:
+        session.query(PhrSideEffectAssessment).delete()
+        session.commit()
+
+    with TestClient(app) as client:
+        phr_patient_key = register_patient(client, [{"item_name": "당뇨약", "dosage": "1정"}])
+        response = client.post(
+            "/phr/side-effects/assess",
+            json={
+                "phr_patient_key": phr_patient_key,
+                "symptom_text": "속이 메스꺼워요",
+                "recent_chat": [],
+            },
+        )
+
+    assert response.status_code == 200
+    with SessionLocal() as session:
+        assert session.query(PhrSideEffectAssessment).count() == 0

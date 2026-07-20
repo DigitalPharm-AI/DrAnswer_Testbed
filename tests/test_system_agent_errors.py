@@ -6,8 +6,12 @@ import time
 from datetime import date, datetime
 from types import SimpleNamespace
 
+import pytest
+
 import system_app.main as system_main
 import system_app.services.workers as worker_services
+from agent_app.tool_names import CREATE_MEDICATION_SIDE_EFFECT_RECORD
+from shared.json_utils import dump_json
 from shared.schemas import (
     AgentResponse,
     MissedDoseEventPayload,
@@ -15,12 +19,11 @@ from shared.schemas import (
     MutationConfirmationResolutionRequest,
     SlotAdherenceSummary,
 )
-from shared.json_utils import dump_json
 from shared.time_utils import utc_now
 from system_app.models import AgentJob, ChatMessage, MutationConfirmation, Notification
 from system_app.services.agent_client import AgentClient, AgentServiceError
 from system_app.services.agent_jobs import FAILED, create_agent_job
-from system_app.services.mutation_confirmation_service import APPLIED, EXECUTING
+from system_app.services.mutation_confirmation_service import APPLIED, CANCELLED, EXECUTING
 from system_app.services.simulation import (
     create_medication_plan,
     create_notification,
@@ -238,9 +241,7 @@ def test_mutation_worker_preserves_applied_state_when_supervisor_finalization_ti
     class AppliedThenTimeoutClient:
         async def resolve_mutation_confirmation(self, payload):
             with session_factory() as session:
-                row = session.query(MutationConfirmation).filter(
-                    MutationConfirmation.public_id == confirmation_id
-                ).one()
+                row = session.query(MutationConfirmation).filter(MutationConfirmation.public_id == confirmation_id).one()
                 row.status = APPLIED
                 row.result_json = dump_json({"status": "taken"})
                 row.resolved_at = utc_now()
@@ -256,17 +257,13 @@ def test_mutation_worker_preserves_applied_state_when_supervisor_finalization_ti
     )
 
     with session_factory() as session:
-        row = session.query(MutationConfirmation).filter(
-            MutationConfirmation.public_id == confirmation_id
-        ).one()
+        row = session.query(MutationConfirmation).filter(MutationConfirmation.public_id == confirmation_id).one()
         card = session.get(ChatMessage, row.chat_message_id)
         card_metadata = json.loads(card.metadata_json)
         request_notification = session.get(Notification, request_notification_id)
         request_metadata = json.loads(request_notification.metadata_json)
         error_message = session.query(ChatMessage).filter(ChatMessage.category == "error").one()
-        error_notification = session.query(Notification).filter(
-            Notification.notification_type == "agent_error"
-        ).one()
+        error_notification = session.query(Notification).filter(Notification.notification_type == "agent_error").one()
         error_metadata = json.loads(error_notification.metadata_json)
 
         assert row.status == APPLIED
@@ -427,7 +424,6 @@ def test_agent_worker_records_failure_without_stopping(monkeypatch):
         assert metadata["agent_job_id"] == job_id
 
 
-
 def test_create_agent_job_deduplicates_active_missed_dose_job():
     with build_session() as session:
         payload = MissedDoseEventPayload(
@@ -512,3 +508,126 @@ def test_agent_worker_marks_invalid_payload_failed_without_stopping(monkeypatch,
     stop_event.set()
     worker.join(timeout=2)
     assert not worker.is_alive()
+
+
+@pytest.mark.parametrize(
+    ("resolution", "resolved_status", "expected_recorded", "expected_fragment"),
+    [
+        ("confirm", APPLIED, True, "기록했습니다"),
+        ("cancel", CANCELLED, False, "기록하지 않았습니다"),
+    ],
+)
+def test_side_effect_confirmation_starts_safety_prompt_after_supervisor_response(
+    monkeypatch,
+    resolution,
+    resolved_status,
+    expected_recorded,
+    expected_fragment,
+):
+    session_factory = build_threadsafe_session_factory()
+    write_lock = threading.RLock()
+    confirmation_id = "confirmation-side-effect-safety-order"
+    with session_factory() as session:
+        ensure_base_data(session)
+        clock = ensure_clock(session)
+        request_notification = create_system_event_request(
+            session,
+            "multiturn_chat",
+            "속이 메스꺼워요",
+            clock.current_time,
+        )
+        card_message = ChatMessage(
+            patient_id="demo-patient",
+            role="assistant",
+            sender_type="assistant",
+            category="multiturn_chat",
+            content="부작용 평가 결과를 기록할까요?",
+            metadata_json=dump_json(
+                {
+                    "mutation_confirmation": {
+                        "confirmation_id": confirmation_id,
+                        "status": EXECUTING,
+                        "display": {
+                            "title": "부작용 평가 기록",
+                            "question": "메스꺼움 증상에 대한 부작용 평가 결과를 기록할까요?",
+                        },
+                    }
+                }
+            ),
+            created_at=clock.current_time,
+        )
+        session.add(card_message)
+        session.flush()
+        session.add(
+            MutationConfirmation(
+                public_id=confirmation_id,
+                patient_id="demo-patient",
+                origin_request_notification_id=request_notification.id,
+                conversation_id="conversation-side-effect-safety-order",
+                origin_trace_id="trace-side-effect-safety-order",
+                origin_agent="medication_agent",
+                source_event_type="medication_agent",
+                action_type="agent_tool",
+                action_name=CREATE_MEDICATION_SIDE_EFFECT_RECORD,
+                tool_call_id="tool-side-effect-record",
+                arguments_json=dump_json({"symptom_text": "메스꺼움", "suspected": True}),
+                action_fingerprint="fingerprint-side-effect-safety-order",
+                target_snapshot_json=dump_json({"record": None}),
+                target_snapshot_hash="snapshot-side-effect-safety-order",
+                display_json=dump_json(
+                    {
+                        "title": "부작용 평가 기록",
+                        "question": "메스꺼움 증상에 대한 부작용 평가 결과를 기록할까요?",
+                    }
+                ),
+                continuation_json=dump_json({}),
+                idempotency_key="confirmation-side-effect-safety-order-key",
+                status=EXECUTING,
+                chat_message_id=card_message.id,
+                execution_started_at=utc_now(),
+            )
+        )
+        session.commit()
+
+    final_summary = "부작용 평가 기록을 완료했습니다." if resolved_status == APPLIED else "부작용 평가 기록을 취소했습니다."
+
+    class AppliedSideEffectClient:
+        async def resolve_mutation_confirmation(self, payload):
+            with session_factory() as session:
+                row = session.query(MutationConfirmation).filter(MutationConfirmation.public_id == confirmation_id).one()
+                row.status = resolved_status
+                row.result_json = dump_json({"success": True})
+                row.resolved_at = utc_now()
+                session.commit()
+            return AgentResponse(
+                trace_id="trace-side-effect-safety-final",
+                agent_name="multiturn_chat_agent",
+                prompt_version_id="multiturn_chat_agent_test",
+                decision_type="mutation_resolution",
+                structured_payload={
+                    "routing_mode": "mutation_resolution_finalization",
+                    "mutation_resolution": {"status": resolved_status},
+                },
+                human_summary=final_summary,
+            )
+
+    monkeypatch.setattr(worker_services, "SessionLocal", session_factory)
+    worker_services.mutation_confirmation_worker(
+        confirmation_id,
+        resolution,
+        write_lock,
+        AppliedSideEffectClient(),
+    )
+
+    with session_factory() as session:
+        supervisor_message = session.query(ChatMessage).filter(ChatMessage.content == final_summary).one()
+        safety_message = session.query(ChatMessage).filter(ChatMessage.category == "side_effect_reminder_safety").one()
+        safety_notification = session.query(Notification).filter(Notification.notification_type == "conversation_alert").one()
+        safety_metadata = json.loads(safety_notification.metadata_json)
+
+        assert supervisor_message.id < safety_message.id
+        assert safety_metadata["category"] == "side_effect_reminder_safety"
+        assert safety_metadata["side_effect_recorded"] is expected_recorded
+        assert expected_fragment in safety_message.content
+        confirmation = session.query(MutationConfirmation).filter(MutationConfirmation.public_id == confirmation_id).one()
+        assert safety_metadata["source_chat_message_id"] == confirmation.chat_message_id
