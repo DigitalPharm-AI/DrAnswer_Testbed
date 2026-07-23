@@ -7,9 +7,9 @@ MEDICATION_PRESET_OPTIONS = [
     "혈압약",
     "당뇨약",
     "고지혈증약",
-    "비타민D",
+    # "비타민D",
     "진통제",
-    "영양제",
+    # "영양제",
     CUSTOM_CHOICE,
 ]
 PHR_SYNC_UNREGISTERED = "unregistered"

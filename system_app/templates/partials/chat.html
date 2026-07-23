@@ -28,7 +28,7 @@
           rows="2"
           required
           {% if mutation_execution_in_progress %}disabled{% endif %}
-          placeholder="{{ active_chat_prompt.placeholder if active_chat_prompt else active_ae_prompt.placeholder if active_ae_prompt else '예: 점심에 짜장면을 먹었어요 / 오늘 나트륨 얼마나 남았어? / 속이 메스꺼운데 약 때문일까요?' }}"></textarea>
+          placeholder="{{ active_chat_prompt.placeholder if active_chat_prompt else active_ae_prompt.placeholder if active_ae_prompt else ' ' }}"></textarea>
         <button type="submit">보내기</button>
       </form>
     </div>
