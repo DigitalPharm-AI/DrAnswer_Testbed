@@ -13,6 +13,7 @@ from agent_app.integration.backend_client import (
 )
 from agent_app.integration.contracts import (
     NotificationPolicyChangeRequest,
+    NotificationPolicyChanges,
     RecordChangeRequest,
 )
 from agent_app.integration.mutations import (
@@ -216,6 +217,15 @@ def test_policy_contract_rejects_keep_with_changes() -> None:
 
     with pytest.raises(ValidationError):
         NotificationPolicyChangeRequest.model_validate(body)
+
+
+def test_policy_changes_reject_model_managed_fields_and_out_of_range_values() -> None:
+    with pytest.raises(ValidationError):
+        NotificationPolicyChanges.model_validate(
+            {"medication_title_template": "모델이 만든 문구"}
+        )
+    with pytest.raises(ValidationError):
+        NotificationPolicyChanges.model_validate({"interval_minutes": 61})
 
 
 @pytest.mark.asyncio

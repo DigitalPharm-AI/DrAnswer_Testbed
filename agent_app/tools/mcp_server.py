@@ -14,12 +14,18 @@ from agent_app.orchestration.confirmations import ConfirmationActionRegistry
 from agent_app.llm.context import context_value
 from agent_app.tools.catalog import ToolCatalog
 from agent_app.tools.backend_query import BackendQueryTools
+from agent_app.tools.backend_write import (
+    BackendSyncWriteTools,
+    BackendWriteInvocationContext,
+    is_backend_v12_sync_write,
+)
 from agent_app.tools.names import (
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
     GET_MEDICATION_DOSE_STATUS,
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+    GET_NOTIFICATION_POLICIES,
     GET_NUTRITION_DAILY_SUMMARY,
     GET_NUTRITION_MEAL_RECORD_LIST,
     GET_NUTRITION_PREFERENCE_SUMMARY,
@@ -84,6 +90,10 @@ class AgentMcpToolServer:
         self.timeout_seconds = timeout_seconds
         self.backend_queries = backend_queries or BackendQueryTools.from_settings(settings)
         self.backend_client = backend_client or BackendV12Client.from_settings()
+        self.backend_writes = BackendSyncWriteTools(
+            self.backend_client,
+            self.backend_queries,
+        )
 
     async def handle_json_rpc(self, request: dict[str, Any], *, trace_id: str, source_event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         request_id = request.get("id")
@@ -179,6 +189,22 @@ class AgentMcpToolServer:
                 source_event_type=source_event_type,
                 reason=denial_reason,
             )
+        if self._is_v12_chat(payload):
+            if is_backend_v12_sync_write(tool_name):
+                return await self._execute_backend_write_v12(
+                    tool_name,
+                    arguments,
+                    tool_call_id=tool_call_id,
+                    payload=payload,
+                )
+            if ConfirmationActionRegistry.requires_confirmation(tool_name):
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    status="error",
+                    error="backend_v12_write_tool_not_supported",
+                    response={"contract_version": "v1.2"},
+                    idempotency_key=f"{trace_id}:{tool_name}:unsupported_v12_write",
+                )
         if tool_name in DEFERRED_POLICY_TOOL_NAMES:
             return deferred_policy_tool_result({"name": tool_name, "arguments": arguments}, trace_id=trace_id, source_event_type=source_event_type)
         if ConfirmationActionRegistry.requires_confirmation(tool_name):
@@ -210,6 +236,8 @@ class AgentMcpToolServer:
             return await self._mark_dose_taken(arguments, trace_id=trace_id, source_event_type=source_event_type)
         if tool_name == GET_MEDICATION_DOSE_STATUS:
             return await self._get_medication_dose_status(arguments, trace_id=trace_id, payload=payload)
+        if tool_name == GET_NOTIFICATION_POLICIES:
+            return await self._get_notification_policies(arguments, trace_id=trace_id, payload=payload)
         if tool_name == SEARCH_NUTRITION_FOOD_CANDIDATES:
             return await self._search_food_nutrition(arguments, trace_id=trace_id, payload=payload)
         if tool_name == CREATE_NUTRITION_MEAL_RECORD:
@@ -239,6 +267,37 @@ class AgentMcpToolServer:
         if tool_name == GET_PRO_CTCAE_QUESTIONNAIRE:
             return self._ae_pro_ctcae(arguments, trace_id=trace_id)
         return ToolCallResult(tool_name=tool_name or "unknown", status="error", error=f"unsupported_tool:{tool_name}")
+
+    async def _execute_backend_write_v12(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        tool_call_id: str,
+        payload: dict[str, Any],
+    ) -> ToolCallResult:
+        request_metadata = context_value(payload, "request_metadata")
+        request_metadata = request_metadata if isinstance(request_metadata, dict) else {}
+        return await self.backend_writes.execute(
+            tool_name,
+            arguments,
+            tool_call_id=tool_call_id,
+            context=BackendWriteInvocationContext(
+                source_chat_request_id=str(request_metadata.get("request_id") or ""),
+                source_message_id=str(request_metadata.get("message_id") or ""),
+                conversation_id=str(request_metadata.get("conversation_id") or ""),
+                patient_id=str(payload.get("patient_id") or ""),
+                requested_at=payload.get("current_time"),
+            ),
+        )
+
+    @staticmethod
+    def _is_v12_chat(payload: dict[str, Any]) -> bool:
+        request_metadata = context_value(payload, "request_metadata")
+        return (
+            isinstance(request_metadata, dict)
+            and request_metadata.get("contract_version") == "v1.2"
+        )
 
     async def _prepare_mutation_confirmation(
         self,
@@ -418,6 +477,37 @@ class AgentMcpToolServer:
             status="success" if result.success else "error",
             response=result.model_dump(mode="json"),
             idempotency_key=f"{trace_id}:{GET_MEDICATION_DOSE_STATUS}",
+        )
+
+    async def _get_notification_policies(
+        self,
+        arguments: dict[str, Any],
+        *,
+        trace_id: str,
+        payload: dict[str, Any],
+    ) -> ToolCallResult:
+        if self.backend_queries is None:
+            return ToolCallResult(
+                tool_name=GET_NOTIFICATION_POLICIES,
+                status="error",
+                error="backend_read_query_tools_not_configured",
+                idempotency_key=f"{trace_id}:{GET_NOTIFICATION_POLICIES}",
+            )
+        params: dict[str, Any] = {
+            "patient_id": str(payload.get("patient_id") or ""),
+            "active_only": arguments.get("active_only", True),
+        }
+        for key in ("policy_id", "slot_label"):
+            if arguments.get(key):
+                params[key] = arguments[key]
+        result = await anyio.to_thread.run_sync(
+            lambda: self.backend_queries.notification_policies(**params)
+        )
+        return ToolCallResult(
+            tool_name=GET_NOTIFICATION_POLICIES,
+            status="success",
+            response=result,
+            idempotency_key=f"{trace_id}:{GET_NOTIFICATION_POLICIES}",
         )
 
     async def _search_food_nutrition(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:

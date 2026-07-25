@@ -4,6 +4,10 @@ from copy import deepcopy
 from typing import Any
 
 from agent_app.tools.names import (
+    BACKEND_V12_POLICY_WRITE_TOOLS,
+    BACKEND_V12_RECORD_WRITE_TOOLS,
+    CHANGE_NOTIFICATION_POLICY,
+    GET_NOTIFICATION_POLICIES,
     MODEL_VISIBLE_TOOL_METADATA,
     UPSERT_NUTRITION_PREFERENCE_FACT,
     canonical_tool_name,
@@ -144,15 +148,21 @@ class ToolCatalog:
                 "name": "mark_dose_taken",
                 "title": "Mark Dose Taken",
                 "description": "환자가 이미 복용했음을 명확히 말했을 때 dose_event_id를 taken으로 표시합니다.",
+                "annotations": {
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "idempotentHint": True,
+                    "openWorldHint": False,
+                },
                 "required_arguments": ["dose_event_id"],
-                "optional_arguments": ["taken_at", "reason"],
+                "optional_arguments": ["taken_at"],
                 "inputSchema": _object_schema(
                     {
                         "dose_event_id": {"type": "integer", "description": "taken 처리할 복약 이벤트 ID"},
                         "taken_at": {"type": "string", "description": "선택적 복용 완료 시각"},
-                        "reason": {"type": "string", "description": "복용 완료 처리 이유"},
                     },
                     ["dose_event_id"],
+                    additional_properties=False,
                 ),
                 "outputSchema": _tool_result_schema(),
             },
@@ -180,11 +190,16 @@ class ToolCatalog:
                 "name": "record_meal",
                 "title": "Record Nutrition Meal",
                 "description": ("환자가 먹은 음식이 충분히 명확할 때 식사 기록을 저장하고 오늘 영양 요약을 갱신합니다. meal_type은 breakfast, lunch, dinner, snack 중 하나입니다."),
+                "annotations": {
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "idempotentHint": True,
+                    "openWorldHint": False,
+                },
                 "required_arguments": ["meal_type", "foods"],
-                "optional_arguments": ["patient_id", "meal_date", "meal_time", "description"],
+                "optional_arguments": ["meal_date", "meal_time", "description"],
                 "inputSchema": _object_schema(
                     {
-                        "patient_id": {"type": "string", "description": "대상 환자 ID, 생략하면 기본 시뮬레이션 환자"},
                         "meal_type": {"type": "string", "enum": ["breakfast", "lunch", "dinner", "snack"]},
                         "meal_date": {"type": "string", "description": "YYYY-MM-DD, 생략하면 시뮬레이션 현재 날짜"},
                         "meal_time": {"type": "string", "description": "HH:MM 또는 HH:MM:SS, 생략하면 시뮬레이션 현재 시각"},
@@ -196,14 +211,15 @@ class ToolCatalog:
                                 "properties": {
                                     "food_name": {"type": "string"},
                                     "portion": {"type": "string"},
-                                    "nutrients": {"type": "object"},
+                                    "nutrients": _nutrient_schema(),
                                 },
                                 "required": ["food_name", "nutrients"],
-                                "additionalProperties": True,
+                                "additionalProperties": False,
                             },
                         },
                     },
                     ["meal_type", "foods"],
+                    additional_properties=False,
                 ),
                 "outputSchema": _tool_result_schema(),
             },
@@ -218,7 +234,7 @@ class ToolCatalog:
                 "annotations": {
                     "readOnlyHint": False,
                     "destructiveHint": False,
-                    "idempotentHint": False,
+                    "idempotentHint": True,
                     "openWorldHint": False,
                 },
                 "_meta": {
@@ -230,11 +246,10 @@ class ToolCatalog:
                     "risk_level": "medium",
                 },
                 "required_arguments": ["meal_id"],
-                "optional_arguments": ["patient_id", "meal_type", "meal_date", "meal_time", "scenario_key", "description", "foods", "reason"],
+                "optional_arguments": ["meal_type", "meal_date", "meal_time", "scenario_key", "description", "foods"],
                 "inputSchema": _object_schema(
                     {
                         "meal_id": {"type": "integer", "description": "Existing meal id to update"},
-                        "patient_id": {"type": "string", "description": "Patient id used to scope the update"},
                         "meal_type": {"type": "string", "enum": ["breakfast", "lunch", "dinner", "snack"]},
                         "meal_date": {"type": "string", "description": "YYYY-MM-DD"},
                         "meal_time": {"type": "string", "description": "HH:MM or HH:MM:SS"},
@@ -247,15 +262,15 @@ class ToolCatalog:
                                 "properties": {
                                     "food_name": {"type": "string"},
                                     "portion": {"type": "string"},
-                                    "nutrients": {"type": "object"},
+                                    "nutrients": _nutrient_schema(),
                                 },
                                 "required": ["food_name", "nutrients"],
-                                "additionalProperties": True,
+                                "additionalProperties": False,
                             },
                         },
-                        "reason": {"type": "string"},
                     },
                     ["meal_id"],
+                    additional_properties=False,
                 ),
                 "outputSchema": _tool_result_schema(),
             },
@@ -266,7 +281,7 @@ class ToolCatalog:
                 "annotations": {
                     "readOnlyHint": False,
                     "destructiveHint": True,
-                    "idempotentHint": False,
+                    "idempotentHint": True,
                     "openWorldHint": False,
                 },
                 "_meta": {
@@ -278,14 +293,13 @@ class ToolCatalog:
                     "risk_level": "medium",
                 },
                 "required_arguments": ["meal_id"],
-                "optional_arguments": ["patient_id", "reason"],
+                "optional_arguments": [],
                 "inputSchema": _object_schema(
                     {
                         "meal_id": {"type": "integer", "description": "Existing meal id to delete"},
-                        "patient_id": {"type": "string", "description": "Patient id used to scope the delete"},
-                        "reason": {"type": "string"},
                     },
                     ["meal_id"],
+                    additional_properties=False,
                 ),
                 "outputSchema": _tool_result_schema(),
             },
@@ -300,7 +314,7 @@ class ToolCatalog:
                 "annotations": {
                     "readOnlyHint": False,
                     "destructiveHint": False,
-                    "idempotentHint": False,
+                    "idempotentHint": True,
                     "openWorldHint": False,
                 },
                 "_meta": {
@@ -312,19 +326,18 @@ class ToolCatalog:
                     "risk_level": "medium",
                 },
                 "required_arguments": ["meal_id", "food_id"],
-                "optional_arguments": ["patient_id", "food_ref_id", "food_name", "portion", "nutrients", "reason"],
+                "optional_arguments": ["food_ref_id", "food_name", "portion", "nutrients"],
                 "inputSchema": _object_schema(
                     {
                         "meal_id": {"type": "integer", "description": "Existing meal id containing the food"},
                         "food_id": {"type": "integer", "description": "Existing food row id to update"},
-                        "patient_id": {"type": "string", "description": "Patient id used to scope the update"},
                         "food_ref_id": {"type": "string", "description": "Reference id for the replacement food when known"},
                         "food_name": {"type": "string", "description": "Updated or replacement food name"},
                         "portion": {"type": "string", "description": "Updated portion text"},
-                        "nutrients": {"type": "object", "description": "Updated nutrient object for the food"},
-                        "reason": {"type": "string"},
+                        "nutrients": _nutrient_schema(),
                     },
                     ["meal_id", "food_id"],
+                    additional_properties=False,
                 ),
                 "outputSchema": _tool_result_schema(),
             },
@@ -338,7 +351,7 @@ class ToolCatalog:
                 "annotations": {
                     "readOnlyHint": False,
                     "destructiveHint": True,
-                    "idempotentHint": False,
+                    "idempotentHint": True,
                     "openWorldHint": False,
                 },
                 "_meta": {
@@ -350,16 +363,15 @@ class ToolCatalog:
                     "risk_level": "medium",
                 },
                 "required_arguments": ["meal_id", "food_id"],
-                "optional_arguments": ["patient_id", "reason", "delete_empty_meal"],
+                "optional_arguments": ["delete_empty_meal"],
                 "inputSchema": _object_schema(
                     {
                         "meal_id": {"type": "integer", "description": "Existing meal id containing the food"},
                         "food_id": {"type": "integer", "description": "Existing food row id to delete"},
-                        "patient_id": {"type": "string", "description": "Patient id used to scope the delete"},
-                        "reason": {"type": "string"},
                         "delete_empty_meal": {"type": "boolean", "description": "Delete the meal when no foods remain"},
                     },
                     ["meal_id", "food_id"],
+                    additional_properties=False,
                 ),
                 "outputSchema": _tool_result_schema(),
             },
@@ -586,6 +598,67 @@ class ToolCatalog:
                 ),
                 "outputSchema": _tool_result_schema(),
             },
+            {
+                "name": GET_NOTIFICATION_POLICIES,
+                "title": "Get Notification Policies",
+                "description": (
+                    "현재 환자의 Backend 알림 정책과 공개 policy_id를 조회합니다. "
+                    "알림 정책 변경 전에 호출해 대상 정책을 식별합니다."
+                ),
+                "annotations": {
+                    "readOnlyHint": True,
+                    "destructiveHint": False,
+                    "idempotentHint": True,
+                    "openWorldHint": False,
+                },
+                "required_arguments": [],
+                "optional_arguments": ["policy_id", "slot_label", "active_only"],
+                "inputSchema": _object_schema(
+                    {
+                        "policy_id": {
+                            "type": "string",
+                            "description": "Backend가 발급한 공개 알림 정책 ID",
+                        },
+                        "slot_label": {
+                            "type": "string",
+                            "description": "정책 대상 복약 시간대",
+                        },
+                        "active_only": {
+                            "type": "boolean",
+                            "description": "활성 정책만 조회할지 여부. 기본값 true",
+                        },
+                    },
+                    [],
+                    additional_properties=False,
+                ),
+                "outputSchema": _tool_result_schema(),
+            },
+            {
+                "name": CHANGE_NOTIFICATION_POLICY,
+                "title": "Change Notification Policy",
+                "description": (
+                    "사용자가 현재 메시지에서 알림 정책 적용 또는 유지 의사를 명확히 밝힌 경우에만 호출합니다. "
+                    "Tool 내부에서 Backend /agent/sync/notification-policy-change API를 동기로 호출합니다."
+                ),
+                "annotations": {
+                    "readOnlyHint": False,
+                    "destructiveHint": True,
+                    "idempotentHint": True,
+                    "openWorldHint": False,
+                },
+                "required_arguments": ["policy_id", "decision"],
+                "optional_arguments": ["changes"],
+                "inputSchema": _object_schema(
+                    {
+                        "policy_id": {"type": "string", "description": "Backend가 발급한 공개 notification policy ID"},
+                        "decision": {"type": "string", "enum": ["apply", "keep"]},
+                        "changes": _notification_policy_changes_schema(),
+                    },
+                    ["policy_id", "decision"],
+                    additional_properties=False,
+                ),
+                "outputSchema": _tool_result_schema(),
+            },
         ]
         return [_canonical_tool_payload(tool) for tool in tools]
 
@@ -595,13 +668,58 @@ class ToolCatalog:
         return [tool for tool in ToolCatalog.available_tools_payload() if tool["name"] in allowed]
 
 
-def _object_schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+def _object_schema(
+    properties: dict[str, Any],
+    required: list[str],
+    *,
+    additional_properties: bool = True,
+) -> dict[str, Any]:
     return {
         "type": "object",
         "properties": properties,
         "required": required,
-        "additionalProperties": True,
+        "additionalProperties": additional_properties,
     }
+
+
+def _nutrient_schema() -> dict[str, Any]:
+    return _object_schema(
+        {
+            "calories": {"type": "number", "minimum": 0},
+            "protein": {"type": "number", "minimum": 0},
+            "sodium": {"type": "number", "minimum": 0},
+            "fat": {"type": "number", "minimum": 0},
+            "carbohydrates": {"type": "number", "minimum": 0},
+        },
+        [],
+        additional_properties=False,
+    )
+
+
+def _notification_policy_changes_schema() -> dict[str, Any]:
+    schema = _object_schema(
+        {
+            "extra_reminders": {"type": "integer", "minimum": 0, "maximum": 5},
+            "interval_minutes": {"type": "integer", "minimum": 5, "maximum": 60},
+            "missed_dose_after_minutes": {"type": "integer", "minimum": 15, "maximum": 240},
+            "primary_reminder_timing": {
+                "type": "string",
+                "enum": ["before", "at", "after"],
+            },
+            "primary_reminder_offset_minutes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 120,
+            },
+            "effective_start_date": {"type": "string", "format": "date"},
+            "effective_end_date": {"type": "string", "format": "date"},
+        },
+        [],
+        additional_properties=False,
+    )
+    schema["minProperties"] = 1
+    schema["description"] = "decision=apply일 때 적용할 변경 필드"
+    return schema
 
 
 def _tool_result_schema() -> dict[str, Any]:
@@ -637,6 +755,22 @@ def _canonical_tool_payload(tool: dict[str, Any]) -> dict[str, Any]:
     args_schema = payload.get("inputSchema") if isinstance(payload.get("inputSchema"), dict) else _object_schema({}, [])
     payload["args_schema"] = args_schema
     metadata = MODEL_VISIBLE_TOOL_METADATA.get(name, {})
+    if name in BACKEND_V12_RECORD_WRITE_TOOLS:
+        metadata = {
+            **metadata,
+            "source_path": "agent_app/tools/backend_write.py",
+            "source_tool_name": name,
+            "execution_mode": "backend_sync",
+            "backend_endpoint": "/agent/sync/record-change",
+            "confirmation_policy": "explicit_user_message",
+        }
+    elif name in BACKEND_V12_POLICY_WRITE_TOOLS:
+        metadata = {
+            **metadata,
+            "execution_mode": "backend_sync",
+            "backend_endpoint": "/agent/sync/notification-policy-change",
+            "confirmation_policy": "explicit_user_message",
+        }
     payload.update(metadata)
     meta = payload.get("_meta") if isinstance(payload.get("_meta"), dict) else {}
     payload["_meta"] = {**meta, **metadata}

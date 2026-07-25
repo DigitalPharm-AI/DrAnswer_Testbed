@@ -12,6 +12,7 @@
 - `text`, `selection_box`, `input_box`, 표 응답의 화면 표시 및 후속 입력
 - AI Server의 Backend DB read-only Query Tools
 - AI Server에서 Backend로 요청하는 레코드 변경·알림 정책 변경 API
+- Backend DB PK와 분리된 알림 정책 공개 ID
 - Backend 쓰기 API의 `request_id` 멱등성
 - 변경 가능한 업무 레코드의 `expected_version` 낙관적 잠금
 - AI Trace·도구 실행 상태와 Backend 업무 데이터의 저장소 분리
@@ -114,6 +115,17 @@ Backend 필수 규칙:
 
 성공적인 update마다 `version = version + 1`로 변경한다. AI 요청의 `expected_version`과 현재 버전이 다르면 변경하지 않고 `VERSION_CONFLICT`를 반환한다.
 
+`reminder_policies`에는 다음 공개 식별자를 추가한다.
+
+| 필드 | 규칙 |
+|---|---|
+| `public_id` | 문자열, NOT NULL, UNIQUE, 외부 API와 AI Tool에서 사용하는 불투명 공개 ID |
+
+- 예시: `npol_0123456789abcdef0123456789abcdef`
+- 숫자형 `reminder_policies.id`는 Backend 내부 PK로만 사용하며 AI Server와 LLM에 노출하지 않는다.
+- 기존 정책 row에는 배포 migration에서 충돌하지 않는 공개 ID를 backfill한다.
+- 정책 조회 Query Tool과 정책 변경 API는 모두 동일한 `public_id`를 `policy_id`로 사용한다.
+
 ### 4.3 Backend 쓰기 멱등성 테이블
 
 테스트베드는 `backend_api_requests`를 사용한다.
@@ -125,6 +137,37 @@ Backend 필수 규칙:
 - 업무 변경과 멱등성 완료 기록은 하나의 DB transaction으로 커밋
 
 ## 5. AI Server가 호출할 Backend 쓰기 API
+
+AI가 쓰기 필요성을 판단하면 모델이 아래 쓰기 Tool을 호출한다. 모델은 대상과 변경값 같은 업무 인자만 생성한다. 각 Tool 내부의 Backend interaction point가 신뢰된 채팅 컨텍스트와 Read 전용 조회 결과로 기술 인자를 채운 뒤 해당 API를 호출하며, Agent의 같은 처리 turn에서 응답을 기다리는 동기 request-response 방식으로 실행한다. 별도 queue나 callback worker가 Backend 쓰기를 대신 실행하지 않는다.
+
+현재 v1.2 동기 쓰기 Tool 목록:
+
+| AI Tool | 모델 필수 인자 | Backend API | 외부 API `expected_version` |
+|---|---|---|---|
+| `update_medication_dose_event_status` | `dose_event_id` | `/agent/sync/record-change` | Tool이 조회·주입 |
+| `create_nutrition_meal_record` | `meal_type`, `foods` | `/agent/sync/record-change` | 없음 |
+| `update_nutrition_meal_record` | `meal_id` + 변경 필드 | `/agent/sync/record-change` | Tool이 조회·주입 |
+| `delete_nutrition_meal_record` | `meal_id` | `/agent/sync/record-change` | Tool이 조회·주입 |
+| `update_nutrition_food_record` | `meal_id`, `food_id` + 변경 필드 | `/agent/sync/record-change` | Tool이 조회·주입 |
+| `delete_nutrition_food_record` | `meal_id`, `food_id` | `/agent/sync/record-change` | Tool이 조회·주입 |
+| `change_notification_policy` | 공개 `policy_id`, `decision` + 선택적 `changes` | `/agent/sync/notification-policy-change` | Tool이 조회·주입 |
+
+모델에 노출하지 않고 AI Server Tool이 관리하는 필드:
+
+- `patient_id`: 검증된 현재 채팅 컨텍스트에서 주입
+- `expected_version`: 대상 row를 Read 전용 Query Tool로 조회한 직후 주입
+- `request_id`: 원본 채팅 요청·Tool 이름·Tool call ID·업무 인자를 정규화하여 생성
+- `source_chat_request_id`, `conversation_id`, `confirmation_message_id`: Backend가 전달하고 AI Server가 검증한 채팅 컨텍스트에서 주입
+- `requested_at`: 현재 요청 컨텍스트에서 주입
+- `reason`: 사용자 메시지에서 명시적으로 확인된 Tool 실행이라는 표준 감사 사유를 주입
+
+모든 v1.2 쓰기 Tool의 입력 JSON Schema는 최상위 및 정의된 중첩 객체에 `additionalProperties: false`를 사용한다. 따라서 모델이 위 기술 필드나 정의되지 않은 임의 필드를 추가하면 Backend 호출 전에 거절한다.
+
+`request_id`는 `source_chat_request_id`, Tool 이름, Tool call ID 및 정규화된 인자 hash로 AI Server가 결정한다. 동일 Tool call을 재시도할 때 같은 `request_id`와 같은 body를 사용한다. 내부 `trace_id`는 Backend 계약으로 전달하지 않는다.
+
+`confirmation_message_id`는 별도의 AI 내부 action ID가 아니라, 현재 Tool 실행을 발생시킨 Backend DB의 실제 사용자 메시지 ID를 사용한다. Backend는 해당 메시지와 환자·대화·원본 요청의 관계를 검증한다.
+
+`create_medication_side_effect_record`, `upsert_nutrition_preference_fact`, `propose_system_policy`는 현재 v1.2 Backend 쓰기 계약이 지원하지 않으므로 위 목록에 포함하지 않는다. 필요할 경우 Backend 리소스와 payload 계약을 먼저 확장한다.
 
 ### 5.1 레코드 변경
 
@@ -147,9 +190,25 @@ Backend는 다음을 검증해야 한다.
 
 - `POST /agent/sync/notification-policy-change`
 - Bearer 인증 필수
+- `policy_id`는 숫자형 DB PK가 아니라 `reminder_policies.public_id`
+- AI Server는 변경 전에 `get_notification_policies` Read Tool로 공개 ID와 현재 정책을 조회
 - `decision=apply`: 검증 후 변경하고 version 증가
 - `decision=keep`: 변경하지 않고 현재 version 반환
 - `expected_version` 불일치 시 `409 VERSION_CONFLICT`
+
+모델이 변경할 수 있는 `changes` 필드는 다음으로 제한한다.
+
+| 필드 | 허용값 |
+|---|---|
+| `extra_reminders` | 0~5 |
+| `interval_minutes` | 5~60 |
+| `missed_dose_after_minutes` | 15~240 |
+| `primary_reminder_timing` | `before`, `at`, `after` |
+| `primary_reminder_offset_minutes` | 0~120, `at`이면 0 |
+| `effective_start_date` | `YYYY-MM-DD`, 명시적으로 변경할 때 요청일보다 과거 금지 |
+| `effective_end_date` | `YYYY-MM-DD`, 시작일 이상, 전체 기간 최대 365일 |
+
+`policy_key`, `slot_label`, 알림 문구 template, `source`, `active`, `version`은 모델 변경 대상이 아니다. Backend는 부분 변경값을 현재 정책과 합친 뒤 정책별 경계와 “마지막 추가 알림 시각 ≤ 미복용 판단 시각” 교차 규칙을 재검증한다. 위반 시 `422 POLICY_BOUNDARY_VIOLATION` 또는 구체적인 날짜 오류 코드를 반환한다.
 
 ### 5.3 오류 응답
 
@@ -243,12 +302,15 @@ BACKEND_API_TOKEN=replace-with-different-shared-secret
 10. 외부 요청·응답과 Backend 업무 테이블에 AI 내부 `trace_id`가 저장되지 않는다.
 11. `selection_box` 버튼 입력이 같은 conversation의 새 user message로 저장된다.
 12. `input_box` 입력이 JSON 객체 문자열로 저장·전달된다.
+13. 정책 조회 결과와 정책 변경 응답의 `policy_id`가 동일한 공개 ID이며 숫자형 DB PK가 노출되지 않는다.
+14. 모델이 `patient_id`, `expected_version`, `reason` 또는 정의되지 않은 추가 속성을 쓰기 Tool 인자로 전달하면 Backend 호출 전에 거절된다.
+15. 정책별 경계나 교차 규칙을 위반한 변경은 version과 정책 데이터를 바꾸지 않는다.
 
 ## 9. 테스트베드 검증 결과
 
 2026-07-25 기준:
 
-- 전체 자동화 테스트: `431 passed, 3 skipped`
+- 전체 자동화 테스트: `441 passed, 3 skipped`
 - 신규 v1.2 테스트:
   - 메시지 선저장과 별도 assistant ID
   - 동일 채팅 요청 replay
@@ -256,12 +318,18 @@ BACKEND_API_TOKEN=replace-with-different-shared-secret
   - version 증가와 충돌
   - Backend 쓰기 멱등성
   - SQLite Query Tool 쓰기 차단
+  - 공개 `policy_id` 생성·조회·변경
+  - Tool 내부 `expected_version` 조회·주입
+  - 기술 인자 및 정의되지 않은 추가 속성 차단
+  - 알림 정책 범위·교차 규칙 검증
   - 화면 input box JSON 변환과 동일 conversation 유지
 - 실제 `data/system.db` migration:
   - schema migration 총 32개
+  - `reminder_policies.public_id` 컬럼 및 UNIQUE index 추가
+  - 현재 정책 row 0건, 공개 ID 누락·중복 0건
   - `PRAGMA integrity_check = ok`
   - journal mode `wal`
 
-일관된 migration 후 스냅샷:
+공개 정책 ID migration 전 일관된 스냅샷:
 
-`data/backups/system-backend-v12-consistent-20260725-155948.db`
+`data/backups/system-before-policy-public-id-20260725.db`

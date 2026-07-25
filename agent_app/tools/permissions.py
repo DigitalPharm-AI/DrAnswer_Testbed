@@ -4,12 +4,15 @@ from datetime import date
 from typing import Any
 
 from agent_app.tools.names import (
+    BACKEND_V12_SYNC_WRITE_TOOLS,
+    CHANGE_NOTIFICATION_POLICY,
     CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
     GET_MEDICATION_DOSE_STATUS,
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+    GET_NOTIFICATION_POLICIES,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
     GET_PRO_CTCAE_QUESTIONNAIRE,
     GET_SIDE_EFFECT_HISTORY,
@@ -42,7 +45,7 @@ TOOL_ALLOWLIST: dict[str, set[str]] = {
     SOURCE_DAILY_PATTERN: {PROPOSE_NOTIFICATION_POLICY},
     SOURCE_MANUAL_DAILY_PATTERN: {PROPOSE_NOTIFICATION_POLICY},
     SOURCE_MISSED_DOSE: SIDE_EFFECT_TOOLS,
-    SOURCE_MULTITURN_CHAT: set(POLICY_TOOLS),
+    SOURCE_MULTITURN_CHAT: {CHANGE_NOTIFICATION_POLICY, GET_NOTIFICATION_POLICIES, *POLICY_TOOLS},
     SOURCE_MEDICATION_AGENT: MEDICATION_CHAT_TOOLS,
     SOURCE_NUTRITION_MANAGEMENT_AGENT: NUTRITION_MANAGEMENT_TOOLS,
     SOURCE_NUTRITION_RECOMMENDATION_AGENT: NUTRITION_RECOMMENDATION_TOOLS,
@@ -80,10 +83,43 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
     if tool_name not in allowed_tools:
         return f"{tool_name or 'unknown'} is not allowed for {source_event_type}"
     arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
+    if tool_name in BACKEND_V12_SYNC_WRITE_TOOLS and _is_v12_chat_payload(payload):
+        forbidden = {
+            "patient_id",
+            "expected_version",
+            "request_id",
+            "source_chat_request_id",
+            "conversation_id",
+            "confirmation_message_id",
+            "requested_at",
+            "reason",
+        }.intersection(arguments)
+        if forbidden:
+            return f"{tool_name} technical arguments are managed inside the AI Server Tool: {', '.join(sorted(forbidden))}"
     if tool_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
         return _validate_mark_dose_taken(arguments, source_event_type=source_event_type, payload=payload)
     if tool_name in POLICY_TOOLS and source_event_type not in {SOURCE_DAILY_PATTERN, SOURCE_MANUAL_DAILY_PATTERN, SOURCE_MULTITURN_CHAT}:
         return f"{tool_name} is only allowed as a deferred confirmation candidate"
+    if tool_name == CHANGE_NOTIFICATION_POLICY:
+        if source_event_type != SOURCE_MULTITURN_CHAT:
+            return f"{CHANGE_NOTIFICATION_POLICY} is only allowed in multiturn_chat"
+        if not str(arguments.get("policy_id") or "").strip():
+            return f"{CHANGE_NOTIFICATION_POLICY} requires policy_id"
+        decision = arguments.get("decision")
+        if decision not in {"apply", "keep"}:
+            return f"{CHANGE_NOTIFICATION_POLICY} requires apply or keep decision"
+        changes = arguments.get("changes")
+        if decision == "apply" and (not isinstance(changes, dict) or not changes):
+            return f"{CHANGE_NOTIFICATION_POLICY} requires changes for apply"
+        if decision == "keep" and changes is not None:
+            return f"{CHANGE_NOTIFICATION_POLICY} does not accept changes for keep"
+    if tool_name == GET_NOTIFICATION_POLICIES:
+        if "policy_id" in arguments and not str(arguments.get("policy_id") or "").strip():
+            return f"{GET_NOTIFICATION_POLICIES} requires non-empty policy_id when provided"
+        if "slot_label" in arguments and not str(arguments.get("slot_label") or "").strip():
+            return f"{GET_NOTIFICATION_POLICIES} requires non-empty slot_label when provided"
+        if "active_only" in arguments and not isinstance(arguments.get("active_only"), bool):
+            return f"{GET_NOTIFICATION_POLICIES} requires active_only boolean"
     if tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT and not str(arguments.get("symptom_text") or "").strip():
         return f"{GET_MEDICATION_SIDE_EFFECT_ASSESSMENT} requires symptom_text"
     if tool_name == CREATE_MEDICATION_SIDE_EFFECT_RECORD:
@@ -168,6 +204,16 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
 
 def _valid_positive_int(value: Any, *, maximum: int) -> bool:
     return isinstance(value, int) and 1 <= value <= maximum
+
+
+def _valid_non_negative_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_v12_chat_payload(payload: dict[str, Any]) -> bool:
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    request_metadata = context.get("request_metadata") if isinstance(context.get("request_metadata"), dict) else {}
+    return request_metadata.get("contract_version") == "v1.2"
 
 
 def _validate_date_range_arguments(arguments: dict[str, Any], *, tool_name: str, max_days: int) -> str | None:

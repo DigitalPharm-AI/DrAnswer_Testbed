@@ -15,6 +15,7 @@ from agent_app.integration.contracts import (
     NotificationPolicyChangeRequest,
     NotificationPolicyChangeResponse,
     NotificationPolicyChangeResult,
+    POLICY_MAX_EFFECTIVE_DAYS,
     NutritionFoodMutationPayload,
     NutritionMealMutationPayload,
     RecordChangeRequest,
@@ -39,6 +40,11 @@ from system_app.services.nutrition_service import (
     update_food,
     update_meal,
 )
+from system_app.services.policy_service import (
+    policy_boundary_violations,
+    resolve_policy_boundary_for_slot,
+)
+from shared.settings import get_settings
 
 RECORD_CHANGE_PATH = "/agent/sync/record-change"
 POLICY_CHANGE_PATH = "/agent/sync/notification-policy-change"
@@ -169,10 +175,9 @@ def apply_notification_policy_change(
         return _policy_failure(request, context_error, retryable=False)
 
     try:
-        policy_id = _positive_int(request.policy_id, "notification_policy_not_found")
         policy = session.scalar(
             select(ReminderPolicy).where(
-                ReminderPolicy.id == policy_id,
+                ReminderPolicy.public_id == request.policy_id,
                 ReminderPolicy.patient_id == request.patient_id,
             )
         )
@@ -185,6 +190,7 @@ def apply_notification_policy_change(
             changes = request.payload.changes
             if changes is None:
                 raise ValueError("policy_changes_empty")
+            _validate_policy_changes(session, request, policy)
             for field_name in changes.model_fields_set:
                 value = getattr(changes, field_name)
                 if value is not None:
@@ -199,7 +205,7 @@ def apply_notification_policy_change(
             success=True,
             request_id=request.request_id,
             result=NotificationPolicyChangeResult(
-                policy_id=str(policy.id),
+                policy_id=policy.public_id,
                 decision=request.payload.decision,
                 applied=applied,
                 version=policy.version,
@@ -214,8 +220,94 @@ def apply_notification_policy_change(
             retryable=False,
             details={"expected_version": exc.expected, "current_version": exc.actual},
         )
+    except PolicyValidationError as exc:
+        return _policy_failure(
+            request,
+            exc.code,
+            retryable=False,
+            details=exc.details,
+        )
     except ValueError as exc:
         return _policy_failure(request, str(exc), retryable=False)
+
+
+def _validate_policy_changes(
+    session: Session,
+    request: NotificationPolicyChangeRequest,
+    policy: ReminderPolicy,
+) -> None:
+    changes = request.payload.changes
+    if changes is None:
+        raise ValueError("policy_changes_empty")
+    values = {
+        "extra_reminders": (
+            changes.extra_reminders
+            if changes.extra_reminders is not None
+            else policy.extra_reminders
+        ),
+        "interval_minutes": (
+            changes.interval_minutes
+            if changes.interval_minutes is not None
+            else policy.interval_minutes
+        ),
+        "missed_dose_after_minutes": (
+            changes.missed_dose_after_minutes
+            if changes.missed_dose_after_minutes is not None
+            else policy.missed_dose_after_minutes or get_settings().missed_dose_grace_minutes
+        ),
+        "primary_reminder_timing": (
+            changes.primary_reminder_timing
+            if changes.primary_reminder_timing is not None
+            else policy.primary_reminder_timing
+        ),
+        "primary_reminder_offset_minutes": (
+            changes.primary_reminder_offset_minutes
+            if changes.primary_reminder_offset_minutes is not None
+            else policy.primary_reminder_offset_minutes
+        ),
+    }
+    effective_start_date = changes.effective_start_date or policy.effective_start_date
+    effective_end_date = changes.effective_end_date or policy.effective_end_date
+    if effective_end_date < effective_start_date:
+        raise PolicyValidationError(
+            "POLICY_EFFECTIVE_DATE_RANGE_INVALID",
+            {
+                "effective_start_date": effective_start_date.isoformat(),
+                "effective_end_date": effective_end_date.isoformat(),
+            },
+        )
+    if (effective_end_date - effective_start_date).days + 1 > POLICY_MAX_EFFECTIVE_DAYS:
+        raise PolicyValidationError(
+            "POLICY_EFFECTIVE_DATE_RANGE_TOO_LARGE",
+            {"maximum_effective_days": POLICY_MAX_EFFECTIVE_DAYS},
+        )
+    if (
+        "effective_start_date" in changes.model_fields_set
+        and effective_start_date < request.requested_at.date()
+    ):
+        raise PolicyValidationError(
+            "POLICY_EFFECTIVE_START_IN_PAST",
+            {
+                "effective_start_date": effective_start_date.isoformat(),
+                "request_date": request.requested_at.date().isoformat(),
+            },
+        )
+    boundary = resolve_policy_boundary_for_slot(
+        session,
+        request.patient_id,
+        policy.slot_label,
+        effective_start_date,
+    )
+    violations = policy_boundary_violations(values, boundary)
+    if violations:
+        raise PolicyValidationError(
+            "POLICY_BOUNDARY_VIOLATION",
+            {
+                "policy_id": policy.public_id,
+                "boundary_key": boundary.boundary_key,
+                "violations": violations,
+            },
+        )
 
 
 class VersionConflict(RuntimeError):
@@ -223,6 +315,13 @@ class VersionConflict(RuntimeError):
         super().__init__("VERSION_CONFLICT")
         self.expected = expected
         self.actual = actual
+
+
+class PolicyValidationError(ValueError):
+    def __init__(self, code: str, details: dict[str, Any]) -> None:
+        super().__init__(code)
+        self.code = code
+        self.details = details
 
 
 def _mutate_record(session: Session, request: RecordChangeRequest) -> RecordChangeResult:

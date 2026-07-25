@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from uuid import uuid4
 
 from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -10,6 +11,10 @@ from shared.time_utils import utc_now
 
 def utcnow() -> datetime:
     return utc_now()
+
+
+def new_reminder_policy_public_id() -> str:
+    return f"npol_{uuid4().hex}"
 
 
 class Base(DeclarativeBase):
@@ -268,6 +273,12 @@ class ReminderPolicy(Base):
     __tablename__ = "reminder_policies"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(
+        String(80),
+        unique=True,
+        index=True,
+        default=new_reminder_policy_public_id,
+    )
     patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
     policy_key: Mapped[str] = mapped_column(String(120), default="custom")
     slot_label: Mapped[str] = mapped_column(String(120), index=True)

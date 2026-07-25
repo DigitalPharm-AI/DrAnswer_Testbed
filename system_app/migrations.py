@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 from sqlalchemy import Engine, text
 
 from shared.migrations import run_sql_migrations, table_columns
@@ -451,6 +453,7 @@ MIGRATIONS: list[tuple[str, str]] = [
 
 
 REMINDER_POLICY_COLUMNS: dict[str, str] = {
+    "public_id": "VARCHAR(80)",
     "policy_key": "VARCHAR(120) DEFAULT 'custom'",
     "missed_dose_after_minutes": "INTEGER",
     "primary_reminder_timing": "VARCHAR(20) DEFAULT 'at'",
@@ -504,6 +507,23 @@ def ensure_reminder_policy_columns(engine: Engine) -> None:
             if column_name in existing_columns:
                 continue
             connection.execute(text(f"ALTER TABLE reminder_policies ADD COLUMN {column_name} {column_type}"))
+        missing_public_ids = connection.execute(
+            text("SELECT id FROM reminder_policies WHERE public_id IS NULL OR public_id = ''")
+        ).scalars().all()
+        for policy_id in missing_public_ids:
+            connection.execute(
+                text("UPDATE reminder_policies SET public_id = :public_id WHERE id = :policy_id"),
+                {
+                    "public_id": f"npol_{uuid4().hex}",
+                    "policy_id": policy_id,
+                },
+            )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_reminder_policies_public_id "
+                "ON reminder_policies (public_id)"
+            )
+        )
 
 
 def ensure_chat_message_columns(engine: Engine) -> None:

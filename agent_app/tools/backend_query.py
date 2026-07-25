@@ -8,6 +8,17 @@ from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.engine import make_url
 
 from agent_app.integration.chat_contracts import ChatSyncRequest
+from agent_app.integration.contracts import (
+    POLICY_MAX_EFFECTIVE_DAYS,
+    POLICY_MAX_EXTRA_REMINDERS,
+    POLICY_MAX_INTERVAL_MINUTES,
+    POLICY_MAX_MISSED_DOSE_AFTER_MINUTES,
+    POLICY_MAX_PRIMARY_REMINDER_OFFSET_MINUTES,
+    POLICY_MIN_EXTRA_REMINDERS,
+    POLICY_MIN_INTERVAL_MINUTES,
+    POLICY_MIN_MISSED_DOSE_AFTER_MINUTES,
+    POLICY_MIN_PRIMARY_REMINDER_OFFSET_MINUTES,
+)
 from shared.settings import Settings, get_settings
 
 
@@ -16,6 +27,10 @@ class BackendQueryError(RuntimeError):
 
 
 class BackendChatMessageNotFound(BackendQueryError):
+    pass
+
+
+class BackendRecordNotFound(BackendQueryError):
     pass
 
 
@@ -419,6 +434,161 @@ class BackendQueryTools:
             "total": len(rows),
             "source": "backend_read_db",
         }
+
+    def record_version(
+        self,
+        *,
+        patient_id: str,
+        resource_type: str,
+        record_id: str | int,
+        parent_record_id: str | int | None = None,
+    ) -> int:
+        try:
+            numeric_record_id = int(record_id)
+        except (TypeError, ValueError) as exc:
+            raise BackendRecordNotFound(f"{resource_type}_not_found") from exc
+        with self.engine.connect() as connection:
+            if resource_type == "medication_dose_event":
+                version = connection.execute(
+                    text(
+                        """
+                        SELECT version
+                        FROM dose_events
+                        WHERE id = :record_id AND patient_id = :patient_id
+                        """
+                    ),
+                    {"record_id": numeric_record_id, "patient_id": patient_id},
+                ).scalar_one_or_none()
+            elif resource_type == "nutrition_meal":
+                version = connection.execute(
+                    text(
+                        """
+                        SELECT version
+                        FROM nutrition_meals
+                        WHERE id = :record_id AND patient_id = :patient_id
+                        """
+                    ),
+                    {"record_id": numeric_record_id, "patient_id": patient_id},
+                ).scalar_one_or_none()
+            elif resource_type == "nutrition_food":
+                try:
+                    numeric_parent_id = int(parent_record_id)
+                except (TypeError, ValueError) as exc:
+                    raise BackendRecordNotFound("nutrition_food_not_found") from exc
+                version = connection.execute(
+                    text(
+                        """
+                        SELECT f.version
+                        FROM nutrition_foods f
+                        JOIN nutrition_meals m ON m.id = f.meal_id
+                        WHERE f.id = :record_id
+                          AND f.meal_id = :parent_record_id
+                          AND m.patient_id = :patient_id
+                        """
+                    ),
+                    {
+                        "record_id": numeric_record_id,
+                        "parent_record_id": numeric_parent_id,
+                        "patient_id": patient_id,
+                    },
+                ).scalar_one_or_none()
+            else:
+                raise ValueError(f"unsupported_versioned_resource:{resource_type}")
+        if version is None:
+            raise BackendRecordNotFound(f"{resource_type}_not_found")
+        return max(1, int(version))
+
+    def notification_policies(
+        self,
+        *,
+        patient_id: str,
+        policy_id: str | None = None,
+        slot_label: str | None = None,
+        active_only: bool = True,
+    ) -> dict[str, Any]:
+        clauses = ["patient_id = :patient_id"]
+        params: dict[str, Any] = {
+            "patient_id": patient_id,
+            "limit": self.max_rows,
+        }
+        if policy_id:
+            clauses.append("public_id = :policy_id")
+            params["policy_id"] = policy_id
+        if slot_label:
+            clauses.append("slot_label = :slot_label")
+            params["slot_label"] = slot_label
+        if active_only:
+            clauses.append("active = :active")
+            params["active"] = True
+        with self.engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    f"""
+                    SELECT public_id, policy_key, slot_label, extra_reminders,
+                           interval_minutes, missed_dose_after_minutes,
+                           primary_reminder_timing, primary_reminder_offset_minutes,
+                           effective_start_date, effective_end_date, active, version
+                    FROM reminder_policies
+                    WHERE {' AND '.join(clauses)}
+                    ORDER BY active DESC, effective_start_date DESC, id DESC
+                    LIMIT :limit
+                    """
+                ),
+                params,
+            ).mappings().all()
+        return {
+            "success": True,
+            "policies": [
+                {
+                    "policy_id": row["public_id"],
+                    "policy_key": row["policy_key"],
+                    "slot_label": row["slot_label"],
+                    "extra_reminders": row["extra_reminders"],
+                    "interval_minutes": row["interval_minutes"],
+                    "missed_dose_after_minutes": row["missed_dose_after_minutes"],
+                    "primary_reminder_timing": row["primary_reminder_timing"],
+                    "primary_reminder_offset_minutes": row["primary_reminder_offset_minutes"],
+                    "effective_start_date": _as_date(row["effective_start_date"]).isoformat(),
+                    "effective_end_date": _as_date(row["effective_end_date"]).isoformat(),
+                    "active": bool(row["active"]),
+                    "version": max(1, int(row["version"] or 1)),
+                }
+                for row in rows
+            ],
+            "total": len(rows),
+            "contract_bounds": {
+                "extra_reminders": {
+                    "minimum": POLICY_MIN_EXTRA_REMINDERS,
+                    "maximum": POLICY_MAX_EXTRA_REMINDERS,
+                },
+                "interval_minutes": {
+                    "minimum": POLICY_MIN_INTERVAL_MINUTES,
+                    "maximum": POLICY_MAX_INTERVAL_MINUTES,
+                },
+                "missed_dose_after_minutes": {
+                    "minimum": POLICY_MIN_MISSED_DOSE_AFTER_MINUTES,
+                    "maximum": POLICY_MAX_MISSED_DOSE_AFTER_MINUTES,
+                },
+                "primary_reminder_timing": ["before", "at", "after"],
+                "primary_reminder_offset_minutes": {
+                    "minimum": POLICY_MIN_PRIMARY_REMINDER_OFFSET_MINUTES,
+                    "maximum": POLICY_MAX_PRIMARY_REMINDER_OFFSET_MINUTES,
+                },
+                "maximum_effective_days": POLICY_MAX_EFFECTIVE_DAYS,
+            },
+            "source": "backend_read_db",
+        }
+
+    def notification_policy_version(self, *, patient_id: str, policy_id: str) -> int:
+        result = self.notification_policies(
+            patient_id=patient_id,
+            policy_id=policy_id,
+            active_only=False,
+        )
+        policies = result["policies"]
+        if len(policies) != 1:
+            raise BackendRecordNotFound("notification_policy_not_found")
+        return int(policies[0]["version"])
 
     def _limit(self, value: int) -> int:
         return max(1, min(int(value), self.max_rows))

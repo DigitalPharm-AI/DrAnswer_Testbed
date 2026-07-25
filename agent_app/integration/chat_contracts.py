@@ -131,6 +131,7 @@ def agent_chat_payload(
 ) -> dict[str, Any]:
     context = {
         "request_metadata": {
+            "contract_version": "v1.2",
             "request_id": request.request_id,
             "message_id": request.message_id,
             "conversation_id": request.conversation_id,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agent_app.tools.names import (
+    CHANGE_NOTIFICATION_POLICY,
     CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
@@ -27,6 +28,11 @@ class ConfirmationAction:
 
 class ConfirmationActionRegistry:
     _ACTIONS = {
+        CHANGE_NOTIFICATION_POLICY: ConfirmationAction(
+            action_name=CHANGE_NOTIFICATION_POLICY,
+            action_type="agent_tool",
+            confirmation_policy=CONFIRMATION_USER_REQUIRED,
+        ),
         CREATE_MEDICATION_SIDE_EFFECT_RECORD: ConfirmationAction(
             action_name=CREATE_MEDICATION_SIDE_EFFECT_RECORD,
             action_type="agent_tool",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -16,7 +16,7 @@ from system_app import main as system_main
 from system_app.routes import chat as chat_routes
 from system_app.db import SessionLocal
 from system_app.migrations import run_migrations
-from system_app.models import Base, ChatMessage, DoseEvent
+from system_app.models import Base, ChatMessage, DoseEvent, ReminderPolicy
 
 NOW = datetime(2026, 7, 25, 13, 0, tzinfo=UTC)
 
@@ -174,6 +174,129 @@ def test_backend_record_change_enforces_confirmation_version_and_idempotency() -
         assert event.version == 2
 
 
+def test_backend_notification_policy_change_uses_public_id_and_enforces_boundaries() -> None:
+    suffix = uuid4().hex
+    patient_id = f"patient-policy-{suffix}"
+    conversation_id = f"conversation-policy-{suffix}"
+    source_request_id = f"source-policy-{suffix}"
+    with SessionLocal() as session:
+        source = ChatMessage(
+            patient_id=patient_id,
+            conversation_id=conversation_id,
+            ai_request_id=source_request_id,
+            role="user",
+            sender_type="patient",
+            category="multiturn_chat",
+            message_type="text",
+            content="아침 알림을 바꿔줘.",
+            processing_status="completed",
+            created_at=NOW.replace(tzinfo=None),
+        )
+        confirmation = ChatMessage(
+            patient_id=patient_id,
+            conversation_id=conversation_id,
+            ai_request_id=f"confirm-policy-{suffix}",
+            role="user",
+            sender_type="patient",
+            category="multiturn_chat",
+            message_type="text",
+            content="그대로 적용해줘.",
+            processing_status="completed",
+            created_at=NOW.replace(tzinfo=None),
+        )
+        policy = ReminderPolicy(
+            patient_id=patient_id,
+            policy_key="morning-dose",
+            slot_label="아침",
+            extra_reminders=1,
+            interval_minutes=15,
+            missed_dose_after_minutes=90,
+            primary_reminder_timing="at",
+            primary_reminder_offset_minutes=0,
+            effective_start_date=date(2026, 7, 25),
+            effective_end_date=date(2026, 8, 1),
+            reason="초기 정책",
+            source="test",
+            active=True,
+            version=1,
+        )
+        session.add_all([source, confirmation, policy])
+        session.commit()
+        confirmation_id = confirmation.id
+        policy_public_id = policy.public_id
+        policy_db_id = policy.id
+
+    body = {
+        "request_id": f"write-policy-{suffix}",
+        "source_chat_request_id": source_request_id,
+        "conversation_id": conversation_id,
+        "confirmation_message_id": str(confirmation_id),
+        "patient_id": patient_id,
+        "policy_id": policy_public_id,
+        "expected_version": 1,
+        "payload": {
+            "decision": "apply",
+            "changes": {
+                "extra_reminders": 2,
+                "interval_minutes": 15,
+            },
+            "reason": "사용자 채팅 메시지에서 명시적으로 확인된 AI Tool 실행",
+        },
+        "requested_at": NOW.isoformat(),
+    }
+    client = TestClient(system_main.app)
+    applied = client.post("/agent/sync/notification-policy-change", json=body)
+    numeric_id_attempt = client.post(
+        "/agent/sync/notification-policy-change",
+        json={
+            **body,
+            "request_id": f"write-policy-numeric-{suffix}",
+            "policy_id": str(policy_db_id),
+            "expected_version": 2,
+            "payload": {
+                "decision": "keep",
+                "changes": None,
+                "reason": "기존 정책 유지",
+            },
+        },
+    )
+    boundary_violation = client.post(
+        "/agent/sync/notification-policy-change",
+        json={
+            **body,
+            "request_id": f"write-policy-boundary-{suffix}",
+            "expected_version": 2,
+            "payload": {
+                "decision": "apply",
+                "changes": {
+                    "extra_reminders": 5,
+                    "interval_minutes": 60,
+                    "missed_dose_after_minutes": 15,
+                },
+                "reason": "경계 검증",
+            },
+        },
+    )
+    client.close()
+
+    assert applied.status_code == 200
+    assert applied.json()["result"]["policy_id"] == policy_public_id
+    assert applied.json()["result"]["version"] == 2
+    assert numeric_id_attempt.status_code == 404
+    assert numeric_id_attempt.json()["error"]["code"] == "notification_policy_not_found"
+    assert boundary_violation.status_code == 422
+    assert boundary_violation.json()["error"]["code"] == "POLICY_BOUNDARY_VIOLATION"
+    assert boundary_violation.json()["error"]["details"]["policy_id"] == policy_public_id
+    assert boundary_violation.json()["error"]["details"]["violations"]
+    with SessionLocal() as session:
+        changed = session.get(ReminderPolicy, policy_db_id)
+        assert changed is not None
+        assert changed.public_id == policy_public_id
+        assert changed.extra_reminders == 2
+        assert changed.interval_minutes == 15
+        assert changed.version == 2
+
+
 def test_backend_query_tools_verify_message_and_enforce_sqlite_query_only(tmp_path: Path) -> None:
     database_path = (tmp_path / "backend-read.db").as_posix()
     engine, sessions = create_session_factory(f"sqlite:///{database_path}")
@@ -193,8 +316,26 @@ def test_backend_query_tools_verify_message_and_enforce_sqlite_query_only(tmp_pa
             created_at=NOW.replace(tzinfo=None),
         )
         session.add(message)
+        policy = ReminderPolicy(
+            patient_id="patient-read",
+            policy_key="morning-dose",
+            slot_label="아침",
+            extra_reminders=1,
+            interval_minutes=15,
+            missed_dose_after_minutes=90,
+            primary_reminder_timing="at",
+            primary_reminder_offset_minutes=0,
+            effective_start_date=date(2026, 7, 25),
+            effective_end_date=date(2026, 8, 1),
+            reason="조회 테스트",
+            source="test",
+            active=True,
+            version=3,
+        )
+        session.add(policy)
         session.commit()
         message_id = message.id
+        policy_public_id = policy.public_id
 
     queries = BackendQueryTools(f"sqlite:///{database_path}")
     from agent_app.integration.chat_contracts import ChatSyncRequest
@@ -211,6 +352,13 @@ def test_backend_query_tools_verify_message_and_enforce_sqlite_query_only(tmp_pa
     context = queries.validate_chat_message(request)
     assert context["backend_message_verified"] is True
     assert context["recent_chat"][0]["message_id"] == str(message_id)
+    policies = queries.notification_policies(patient_id="patient-read")
+    assert policies["policies"][0]["policy_id"] == policy_public_id
+    assert policies["policies"][0]["version"] == 3
+    assert queries.notification_policy_version(
+        patient_id="patient-read",
+        policy_id=policy_public_id,
+    ) == 3
 
     with pytest.raises(BackendChatMessageNotFound):
         queries.validate_chat_message(request.model_copy(update={"message": "위조된 본문"}))

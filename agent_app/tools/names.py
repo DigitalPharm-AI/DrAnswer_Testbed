@@ -28,6 +28,8 @@ GET_NUTRITION_RECOMMENDATION_CANDIDATES = "get_nutrition_recommendation_candidat
 
 PROPOSE_NOTIFICATION_POLICY = "propose_notification_policy"
 PROPOSE_SYSTEM_POLICY = "propose_system_policy"
+GET_NOTIFICATION_POLICIES = "get_notification_policies"
+CHANGE_NOTIFICATION_POLICY = "change_notification_policy"
 
 SOURCE_DAILY_PATTERN = "daily_pattern"
 SOURCE_MANUAL_DAILY_PATTERN = "manual_daily_pattern"
@@ -74,6 +76,19 @@ DELEGATION_TOOL_NAMES = {
 SIDE_EFFECT_TOOLS = {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE}
 MEDICATION_QUERY_TOOLS = {GET_MEDICATION_DOSE_STATUS, GET_SIDE_EFFECT_HISTORY}
 POLICY_TOOLS = {PROPOSE_NOTIFICATION_POLICY, PROPOSE_SYSTEM_POLICY}
+POLICY_QUERY_TOOLS = {GET_NOTIFICATION_POLICIES}
+BACKEND_V12_RECORD_WRITE_TOOLS = frozenset(
+    {
+        UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+        CREATE_NUTRITION_MEAL_RECORD,
+        UPDATE_NUTRITION_MEAL_RECORD,
+        DELETE_NUTRITION_MEAL_RECORD,
+        UPDATE_NUTRITION_FOOD_RECORD,
+        DELETE_NUTRITION_FOOD_RECORD,
+    }
+)
+BACKEND_V12_POLICY_WRITE_TOOLS = frozenset({CHANGE_NOTIFICATION_POLICY})
+BACKEND_V12_SYNC_WRITE_TOOLS = BACKEND_V12_RECORD_WRITE_TOOLS | BACKEND_V12_POLICY_WRITE_TOOLS
 NUTRITION_TOOLS = {
     SEARCH_NUTRITION_FOOD_CANDIDATES,
     CREATE_NUTRITION_MEAL_RECORD,
@@ -112,7 +127,13 @@ NUTRITION_RECOMMENDATION_TOOLS = {
     GET_NUTRITION_PREFERENCE_SUMMARY,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
 }
-ALL_TOOL_NAMES = MEDICATION_CHAT_TOOLS | POLICY_TOOLS | NUTRITION_TOOLS
+ALL_TOOL_NAMES = (
+    MEDICATION_CHAT_TOOLS
+    | POLICY_TOOLS
+    | POLICY_QUERY_TOOLS
+    | NUTRITION_TOOLS
+    | BACKEND_V12_POLICY_WRITE_TOOLS
+)
 
 
 def _metadata(
@@ -157,6 +178,21 @@ MODEL_VISIBLE_TOOL_METADATA: dict[str, dict[str, str]] = {
     GET_NUTRITION_RECOMMENDATION_CANDIDATES: _metadata("nutrition", "system_app/routes/agent_api.py", "agent_get_nutrition_recommendation_candidates", "read", "low"),
     PROPOSE_NOTIFICATION_POLICY: _metadata("policy", "agent_app/tools/policy.py", "deferred_policy_tool_result", "propose", "high"),
     PROPOSE_SYSTEM_POLICY: _metadata("policy", "agent_app/tools/policy.py", "deferred_policy_tool_result", "propose", "high"),
+    GET_NOTIFICATION_POLICIES: _metadata(
+        "policy",
+        "agent_app/tools/backend_query.py",
+        GET_NOTIFICATION_POLICIES,
+        "read",
+        "low",
+    ),
+    CHANGE_NOTIFICATION_POLICY: _metadata(
+        "policy",
+        "agent_app/tools/backend_write.py",
+        CHANGE_NOTIFICATION_POLICY,
+        "write",
+        "high",
+        confirmation_policy="explicit_user_message",
+    ),
 }
 
 

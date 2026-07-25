@@ -9,6 +9,16 @@ RecordResourceType = Literal["nutrition_meal", "nutrition_food", "medication_dos
 RecordOperation = Literal["create", "update", "delete"]
 PolicyDecision = Literal["apply", "keep"]
 
+POLICY_MIN_EXTRA_REMINDERS = 0
+POLICY_MAX_EXTRA_REMINDERS = 5
+POLICY_MIN_INTERVAL_MINUTES = 5
+POLICY_MAX_INTERVAL_MINUTES = 60
+POLICY_MIN_MISSED_DOSE_AFTER_MINUTES = 15
+POLICY_MAX_MISSED_DOSE_AFTER_MINUTES = 240
+POLICY_MIN_PRIMARY_REMINDER_OFFSET_MINUTES = 0
+POLICY_MAX_PRIMARY_REMINDER_OFFSET_MINUTES = 120
+POLICY_MAX_EFFECTIVE_DAYS = 365
+
 
 def _validate_aware_datetime(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
@@ -188,19 +198,27 @@ class RecordChangeResponse(StrictContractModel):
 
 
 class NotificationPolicyChanges(StrictContractModel):
-    policy_key: str | None = None
-    slot_label: str | None = None
-    extra_reminders: int | None = Field(default=None, ge=0)
-    interval_minutes: int | None = Field(default=None, ge=1)
-    missed_dose_after_minutes: int | None = Field(default=None, ge=1)
+    extra_reminders: int | None = Field(
+        default=None,
+        ge=POLICY_MIN_EXTRA_REMINDERS,
+        le=POLICY_MAX_EXTRA_REMINDERS,
+    )
+    interval_minutes: int | None = Field(
+        default=None,
+        ge=POLICY_MIN_INTERVAL_MINUTES,
+        le=POLICY_MAX_INTERVAL_MINUTES,
+    )
+    missed_dose_after_minutes: int | None = Field(
+        default=None,
+        ge=POLICY_MIN_MISSED_DOSE_AFTER_MINUTES,
+        le=POLICY_MAX_MISSED_DOSE_AFTER_MINUTES,
+    )
     primary_reminder_timing: Literal["before", "at", "after"] | None = None
-    primary_reminder_offset_minutes: int | None = Field(default=None, ge=0)
-    medication_title_template: str | None = None
-    medication_body_template: str | None = None
-    extra_title_template: str | None = None
-    extra_body_template: str | None = None
-    missed_dose_title_template: str | None = None
-    missed_dose_body_template: str | None = None
+    primary_reminder_offset_minutes: int | None = Field(
+        default=None,
+        ge=POLICY_MIN_PRIMARY_REMINDER_OFFSET_MINUTES,
+        le=POLICY_MAX_PRIMARY_REMINDER_OFFSET_MINUTES,
+    )
     effective_start_date: date | None = None
     effective_end_date: date | None = None
 
@@ -215,6 +233,14 @@ class NotificationPolicyChanges(StrictContractModel):
             and self.effective_start_date > self.effective_end_date
         ):
             raise ValueError("policy_effective_date_range_invalid")
+        if (
+            self.effective_start_date is not None
+            and self.effective_end_date is not None
+            and (self.effective_end_date - self.effective_start_date).days + 1 > POLICY_MAX_EFFECTIVE_DAYS
+        ):
+            raise ValueError("policy_effective_date_range_too_large")
+        if self.primary_reminder_timing == "at" and self.primary_reminder_offset_minutes not in {None, 0}:
+            raise ValueError("policy_at_timing_requires_zero_offset")
         return self
 
 
