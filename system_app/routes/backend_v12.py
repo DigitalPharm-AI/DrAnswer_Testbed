@@ -36,6 +36,33 @@ from system_app.services.backend_v12_service import (
     apply_record_change,
 )
 
+RECORD_CHANGE_RESPONSES = {
+    401: {"model": RecordChangeResponse, "description": "Bearer authentication failed."},
+    404: {"model": RecordChangeResponse, "description": "The target record was not found."},
+    409: {
+        "model": RecordChangeResponse,
+        "description": "Idempotency, confirmation reference, or version conflict.",
+    },
+    422: {"model": RecordChangeResponse, "description": "Request or business validation failed."},
+    500: {"model": RecordChangeResponse, "description": "Unexpected Backend processing error."},
+}
+POLICY_CHANGE_RESPONSES = {
+    401: {"model": NotificationPolicyChangeResponse, "description": "Bearer authentication failed."},
+    404: {"model": NotificationPolicyChangeResponse, "description": "The public policy_id was not found."},
+    409: {
+        "model": NotificationPolicyChangeResponse,
+        "description": "Idempotency, confirmation reference, or version conflict.",
+    },
+    422: {
+        "model": NotificationPolicyChangeResponse,
+        "description": "Request, date, or policy boundary validation failed.",
+    },
+    500: {
+        "model": NotificationPolicyChangeResponse,
+        "description": "Unexpected Backend processing error.",
+    },
+}
+
 
 def create_backend_v12_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
     router = APIRouter()
@@ -123,6 +150,7 @@ def create_backend_v12_router(get_runtime: Callable[[], SystemRuntime]) -> APIRo
     @router.post(
         RECORD_CHANGE_PATH,
         response_model=RecordChangeResponse,
+        responses=RECORD_CHANGE_RESPONSES,
         dependencies=[Depends(require_backend_api_bearer_token)],
     )
     async def backend_record_change(
@@ -134,6 +162,7 @@ def create_backend_v12_router(get_runtime: Callable[[], SystemRuntime]) -> APIRo
     @router.post(
         POLICY_CHANGE_PATH,
         response_model=NotificationPolicyChangeResponse,
+        responses=POLICY_CHANGE_RESPONSES,
         dependencies=[Depends(require_backend_api_bearer_token)],
     )
     async def backend_policy_change(

@@ -163,6 +163,8 @@ AI가 쓰기 필요성을 판단하면 모델이 아래 쓰기 Tool을 호출한
 
 모든 v1.2 쓰기 Tool의 입력 JSON Schema는 최상위 및 정의된 중첩 객체에 `additionalProperties: false`를 사용한다. 따라서 모델이 위 기술 필드나 정의되지 않은 임의 필드를 추가하면 Backend 호출 전에 거절한다.
 
+Backend 개발팀 전달용 기계 판독 계약은 `docs/BACKEND_V12_WRITE_OPENAPI.json`이다. `python tools/export_backend_v12_openapi.py`로 현재 FastAPI 모델에서 다시 생성할 수 있으며 자동화 테스트가 저장된 파일과 실제 스키마의 일치를 검증한다.
+
 `request_id`는 `source_chat_request_id`, Tool 이름, Tool call ID 및 정규화된 인자 hash로 AI Server가 결정한다. 동일 Tool call을 재시도할 때 같은 `request_id`와 같은 body를 사용한다. 내부 `trace_id`는 Backend 계약으로 전달하지 않는다.
 
 `confirmation_message_id`는 별도의 AI 내부 action ID가 아니라, 현재 Tool 실행을 발생시킨 Backend DB의 실제 사용자 메시지 ID를 사용한다. Backend는 해당 메시지와 환자·대화·원본 요청의 관계를 검증한다.
@@ -213,6 +215,8 @@ Backend는 다음을 검증해야 한다.
 ### 5.3 오류 응답
 
 모든 오류는 HTTP status와 함께 규격의 다음 구조를 반환한다.
+
+Bearer 인증 실패와 Pydantic Request schema 검증 실패도 FastAPI 기본 `detail` 응답을 사용하지 않고 동일한 `success/result/error/processed_at` 계약을 반환한다. 스키마 검증 실패의 `request_id`는 유효한 본문에 포함된 값을 유지하며 오류 코드는 `INVALID_REQUEST`이다.
 
 ```json
 {
@@ -305,12 +309,19 @@ BACKEND_API_TOKEN=replace-with-different-shared-secret
 13. 정책 조회 결과와 정책 변경 응답의 `policy_id`가 동일한 공개 ID이며 숫자형 DB PK가 노출되지 않는다.
 14. 모델이 `patient_id`, `expected_version`, `reason` 또는 정의되지 않은 추가 속성을 쓰기 Tool 인자로 전달하면 Backend 호출 전에 거절된다.
 15. 정책별 경계나 교차 규칙을 위반한 변경은 version과 정책 데이터를 바꾸지 않는다.
+16. OpenAPI에 `BackendApiBearer` security scheme과 401·404·409·422·500 계약 응답이 선언된다.
+17. 인증 실패와 Request schema 검증 실패도 공통 오류 응답 구조를 유지한다.
 
 ## 9. 테스트베드 검증 결과
 
 2026-07-25 기준:
 
-- 전체 자동화 테스트: `441 passed, 3 skipped`
+- 신규 v1.2 엔드포인트 테스트: `7 passed`
+- 기존 polling 동시성 테스트 1건을 제외한 전체 회귀 테스트: `442 passed, 3 skipped, 1 deselected`
+- 기존 `test_system_polling_routes_return_connections_under_concurrency`는 현재 실행 환경에서
+  SQLite `QueuePool(pool_size=2, pool_timeout=1)` checkout timeout으로 실패한다.
+  변경 전 기준 커밋 `b192b8d`의 별도 복사본에서도 동일하게 재현되어 v1.2 계약 변경과는
+  분리된 기존 동시성 이슈로 관리한다.
 - 신규 v1.2 테스트:
   - 메시지 선저장과 별도 assistant ID
   - 동일 채팅 요청 replay
@@ -322,6 +333,8 @@ BACKEND_API_TOKEN=replace-with-different-shared-secret
   - Tool 내부 `expected_version` 조회·주입
   - 기술 인자 및 정의되지 않은 추가 속성 차단
   - 알림 정책 범위·교차 규칙 검증
+  - Bearer security scheme 및 계약 오류 Response OpenAPI 검증
+  - 인증·Request validation 오류의 공통 응답 구조 검증
   - 화면 input box JSON 변환과 동일 conversation 유지
 - 실제 `data/system.db` migration:
   - schema migration 총 32개

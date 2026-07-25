@@ -4,11 +4,17 @@ import contextlib
 import logging
 import threading
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import system_app.services.workers as worker_services
 from system_app.db import SessionLocal, engine
@@ -27,6 +33,7 @@ from system_app.routes import (
 )
 from system_app.runtime import SystemRuntime
 from system_app.services.agent_client import AgentClient
+from system_app.services.backend_v12_service import POLICY_CHANGE_PATH, RECORD_CHANGE_PATH
 from system_app.services.phr_client import PhrClient
 from system_app.services.policy_service import reload_policy_workbook
 
@@ -38,6 +45,7 @@ templates = Jinja2Templates(directory=str(_APP_DIR / "templates"))
 write_lock = threading.RLock()
 
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+BACKEND_V12_CONTRACT_PATHS = frozenset({RECORD_CHANGE_PATH, POLICY_CHANGE_PATH})
 
 
 def static_version(path: str) -> str:
@@ -137,6 +145,47 @@ async def lifespan(_: FastAPI):
 def create_app() -> FastAPI:
     fastapi_app = FastAPI(title="Medication Reminder System", lifespan=lifespan)
 
+    @fastapi_app.exception_handler(RequestValidationError)
+    async def backend_v12_request_validation_handler(
+        request: Request,
+        exc: RequestValidationError,
+    ):
+        if request.url.path not in BACKEND_V12_CONTRACT_PATHS:
+            return await request_validation_exception_handler(request, exc)
+        violations = [
+            {
+                "location": [str(item) for item in error.get("loc", ())],
+                "type": str(error.get("type") or "validation_error"),
+                "message": str(error.get("msg") or "Invalid request."),
+            }
+            for error in exc.errors()
+        ]
+        return _backend_v12_error_response(
+            request_id=_request_id_from_body(exc.body),
+            status_code=422,
+            code="INVALID_REQUEST",
+            message="Request schema or required field is invalid.",
+            details={"violations": violations},
+        )
+
+    @fastapi_app.exception_handler(StarletteHTTPException)
+    async def backend_v12_http_exception_handler(
+        request: Request,
+        exc: StarletteHTTPException,
+    ):
+        if request.url.path not in BACKEND_V12_CONTRACT_PATHS:
+            return await http_exception_handler(request, exc)
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        code = str(detail.get("code") or ("UNAUTHORIZED" if exc.status_code == 401 else "INVALID_REQUEST"))
+        return _backend_v12_error_response(
+            request_id=await _request_id_from_request(request),
+            status_code=exc.status_code,
+            code=code,
+            message=str(detail.get("message") or code),
+            retryable=bool(detail.get("retryable", False)),
+            details=detail.get("details") if isinstance(detail.get("details"), dict) else None,
+        )
+
     @fastapi_app.middleware("http")
     async def prevent_stale_browser_cache(request, call_next):
         response = await call_next(request)
@@ -157,6 +206,44 @@ def create_app() -> FastAPI:
     fastapi_app.include_router(create_backend_v12_router(get_runtime))
     fastapi_app.include_router(create_health_router())
     return fastapi_app
+
+
+def _backend_v12_error_response(
+    *,
+    request_id: str,
+    status_code: int,
+    code: str,
+    message: str,
+    retryable: bool = False,
+    details: dict[str, Any] | None = None,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "success": False,
+            "request_id": request_id or "unknown_request",
+            "result": None,
+            "error": {
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+                "details": details,
+            },
+            "processed_at": datetime.now(UTC).isoformat(),
+        },
+    )
+
+
+def _request_id_from_body(body: Any) -> str:
+    return str(body.get("request_id") or "") if isinstance(body, dict) else ""
+
+
+async def _request_id_from_request(request: Request) -> str:
+    try:
+        body = await request.json()
+    except (ValueError, RuntimeError):
+        return ""
+    return _request_id_from_body(body)
 
 
 app = create_app()

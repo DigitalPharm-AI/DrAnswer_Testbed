@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -13,12 +14,84 @@ from agent_app.integration.chat_contracts import ChatMessageContent, ChatSyncRes
 from agent_app.tools.backend_query import BackendChatMessageNotFound, BackendQueryTools
 from shared.db import create_session_factory
 from system_app import main as system_main
-from system_app.routes import chat as chat_routes
+from system_app import security as system_security
 from system_app.db import SessionLocal
 from system_app.migrations import run_migrations
 from system_app.models import Base, ChatMessage, DoseEvent, ReminderPolicy
+from system_app.openapi_v12 import build_backend_v12_write_openapi
+from system_app.routes import chat as chat_routes
 
 NOW = datetime(2026, 7, 25, 13, 0, tzinfo=UTC)
+
+
+def test_backend_v12_openapi_declares_bearer_and_contract_error_responses() -> None:
+    specification = system_main.create_app().openapi()
+    record_operation = specification["paths"]["/agent/sync/record-change"]["post"]
+    policy_operation = specification["paths"]["/agent/sync/notification-policy-change"]["post"]
+
+    assert specification["components"]["securitySchemes"]["BackendApiBearer"]["scheme"] == "bearer"
+    assert record_operation["security"] == [{"BackendApiBearer": []}]
+    assert policy_operation["security"] == [{"BackendApiBearer": []}]
+    assert "parameters" not in record_operation
+    assert set(record_operation["responses"]) == {"200", "401", "404", "409", "422", "500"}
+    assert set(policy_operation["responses"]) == {"200", "401", "404", "409", "422", "500"}
+    assert (
+        policy_operation["responses"]["422"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/NotificationPolicyChangeResponse"
+    )
+    exported = json.loads(Path("docs/BACKEND_V12_WRITE_OPENAPI.json").read_text(encoding="utf-8"))
+    assert exported == build_backend_v12_write_openapi(system_main.create_app())
+
+
+def test_backend_v12_invalid_request_and_unauthorized_use_contract_error_shape(monkeypatch) -> None:
+    invalid_client = TestClient(system_main.app)
+    invalid = invalid_client.post(
+        "/agent/sync/notification-policy-change",
+        json={"request_id": "invalid-policy-request"},
+    )
+    invalid_client.close()
+
+    assert invalid.status_code == 422
+    assert invalid.json()["success"] is False
+    assert invalid.json()["request_id"] == "invalid-policy-request"
+    assert invalid.json()["result"] is None
+    assert invalid.json()["error"]["code"] == "INVALID_REQUEST"
+    assert invalid.json()["error"]["details"]["violations"]
+
+    class AuthenticatedSettings:
+        backend_api_token = "backend-secret"
+
+        @staticmethod
+        def require_backend_api_token_in_production() -> None:
+            return None
+
+    monkeypatch.setattr(system_security, "get_settings", lambda: AuthenticatedSettings())
+    valid_body = {
+        "request_id": "unauthorized-record-request",
+        "source_chat_request_id": "source-request",
+        "conversation_id": "conversation",
+        "confirmation_message_id": "100",
+        "patient_id": "patient",
+        "resource_type": "nutrition_meal",
+        "operation": "create",
+        "record_id": None,
+        "parent_record_id": None,
+        "expected_version": None,
+        "payload": {
+            "meal_type": "lunch",
+            "foods": [{"food_name": "두부", "nutrients": {"protein": 8}}],
+            "reason": "AI Server Tool 실행",
+        },
+        "requested_at": NOW.isoformat(),
+    }
+    auth_client = TestClient(system_main.app)
+    unauthorized = auth_client.post("/agent/sync/record-change", json=valid_body)
+    auth_client.close()
+
+    assert unauthorized.status_code == 401
+    assert unauthorized.json()["success"] is False
+    assert unauthorized.json()["request_id"] == "unauthorized-record-request"
+    assert unauthorized.json()["error"]["code"] == "UNAUTHORIZED"
 
 
 def test_backend_chat_persists_user_before_agent_and_replays_without_duplicate(monkeypatch) -> None:
