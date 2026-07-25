@@ -4,15 +4,15 @@ import asyncio
 from typing import Any
 
 from agent_app.agents.nutrition_management import NutritionManagementAgent
-from agent_app.tool_runtime import ToolRuntime
-from tests.test_agent_app_langgraph_native import NativeChatProvider
+from agent_app.tools.runtime import ToolRuntime
+from tests.support.llm import NativeChatProvider
 
 
 class ConcurrentSpecialistProvider(NativeChatProvider):
     def __init__(self) -> None:
         self.chat_model_bound_tool_history: list[list[str]] = []
 
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         await asyncio.sleep(0)
         return {"message": f"전문 응답: {user_payload['message']}"}
 

@@ -8,7 +8,8 @@ from typing import Any
 
 from sqlalchemy import desc, select
 
-from agent_app.tool_names import CREATE_MEDICATION_SIDE_EFFECT_RECORD
+from agent_app.integration.chat_contracts import ChatSyncRequest
+from agent_app.tools.names import CREATE_MEDICATION_SIDE_EFFECT_RECORD
 from shared.json_utils import dump_json as dump_metadata_json
 from shared.json_utils import parse_json_object as parse_metadata_json
 from shared.redaction import safe_exception_summary
@@ -16,9 +17,10 @@ from shared.schemas import AgentCallbackContext, MutationConfirmationResolutionR
 from shared.settings import get_settings
 from shared.time_utils import utc_now
 from system_app.db import SessionLocal
-from system_app.models import AgentJob, Base, MutationConfirmation, Notification
+from system_app.models import AgentJob, Base, ChatMessage, MutationConfirmation, Notification
 from system_app.services import trace_logging
 from system_app.services.agent_client import AgentClient
+from system_app.services.backend_chat_service import mark_user_message_failed, persist_assistant_response
 from system_app.services.agent_error_service import present_agent_error
 from system_app.services.agent_jobs import (
     RUNNING,
@@ -223,6 +225,21 @@ def system_event_worker(
     try:
         with write_lock:
             with SessionLocal() as session:
+                notification = session.get(Notification, notification_id)
+                request_metadata = parse_metadata_json(notification.metadata_json) if notification is not None else {}
+        if request_metadata.get("contract_version") == "v1.2":
+            _system_event_worker_v12(
+                event_type,
+                message,
+                notification_id,
+                write_lock,
+                agent_client,
+                request_metadata,
+            )
+            return
+
+        with write_lock:
+            with SessionLocal() as session:
                 request = build_multiturn_chat_request(session, event_type, message, notification_id)
                 session.commit()
 
@@ -326,8 +343,80 @@ def system_event_worker(
         )
         with write_lock:
             with SessionLocal() as session:
+                notification = session.get(Notification, notification_id)
+                metadata = parse_metadata_json(notification.metadata_json) if notification is not None else {}
+                if metadata.get("contract_version") == "v1.2":
+                    mark_user_message_failed(
+                        session,
+                        user_message_id=int(metadata.get("chat_message_id") or 0),
+                        error_code="BACKEND_CHAT_PROCESSING_ERROR",
+                        retryable=True,
+                    )
                 mark_system_event_request_failed(session, event_type, message, notification_id, exc)
                 session.commit()
+
+
+def _system_event_worker_v12(
+    event_type: str,
+    message: str,
+    notification_id: int,
+    write_lock: threading.RLock,
+    agent_client: AgentClient,
+    request_metadata: dict[str, Any],
+) -> None:
+    chat_message_id = int(request_metadata.get("chat_message_id") or 0)
+    request_id = str(request_metadata.get("ai_request_id") or "")
+    conversation_id = str(request_metadata.get("agent_conversation_id") or "")
+    message_at_text = str(request_metadata.get("message_at") or "")
+    if not chat_message_id or not request_id or not conversation_id or not message_at_text:
+        raise ValueError("backend_v12_chat_metadata_missing")
+    from datetime import datetime
+
+    message_at = datetime.fromisoformat(message_at_text)
+    with write_lock:
+        with SessionLocal() as session:
+            user_message = session.get(ChatMessage, chat_message_id)
+            if user_message is None:
+                raise ValueError("backend_v12_user_message_missing")
+            request = ChatSyncRequest(
+                request_id=request_id,
+                message_id=str(user_message.id),
+                conversation_id=conversation_id,
+                patient_id=user_message.patient_id,
+                requested_return_type=request_metadata.get("requested_return_type"),
+                message=message,
+                message_at=message_at,
+            )
+
+    response = asyncio.run(agent_client.send_sync_chat(request))
+    with write_lock:
+        with SessionLocal() as session:
+            user_message = session.get(ChatMessage, chat_message_id)
+            if user_message is None:
+                raise ValueError("backend_v12_user_message_missing")
+            persisted = persist_assistant_response(
+                session,
+                user_message=user_message,
+                response=response,
+            )
+            result_message = response.message.text or response.message.message_title or ""
+            update_system_event_request_notification(
+                session,
+                notification_id,
+                status="answered",
+                request_message=message,
+                result_message=result_message,
+                response=None,
+            )
+            session.commit()
+    trace_logging.log_info(
+        "system_event_v12_response_persisted",
+        event_type=event_type,
+        notification_id=notification_id,
+        request_id=request_id,
+        user_message_id=chat_message_id,
+        assistant_message_id=persisted.assistant_message_id,
+    )
 
 
 def mutation_confirmation_worker(

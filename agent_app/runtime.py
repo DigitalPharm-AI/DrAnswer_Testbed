@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agent_app.graph import AgentLangGraphNativeOrchestrator
-from agent_app.provider_base import BaseLLMProvider
-from agent_app.providers import create_llm_provider
-from agent_app.tool_executor import McpAgentToolExecutor
-from agent_app.tool_mcp_server import AgentMcpToolServer
+from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
+from agent_app.providers.base import BaseLLMProvider
+from agent_app.providers.factory import create_llm_provider
+from agent_app.tools.executor import McpAgentToolExecutor
+from agent_app.tools.mcp_server import AgentMcpToolServer
 
 
 @dataclass(frozen=True)

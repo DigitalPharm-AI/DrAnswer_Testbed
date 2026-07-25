@@ -8,8 +8,8 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from agent_app.confirmation_actions import ConfirmationActionRegistry
-from agent_app.tool_names import (
+from agent_app.orchestration.confirmations import ConfirmationActionRegistry
+from agent_app.tools.names import (
     CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,

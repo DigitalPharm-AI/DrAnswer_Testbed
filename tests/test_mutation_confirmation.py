@@ -9,9 +9,9 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from agent_app.async_worker import _continuation_payload
-from agent_app.confirmation_actions import ConfirmationActionRegistry
-from agent_app.tool_names import (
+from agent_app.jobs.worker import _continuation_payload
+from agent_app.orchestration.confirmations import ConfirmationActionRegistry
+from agent_app.tools.names import (
     CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
@@ -21,8 +21,8 @@ from agent_app.tool_names import (
     UPDATE_NUTRITION_MEAL_RECORD,
     UPSERT_NUTRITION_PREFERENCE_FACT,
 )
-from agent_app.tool_protocol import mcp_result_from_tool_result, tool_result_from_mcp_result
-from agent_app.tool_runtime import ToolRuntime
+from agent_app.tools.protocol import mcp_result_from_tool_result, tool_result_from_mcp_result
+from agent_app.tools.runtime import ToolRuntime
 from shared.json_utils import dump_json
 from shared.schemas import (
     AgentAsyncChatResultRequest,

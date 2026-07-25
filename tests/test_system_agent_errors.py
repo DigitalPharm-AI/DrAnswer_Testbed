@@ -10,7 +10,7 @@ import pytest
 
 import system_app.main as system_main
 import system_app.services.workers as worker_services
-from agent_app.tool_names import CREATE_MEDICATION_SIDE_EFFECT_RECORD
+from agent_app.tools.names import CREATE_MEDICATION_SIDE_EFFECT_RECORD
 from shared.json_utils import dump_json
 from shared.schemas import (
     AgentResponse,

@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from agent_app.agents.multiturn_chat import MultiturnChatAgent
-from agent_app.async_tasks import (
+from agent_app.jobs.tasks import (
     DEAD,
     FAILED,
     PENDING,
@@ -20,15 +20,15 @@ from agent_app.async_tasks import (
     mark_async_task_failed,
     retry_dead_async_task,
 )
-from agent_app.async_tasks import (
+from agent_app.jobs.tasks import (
     RUNNING as TASK_RUNNING,
 )
-from agent_app.async_worker import _execute_snapshot
-from agent_app.models import AgentWorkerHeartbeat
-from agent_app.models import Base as AgentBase
-from agent_app.providers import RuleBasedProvider
-from agent_app.tool_runtime import ToolRuntime
-from agent_app.worker_status import (
+from agent_app.jobs.worker import _execute_snapshot
+from agent_app.persistence.models import AgentWorkerHeartbeat
+from agent_app.persistence.models import Base as AgentBase
+from agent_app.providers.rule_based import RuleBasedProvider
+from agent_app.tools.runtime import ToolRuntime
+from agent_app.jobs.status import (
     WORKER_RUNNING,
     WORKER_STALE,
     WORKER_STOPPED,
@@ -698,7 +698,7 @@ def test_async_chat_worker_executes_required_continuation_before_callback(monkey
         captured["snapshot"] = snapshot
         captured["response"] = response
 
-    monkeypatch.setattr("agent_app.async_worker._post_chat_result", fake_post_chat_result)
+    monkeypatch.setattr("agent_app.jobs.worker._post_chat_result", fake_post_chat_result)
     orchestrator = ContinuationOrchestrator()
 
     asyncio.run(

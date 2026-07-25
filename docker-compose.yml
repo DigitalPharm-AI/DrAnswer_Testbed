@@ -35,6 +35,7 @@ services:
     environment:
       DA_DRUG_SERVICE: agent_app
       AGENT_DATABASE_URL: sqlite:////app/data/agent.db
+      BACKEND_READ_DATABASE_URL: sqlite:////app/data/system.db
       AGENT_EMBEDDED_WORKER_ENABLED: "false"
       SYSTEM_BASE_URL: http://system-app:8000
       PHR_BASE_URL: http://phr-app:8002
@@ -69,6 +70,7 @@ services:
     environment:
       DA_DRUG_SERVICE: agent_app
       AGENT_DATABASE_URL: sqlite:////app/data/agent.db
+      BACKEND_READ_DATABASE_URL: sqlite:////app/data/system.db
       SYSTEM_BASE_URL: http://system-app:8000
       PHR_BASE_URL: http://phr-app:8002
       PROMPT_WORKBOOK_PATH: /app/data/prompt_registry.xlsx

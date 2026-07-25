@@ -7,7 +7,7 @@ from langchain_core.messages import SystemMessage
 from langgraph.graph import END, START, StateGraph
 
 from agent_app import trace_logging
-from agent_app.chat_tooling import (
+from agent_app.llm.messages import (
     ai_message_from_tool_calls,
     build_chat_messages,
     langchain_tools_from_catalog,
@@ -16,12 +16,12 @@ from agent_app.chat_tooling import (
     tool_messages_from_results,
 )
 from agent_app.errors import AgentExecutionError
-from agent_app.generation import agent_error
-from agent_app.output_validation import validate_llm_output
-from agent_app.providers import BaseLLMProvider
-from agent_app.tool_catalog import ToolCatalog
-from agent_app.tool_policy import normalize_policy_tool_calls
-from agent_app.tool_runtime import ToolRuntime
+from agent_app.llm.generation import agent_error
+from agent_app.llm.validation import validate_llm_output
+from agent_app.providers.base import BaseLLMProvider
+from agent_app.tools.catalog import ToolCatalog
+from agent_app.tools.policy import normalize_policy_tool_calls
+from agent_app.tools.runtime import ToolRuntime
 from shared.redaction import safe_exception_summary
 from shared.schemas import AgentResponse
 

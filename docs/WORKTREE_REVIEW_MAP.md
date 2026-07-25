@@ -37,14 +37,14 @@ Review focus:
 Primary files:
 
 - `agent_app/ae_pro_ctcae.py`
-- `agent_app/async_worker.py`
-- `agent_app/prompt_builders.py`
-- `agent_app/rule_based_provider.py`
-- `agent_app/tool_catalog.py`
-- `agent_app/tool_mcp_server.py`
-- `agent_app/tool_permissions.py`
-- `agent_app/tool_protocol.py`
-- `agent_app/tool_results.py`
+- `agent_app/jobs/worker.py`
+- `agent_app/llm/prompts.py`
+- `agent_app/providers/rule_based.py`
+- `agent_app/tools/catalog.py`
+- `agent_app/tools/mcp_server.py`
+- `agent_app/tools/permissions.py`
+- `agent_app/tools/protocol.py`
+- `agent_app/tools/results.py`
 - `phr_app/services.py`
 - `shared/schemas.py`
 - `system_app/services/workers.py`
@@ -78,9 +78,9 @@ Primary files:
 - `shared/redaction.py`
 - `shared/readiness_budget.py`
 - `shared/settings.py`
-- `agent_app/ops_readiness.py`
+- `agent_app/jobs/readiness.py`
 - `agent_app/main.py`
-- `agent_app/async_tasks.py`
+- `agent_app/jobs/tasks.py`
 - `agent_app/trace_logging.py`
 - `system_app/services/trace_logging.py`
 - `system_app/services/failure_copy.py`
@@ -113,7 +113,7 @@ Review focus:
 아래 파일은 여러 review set이 같이 지나갑니다. 리뷰 시 diff를 기능 단위로 나누어 확인해야 합니다.
 
 - `agent_app/main.py`: async endpoint + readiness endpoint
-- `agent_app/async_tasks.py`: async observability + redacted payload metadata
+- `agent_app/jobs/tasks.py`: async observability + redacted payload metadata
 - `phr_app/main.py`: PHR API + read-only containment
 - `shared/settings.py`: service settings + `PHR_READ_ONLY`
 - `tests/test_phr_app.py`: 기존 PHR behavior + read-only containment

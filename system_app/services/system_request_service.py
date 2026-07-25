@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from agent_app.tool_names import (
+from agent_app.tools.names import (
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     GET_PRO_CTCAE_QUESTIONNAIRE,
     POLICY_TOOLS,
@@ -72,9 +73,30 @@ def create_system_event_request(
     clock = ensure_clock(session)
     visible_at = current_time or clock.current_time
     request_metadata = dict(metadata or {})
-    chat_message = add_chat_message(session, role="user", content=message, sender_type="patient", category=event_type, metadata=request_metadata)
+    request_id = str(request_metadata.get("ai_request_id") or f"chat-{uuid4()}")
+    is_v12 = request_metadata.get("contract_version") == "v1.2"
+    chat_message = add_chat_message(
+        session,
+        role="user",
+        content=message,
+        sender_type="patient",
+        category=event_type,
+        metadata=request_metadata,
+        ai_request_id=request_id,
+        message_type="text",
+        message_payload={"text": message},
+        processing_status="pending" if is_v12 else "completed",
+    )
     conversation_id = str(request_metadata.get("agent_conversation_id") or f"system-event-{chat_message.id}-{uuid4().hex[:12]}")
     request_metadata["agent_conversation_id"] = conversation_id
+    request_metadata["ai_request_id"] = request_id
+    message_at = visible_at
+    if message_at.tzinfo is None:
+        message_at = message_at.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+    request_metadata["message_at"] = message_at.isoformat()
+    chat_message.conversation_id = conversation_id
+    chat_message.metadata_json = dump_json(request_metadata)
+    session.flush()
     notification = create_notification(
         session,
         notification_type="system_policy_request",
@@ -88,6 +110,8 @@ def create_system_event_request(
             "request_message": message,
             "chat_message_id": chat_message.id,
             "agent_conversation_id": conversation_id,
+            "ai_request_id": request_id,
+            "message_at": message_at.isoformat(),
             **request_metadata,
         },
     )

@@ -2,26 +2,25 @@ from __future__ import annotations
 
 import asyncio
 
-from agent_app.chat_tooling import langchain_tools_from_catalog
+from agent_app.llm.messages import langchain_tools_from_catalog
 from agent_app.main import app as agent_app
-from agent_app.provider_base import BaseLLMProvider
-from agent_app.tool_catalog import ToolCatalog
-from agent_app.tool_permissions import requires_human_handoff
-from agent_app.tool_policy import DEFERRED_POLICY_TOOL_NAMES
-from agent_app.tool_protocol import ALLOWED_TOOL_NAMES
-from agent_app.tool_runtime import ToolRuntime
+from agent_app.providers.base import BaseLLMProvider
+from agent_app.tools.catalog import ToolCatalog
+from agent_app.tools.permissions import requires_human_handoff
+from agent_app.tools.policy import DEFERRED_POLICY_TOOL_NAMES
+from agent_app.tools.protocol import ALLOWED_TOOL_NAMES
+from agent_app.tools.runtime import ToolRuntime
 from shared.schemas import ToolCallResult
 from system_app.services import observability_view, trace_retention
 
 
 def _routes() -> set[tuple[str, str]]:
     rows: set[tuple[str, str]] = set()
-    for route in agent_app.routes:
-        methods = getattr(route, "methods", None) or set()
-        path = getattr(route, "path", "")
-        for method in methods:
-            if method in {"GET", "POST"}:
-                rows.add((method, path))
+    for path, operations in agent_app.openapi()["paths"].items():
+        for method in operations:
+            upper_method = method.upper()
+            if upper_method in {"GET", "POST"}:
+                rows.add((upper_method, path))
     return rows
 
 
@@ -74,6 +73,7 @@ def test_multiturn_tools_bind_through_chat_model_tool_specs():
     by_name = {tool["function"]["name"]: tool for tool in tools}
 
     assert not hasattr(BaseLLMProvider, "bind_tools")
+    assert not hasattr(BaseLLMProvider, "generate_json")
     assert {"update_medication_dose_event_status", "create_nutrition_meal_record", "get_nutrition_recommendation_candidates"} <= set(by_name)
     assert by_name["update_medication_dose_event_status"]["type"] == "function"
     assert by_name["update_medication_dose_event_status"]["function"]["parameters"]["type"] == "object"
@@ -134,7 +134,7 @@ def test_tool_runtime_logs_routing_context(monkeypatch):
     def capture_log(event: str, **fields):
         events.append({"event": event, **fields})
 
-    monkeypatch.setattr("agent_app.tool_runtime.trace_logging.log_info", capture_log)
+    monkeypatch.setattr("agent_app.tools.runtime.trace_logging.log_info", capture_log)
 
     runtime = ToolRuntime(CapturingExecutor())
     asyncio.run(

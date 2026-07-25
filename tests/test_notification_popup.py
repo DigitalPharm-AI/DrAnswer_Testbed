@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 import system_app.main as system_main
 import system_app.routes.notifications as notifications_routes
-from agent_app.tool_names import CREATE_MEDICATION_SIDE_EFFECT_RECORD
+from agent_app.tools.names import CREATE_MEDICATION_SIDE_EFFECT_RECORD
 from shared.schemas import AgentResponse, MissedDoseEventPayload, PhrPatientRegistrationResult, PhrRegisteredMedication
 from shared.settings import get_settings
 from system_app.db import SessionLocal

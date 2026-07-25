@@ -19,7 +19,7 @@
 
 - Added `shared.redaction.safe_log_arguments()` as the single compact sanitizer for tool-call argument logs.
 - Replaced duplicated sanitizer logic in:
-  - `agent_app.tool_runtime`
+  - `agent_app.tools.runtime`
   - `system_app.services.system_request_service`
 - The shared sanitizer keeps large payloads compact (`list` count, `dict` keys) while applying the same identifier, secret, and clinical text redaction policy everywhere.
 - `patient_id` and `phr_patient_key` now follow the central identifier-hash policy instead of each caller inventing its own presence-only variant.
@@ -54,10 +54,10 @@
 
 - Extended the shared UTC timestamp helper usage to the agent async runtime and worker observability path.
 - Updated:
-  - `agent_app.models`
-  - `agent_app.async_tasks`
-  - `agent_app.worker_status`
-  - `agent_app.ops_readiness`
+  - `agent_app.persistence.models`
+  - `agent_app.jobs.tasks`
+  - `agent_app.jobs.status`
+  - `agent_app.jobs.readiness`
   - `system_app.services.clock_service`
   - `system_app.services.agent_jobs`
 - This aligns async queue timestamps, worker heartbeat timestamps, readiness age calculations, simulation clock pause/resume timestamps, and system-side background job timestamps on the same non-deprecated UTC helper.
@@ -424,7 +424,7 @@
   - `ChatModel.bind_tools(...)`
   - `ChatModel.ainvoke(...)`
 - Removed `BaseLLMProvider.bind_tools(...)` and deleted the adapter module that was wrapping `generate_json(...)`.
-- Added `agent_app.chat_tooling` for only the reusable pieces that remain necessary:
+- Added `agent_app.llm.messages` for only the reusable pieces that remain necessary:
   - MCP-ish tool catalog to LangChain function tool spec conversion.
   - `HumanMessage` payload construction.
   - `AIMessage.tool_calls` extraction.

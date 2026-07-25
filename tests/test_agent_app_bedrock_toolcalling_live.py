@@ -10,8 +10,8 @@ import pytest
 _shared_env = Path(".env") if Path(".env").exists() else Path("..") / ".env"
 os.environ.setdefault("DA_DRUG_ENV_FILE", f"{_shared_env},.env.agent_app")
 
-from agent_app.graph import AgentLangGraphNativeOrchestrator  # noqa: E402
-from agent_app.providers import BedrockAnthropicProvider  # noqa: E402
+from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator  # noqa: E402
+from agent_app.providers.bedrock import BedrockAnthropicProvider  # noqa: E402
 from shared.schemas import MultiturnChatRequest, ToolCallResult  # noqa: E402
 from shared.settings import get_settings  # noqa: E402
 

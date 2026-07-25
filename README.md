@@ -1,6 +1,9 @@
 # 복약 알림 POC
 
 FastAPI 기반 `system_app`, LangGraph 에이전트 `agent_app`, 가상 `phr_app`으로 구성된 복약 알림 POC입니다.
+
+AI 연동규격 v1.2 테스트베드 구현과 Backend 개발팀 요구사항은
+[`docs/BACKEND_V12_TESTBED_REQUIREMENTS.md`](docs/BACKEND_V12_TESTBED_REQUIREMENTS.md)를 참고하세요.
 한 명의 환자를 대상으로 복약 등록, 시간 시뮬레이션, 복약 알림/대화 알림, 미복용 후속 질문, AI 기반 알림 정책 최적화를 한 화면에서 검증할 수 있습니다.
 
 ## 구성

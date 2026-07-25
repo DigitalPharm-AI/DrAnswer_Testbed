@@ -1,5 +1,6 @@
 from system_app.routes.agent_api import create_agent_api_router
 from system_app.routes.agent_async_api import create_agent_async_api_router
+from system_app.routes.backend_v12 import create_backend_v12_router
 from system_app.routes.chat import create_chat_router
 from system_app.routes.health import create_health_router
 from system_app.routes.medications import create_medications_router
@@ -11,6 +12,7 @@ from system_app.routes.simulation import create_simulation_router
 __all__ = [
     "create_agent_api_router",
     "create_agent_async_api_router",
+    "create_backend_v12_router",
     "create_chat_router",
     "create_health_router",
     "create_medications_router",

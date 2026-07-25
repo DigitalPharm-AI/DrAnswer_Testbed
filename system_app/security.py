@@ -18,3 +18,17 @@ def require_internal_api_token(x_internal_api_token: str | None = Header(default
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid_internal_api_token",
         )
+
+
+def require_backend_api_bearer_token(authorization: str | None = Header(default=None)) -> None:
+    settings = get_settings()
+    settings.require_backend_api_token_in_production()
+    expected_token = settings.backend_api_token
+    if not expected_token:
+        return
+    scheme, _, credential = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not credential or not hmac.compare_digest(credential, expected_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid_backend_api_token",
+        )

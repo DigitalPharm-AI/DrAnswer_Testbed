@@ -72,7 +72,9 @@ class NutritionMeal(Base):
     meal_time: Mapped[str] = mapped_column(String(8), default="")
     scenario_key: Mapped[str] = mapped_column(String(80), default="")
     description: Mapped[str] = mapped_column(Text, default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class NutritionFood(Base):
@@ -88,7 +90,9 @@ class NutritionFood(Base):
     sodium: Mapped[float] = mapped_column(Float, default=0.0)
     fat: Mapped[float] = mapped_column(Float, default=0.0)
     carbohydrates: Mapped[float] = mapped_column(Float, default=0.0)
+    version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class DailyNutritionCheck(Base):
@@ -216,7 +220,9 @@ class DoseEvent(Base):
     missed_handled: Mapped[bool] = mapped_column(Boolean, default=False)
     missed_detected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class SideEffectRecord(Base):
@@ -284,6 +290,7 @@ class ReminderPolicy(Base):
     reason: Mapped[str] = mapped_column(Text)
     source: Mapped[str] = mapped_column(String(40))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
@@ -322,13 +329,35 @@ class ChatMessage(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
+    conversation_id: Mapped[str] = mapped_column(String(180), index=True, default="")
+    ai_request_id: Mapped[str] = mapped_column(String(180), index=True, default="")
     role: Mapped[str] = mapped_column(String(20))
     sender_type: Mapped[str] = mapped_column(String(20), default="user")
     category: Mapped[str] = mapped_column(String(40), default="chat")
+    message_type: Mapped[str] = mapped_column(String(32), default="text")
     content: Mapped[str] = mapped_column(Text)
+    message_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    reply_to_message_id: Mapped[int | None] = mapped_column(ForeignKey("chat_messages.id"), nullable=True, index=True)
+    processing_status: Mapped[str] = mapped_column(String(32), default="completed", index=True)
     related_dose_event_id: Mapped[int | None] = mapped_column(ForeignKey("dose_events.id"), nullable=True)
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class BackendApiRequest(Base):
+    __tablename__ = "backend_api_requests"
+    __table_args__ = (UniqueConstraint("api_path", "request_id", name="uq_backend_api_path_request"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    api_path: Mapped[str] = mapped_column(String(180), index=True)
+    request_id: Mapped[str] = mapped_column(String(180), index=True)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="PROCESSING", index=True)
+    http_status: Mapped[int] = mapped_column(Integer, default=0)
+    response_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_code: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class MutationConfirmation(Base):

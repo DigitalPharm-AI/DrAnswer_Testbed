@@ -414,6 +414,39 @@ MIGRATIONS: list[tuple[str, str]] = [
         "20260715_0003_mutation_confirmations_fingerprint",
         "CREATE INDEX IF NOT EXISTS ix_mutation_confirmations_fingerprint ON mutation_confirmations (action_fingerprint)",
     ),
+    (
+        "20260725_0001_backend_api_requests",
+        """
+        CREATE TABLE IF NOT EXISTS backend_api_requests (
+            id INTEGER NOT NULL PRIMARY KEY,
+            api_path VARCHAR(180) NOT NULL,
+            request_id VARCHAR(180) NOT NULL,
+            request_hash VARCHAR(64) NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'PROCESSING',
+            http_status INTEGER NOT NULL DEFAULT 0,
+            response_json TEXT NOT NULL DEFAULT '{}',
+            error_code VARCHAR(120) NOT NULL DEFAULT '',
+            created_at DATETIME,
+            updated_at DATETIME,
+            UNIQUE(api_path, request_id)
+        )
+        """,
+    ),
+    (
+        "20260725_0002_backend_api_request_lookup",
+        """
+        CREATE INDEX IF NOT EXISTS ix_backend_api_requests_status_updated
+        ON backend_api_requests (status, updated_at)
+        """,
+    ),
+    (
+        "20260725_0003_chat_conversation_lookup",
+        "SELECT 1",
+    ),
+    (
+        "20260725_0004_chat_assistant_request_unique",
+        "SELECT 1",
+    ),
 ]
 
 
@@ -430,12 +463,35 @@ REMINDER_POLICY_COLUMNS: dict[str, str] = {
     "missed_dose_body_template": (
         "TEXT DEFAULT '{slot_label} {medication_name} 미복용이 확정되어 AI가 상황을 확인하고 있어요.'"
     ),
+    "version": "INTEGER DEFAULT 1",
     "updated_at": "DATETIME",
 }
 
 
 CHAT_MESSAGE_COLUMNS: dict[str, str] = {
+    "conversation_id": "VARCHAR(180) DEFAULT ''",
+    "ai_request_id": "VARCHAR(180) DEFAULT ''",
+    "message_type": "VARCHAR(32) DEFAULT 'text'",
+    "message_payload_json": "TEXT DEFAULT '{}'",
+    "reply_to_message_id": "INTEGER",
+    "processing_status": "VARCHAR(32) DEFAULT 'completed'",
     "metadata_json": "TEXT DEFAULT '{}'",
+}
+
+
+VERSIONED_TABLE_COLUMNS: dict[str, dict[str, str]] = {
+    "dose_events": {
+        "version": "INTEGER DEFAULT 1",
+        "updated_at": "DATETIME",
+    },
+    "nutrition_meals": {
+        "version": "INTEGER DEFAULT 1",
+        "updated_at": "DATETIME",
+    },
+    "nutrition_foods": {
+        "version": "INTEGER DEFAULT 1",
+        "updated_at": "DATETIME",
+    },
 }
 
 
@@ -459,10 +515,43 @@ def ensure_chat_message_columns(engine: Engine) -> None:
             if column_name in existing_columns:
                 continue
             connection.execute(text(f"ALTER TABLE chat_messages ADD COLUMN {column_name} {column_type}"))
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_chat_messages_conversation_id "
+                "ON chat_messages (conversation_id, id)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_messages_ai_request_role "
+                "ON chat_messages (ai_request_id, role) "
+                "WHERE ai_request_id <> ''"
+            )
+        )
+
+
+def ensure_versioned_table_columns(engine: Engine) -> None:
+    with engine.begin() as connection:
+        for table_name, required_columns in VERSIONED_TABLE_COLUMNS.items():
+            existing_columns = table_columns(connection, table_name)
+            if not existing_columns:
+                continue
+            for column_name, column_type in required_columns.items():
+                if column_name in existing_columns:
+                    continue
+                connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
+            connection.execute(
+                text(
+                    f"UPDATE {table_name} "
+                    "SET version = COALESCE(version, 1), "
+                    "updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)"
+                )
+            )
 
 
 def run_migrations(engine: Engine) -> list[str]:
-    applied = run_sql_migrations(engine, MIGRATIONS)
     ensure_reminder_policy_columns(engine)
     ensure_chat_message_columns(engine)
+    ensure_versioned_table_columns(engine)
+    applied = run_sql_migrations(engine, MIGRATIONS)
     return applied

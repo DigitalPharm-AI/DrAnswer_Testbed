@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.orm import Session
 
-from agent_app.tool_names import CREATE_NUTRITION_MEAL_RECORD
+from agent_app.tools.names import CREATE_NUTRITION_MEAL_RECORD
 from shared.json_utils import dump_json, parse_json_object
 from shared.schemas import MutationConfirmationPrepareRequest
 from shared.settings import get_settings
@@ -203,6 +204,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
         request: Request,
         event_type: str = Form("multiturn_chat"),
         message: str = Form(...),
+        contract_version: str = Form("legacy"),
         session: Session = Depends(get_session),
     ):
         runtime = get_runtime()
@@ -215,6 +217,8 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
             clock = ensure_clock(session)
             pending_confirmation = pending_confirmation_for_patient(session, patient_id)
             request_metadata: dict = {}
+            if contract_version == "v1.2":
+                request_metadata["contract_version"] = "v1.2"
             if pending_confirmation is not None:
                 request_metadata["pending_mutation_confirmation_id"] = pending_confirmation.public_id
                 request_metadata["pending_mutation_confirmation"] = pending_confirmation_reply_context(
@@ -249,6 +253,62 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
             args=(event_type, message, notification_id),
         )
         return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
+
+    @router.post("/chat/contract-response")
+    def contract_response_chat(
+        request: Request,
+        conversation_id: str = Form(...),
+        source_chat_request_id: str = Form(...),
+        response_kind: str = Form(...),
+        selection_message: str = Form(""),
+        input_labels: list[str] = Form(default=[]),
+        input_values: list[str] = Form(default=[]),
+        session: Session = Depends(get_session),
+    ):
+        if response_kind == "selection":
+            message = selection_message.strip()
+            requested_return_type = None
+            if not message:
+                raise HTTPException(status_code=422, detail="selection_message_required")
+        elif response_kind == "input":
+            if not input_labels or len(input_labels) != len(input_values):
+                raise HTTPException(status_code=422, detail="input_box_values_invalid")
+            message = json.dumps(
+                {label: value for label, value in zip(input_labels, input_values, strict=True)},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            requested_return_type = "input_box"
+        else:
+            raise HTTPException(status_code=422, detail="contract_response_kind_invalid")
+
+        runtime = get_runtime()
+        with runtime.write_lock:
+            clock = ensure_clock(session)
+            request_notification = create_system_event_request(
+                session,
+                "multiturn_chat",
+                message,
+                clock.current_time,
+                metadata={
+                    "contract_version": "v1.2",
+                    "agent_conversation_id": conversation_id,
+                    "source_chat_request_id": source_chat_request_id,
+                    "requested_return_type": requested_return_type,
+                },
+            )
+            notification_id = request_notification.id
+            session.commit()
+        start_daemon_thread(
+            name=f"system-event-request-{notification_id}",
+            target=runtime.system_event_worker,
+            args=("multiturn_chat", message, notification_id),
+        )
+        return runtime.templates.TemplateResponse(
+            request,
+            "partials/chat.html",
+            build_dashboard_context(request, session),
+        )
 
     @router.post("/chat/mutation-confirmation")
     def mutation_confirmation_chat(

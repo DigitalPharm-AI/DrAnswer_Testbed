@@ -6,11 +6,11 @@ import threading
 
 from sqlalchemy.orm import Session
 
-from agent_app.async_tasks import reset_running_async_tasks
-from agent_app.async_worker import async_task_worker
-from agent_app.db import engine
-from agent_app.migrations import run_migrations
-from agent_app.models import Base
+from agent_app.jobs.tasks import reset_running_async_tasks
+from agent_app.jobs.worker import async_task_worker
+from agent_app.persistence.db import engine
+from agent_app.persistence.migrations import run_migrations
+from agent_app.persistence.models import Base
 from agent_app.runtime import create_orchestrator
 from shared.settings import get_settings
 

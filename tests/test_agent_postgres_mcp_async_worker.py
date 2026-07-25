@@ -10,21 +10,21 @@ from typing import Any
 
 import pytest
 
-from agent_app.async_tasks import DONE, enqueue_async_task
-from agent_app.async_worker import async_task_worker
-from agent_app.graph import AgentLangGraphNativeOrchestrator
-from agent_app.migrations import run_migrations
-from agent_app.models import AgentAsyncTask, Base
-from agent_app.provider_base import BaseLLMProvider
-from agent_app.tool_executor import McpAgentToolExecutor
-from agent_app.tool_mcp_server import AgentMcpToolServer
+from agent_app.jobs.tasks import DONE, enqueue_async_task
+from agent_app.jobs.worker import async_task_worker
+from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
+from agent_app.persistence.migrations import run_migrations
+from agent_app.persistence.models import AgentAsyncTask, Base
+from agent_app.tools.executor import McpAgentToolExecutor
+from agent_app.tools.mcp_server import AgentMcpToolServer
 from shared.db import create_session_factory
+from tests.support.llm import NativeChatProvider
 
 POSTGRES_TEST_DATABASE_URL = os.getenv("AGENT_POSTGRES_TEST_DATABASE_URL")
 
 
-class AeToolProvider(BaseLLMProvider):
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+class AeToolProvider(NativeChatProvider):
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "message": "증상 문항을 준비합니다.",
             "tool_call": {
@@ -76,7 +76,7 @@ def test_postgres_mcp_async_worker_chat_continuation_callback_round_trip(monkeyp
     engine, SessionLocal = create_session_factory(POSTGRES_TEST_DATABASE_URL)
     Base.metadata.create_all(bind=engine)
     run_migrations(engine)
-    monkeypatch.setattr("agent_app.async_worker.SessionLocal", SessionLocal)
+    monkeypatch.setattr("agent_app.jobs.worker.SessionLocal", SessionLocal)
 
     recorder = CallbackRecorder()
     callback_server, callback_base_url = _start_callback_server(recorder)

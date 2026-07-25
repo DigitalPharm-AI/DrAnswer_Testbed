@@ -4,8 +4,8 @@ from datetime import date, datetime
 
 from fastapi.testclient import TestClient
 
-from agent_app.tool_catalog import ToolCatalog
-from agent_app.tool_names import (
+from agent_app.tools.catalog import ToolCatalog
+from agent_app.tools.names import (
     CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     GET_MEDICATION_DOSE_STATUS,
     GET_SIDE_EFFECT_HISTORY,

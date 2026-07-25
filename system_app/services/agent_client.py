@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from agent_app.integration.chat_contracts import ChatSyncRequest, ChatSyncResponse
 from shared.schemas import (
     AgentAsyncAccepted,
     AgentAsyncClinicianAlertRequest,
@@ -29,6 +31,8 @@ class AgentServiceError(RuntimeError):
         trace_id: str | None = None,
         agent_name: str | None = None,
         decision_type: str | None = None,
+        retryable: bool = False,
+        details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -37,6 +41,8 @@ class AgentServiceError(RuntimeError):
         self.trace_id = trace_id
         self.agent_name = agent_name
         self.decision_type = decision_type
+        self.retryable = retryable
+        self.details = details
 
 
 class AgentClient:
@@ -50,6 +56,13 @@ class AgentClient:
         if not self.internal_api_token:
             return {}
         return {"X-Internal-Api-Token": self.internal_api_token}
+
+    def _sync_headers(self) -> dict[str, str]:
+        settings = get_settings()
+        token = settings.agent_sync_api_token or settings.internal_api_token
+        if not token:
+            return {}
+        return {"Authorization": f"Bearer {token}"}
 
     async def _request_json(
         self,
@@ -126,21 +139,70 @@ class AgentClient:
         except ValueError:
             payload = {}
 
-        message = payload.get("message") if isinstance(payload, dict) else None
+        error = payload.get("error") if isinstance(payload, dict) and isinstance(payload.get("error"), dict) else {}
+        message = error.get("message") or (payload.get("message") if isinstance(payload, dict) else None)
         if not message:
             message = f"에이전트 서버가 {response.status_code} 오류를 반환했습니다."
 
         return AgentServiceError(
             message,
             status_code=response.status_code,
-            error_type=payload.get("error_type", "agent_service_error") if isinstance(payload, dict) else "agent_service_error",
+            error_type=error.get("code") or (payload.get("error_type", "agent_service_error") if isinstance(payload, dict) else "agent_service_error"),
             trace_id=payload.get("trace_id") if isinstance(payload, dict) else None,
             agent_name=payload.get("agent_name") if isinstance(payload, dict) else None,
             decision_type=payload.get("decision_type") if isinstance(payload, dict) else None,
+            retryable=bool(error.get("retryable")),
+            details=error.get("details") if isinstance(error.get("details"), dict) else None,
         )
 
     async def send_multiturn_chat(self, payload: MultiturnChatRequest) -> AgentResponse:
         return await self._post("/agent/multiturn-chat", payload.model_dump(mode="json"))
+
+    async def send_sync_chat(self, payload: ChatSyncRequest) -> ChatSyncResponse:
+        settings = get_settings()
+        body = payload.model_dump(mode="json")
+        max_retries = max(0, settings.agent_sync_max_retries)
+        timeout = max(
+            1.0,
+            float(settings.agent_sync_chat_timeout_seconds) + 5.0,
+        )
+        for attempt in range(max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+                    response = await client.post(
+                        f"{self.base_url}/agent/sync/chat",
+                        json=body,
+                        headers=self._sync_headers(),
+                    )
+                if response.status_code in {503, 504} and attempt < max_retries:
+                    await asyncio.sleep(float(2**attempt))
+                    continue
+                response.raise_for_status()
+                try:
+                    data = response.json()
+                except ValueError as exc:
+                    raise AgentServiceError(
+                        "에이전트 응답을 JSON으로 해석하지 못했습니다.",
+                        status_code=response.status_code,
+                        error_type="agent_response_invalid",
+                    ) from exc
+                return self._validate_response_model(
+                    data,
+                    ChatSyncResponse,
+                    "에이전트 v1.2 채팅 응답을 해석하지 못했습니다.",
+                )
+            except httpx.HTTPStatusError as exc:
+                raise self._build_service_error(exc.response) from exc
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                if attempt < max_retries:
+                    await asyncio.sleep(float(2**attempt))
+                    continue
+                raise AgentServiceError(
+                    "에이전트 서버와 통신하지 못했습니다.",
+                    error_type="agent_network_error",
+                    retryable=True,
+                ) from exc
+        raise RuntimeError("unreachable_sync_chat_retry_state")
 
     async def resolve_mutation_confirmation(
         self,

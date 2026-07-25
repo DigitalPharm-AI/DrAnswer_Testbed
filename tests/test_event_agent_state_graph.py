@@ -3,15 +3,15 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from agent_app.graph import AgentLangGraphNativeOrchestrator
-from agent_app.tool_names import (
+from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
+from agent_app.tools.names import (
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     GET_PRO_CTCAE_QUESTIONNAIRE,
     PROPOSE_NOTIFICATION_POLICY,
 )
 from shared.schemas import ToolCallResult
+from tests.support.llm import NativeChatProvider
 from tests.test_agent_app_langgraph_native import (
-    NativeChatProvider,
     NativeFakeToolExecutor,
     build_daily_pattern,
     build_missed_payload,
@@ -23,7 +23,7 @@ class EventToolFinalizingProvider(NativeChatProvider):
         self.chat_model_bound_tool_history: list[list[str]] = []
         self.finalized_tool_names: list[list[str]] = []
 
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         response_mode = user_payload.get("response_mode")
         if response_mode == "daily_pattern_analysis":
             return {
@@ -80,7 +80,7 @@ class NoToolEventProvider(NativeChatProvider):
     def __init__(self) -> None:
         self.chat_model_bound_tool_history: list[list[str]] = []
 
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "patient_message": "현재 복용 가능한 상태인지 알려주세요.",
             "likely_reason": "unknown",
@@ -92,7 +92,7 @@ class HybridOnlyMissedDoseProvider(NativeChatProvider):
     def __init__(self) -> None:
         self.chat_model_bound_tool_history: list[list[str]] = []
 
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "missed_dose_hybrid": {
                 "reason": "routine_support",

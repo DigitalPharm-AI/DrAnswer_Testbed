@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from agent_app.tool_names import CREATE_NUTRITION_MEAL_RECORD
+from agent_app.tools.names import CREATE_NUTRITION_MEAL_RECORD
 from shared.settings import get_settings
 from shared.time_utils import utc_now
 from system_app.db import SessionLocal
@@ -79,7 +79,7 @@ def test_dashboard_uses_home_chat_tabs():
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "복약 알림 + AI 에이전트 시뮬레이터" in response.text
+    assert "닥터앤서 AI 에이전트 시뮬레이터" in response.text
     assert '<link rel="icon" href="data:,' in response.text
     assert "현재 에이전트 시스템 역할" in response.text
     assert "HOME" in response.text

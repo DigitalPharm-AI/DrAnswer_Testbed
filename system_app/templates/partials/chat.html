@@ -20,6 +20,7 @@
           <input type="hidden" name="chat_message_id" value="{{ active_ae_prompt.chat_message_id }}">
         {% else %}
           <input type="hidden" name="event_type" value="multiturn_chat">
+          <input type="hidden" name="contract_version" value="v1.2">
         {% endif %}
         <label class="visually-hidden" for="agent-chat-message">에이전트와 대화</label>
         <textarea

@@ -252,13 +252,13 @@ async function main() {
 
   await runProbe(page, "01_ui_health_console_and_overflow_desktop_mobile", "medium", async () => {
     await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 20000 });
-    await page.waitForSelector("text=복약 알림 + AI 에이전트 시뮬레이터", { timeout: 10000 });
+    await page.waitForSelector("text=닥터앤서 AI 에이전트 시뮬레이터", { timeout: 10000 });
     const desktopOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     await page.screenshot({ path: path.join(OUT_DIR, "01-desktop.png"), fullPage: true });
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 20000 });
-    await page.waitForSelector("text=복약 알림 + AI 에이전트 시뮬레이터", { timeout: 10000 });
+    await page.waitForSelector("text=닥터앤서 AI 에이전트 시뮬레이터", { timeout: 10000 });
     const mobileOverflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     await page.screenshot({ path: path.join(OUT_DIR, "01-mobile.png"), fullPage: true });
 

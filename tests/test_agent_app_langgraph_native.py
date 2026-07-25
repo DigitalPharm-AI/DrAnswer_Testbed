@@ -12,34 +12,32 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
-from pydantic import ConfigDict, Field
 
 import agent_app.main as native_agent_main
-from agent_app.agent_delegation import delegation_tools_payload
+from agent_app.orchestration.delegation import delegation_tools_payload
 from agent_app.agents.tool_chat import AGENT_TOOL_LOOP_LIMIT, ToolChatAgentGraph
-from agent_app.async_tasks import DEAD, enqueue_async_task
-from agent_app.chat_tooling import (
+from agent_app.jobs.tasks import DEAD, enqueue_async_task
+from agent_app.llm.messages import (
     ai_message_from_tool_calls,
     human_payload_from_messages,
     langchain_tool_name,
-    system_prompt_from_messages,
     tool_results_from_messages,
 )
-from agent_app.continuation_policy import async_continuation_type
+from agent_app.orchestration.continuation import async_continuation_type
 from agent_app.errors import AgentExecutionError
-from agent_app.graph import AgentLangGraphNativeOrchestrator
-from agent_app.output_validation import validate_llm_output
-from agent_app.prompt_builders import multiturn_chat_prompt, nutrition_management_agent_prompt, nutrition_recommendation_agent_prompt
-from agent_app.providers import BaseLLMProvider, RuleBasedProvider, create_llm_provider
-from agent_app.response_builders import missed_dose_hybrid_payload, natural_chat_summary
-from agent_app.tool_calling import normalize_tool_calls
-from agent_app.tool_catalog import ToolCatalog
-from agent_app.tool_executor import McpAgentToolExecutor
-from agent_app.tool_mcp_server import http_status_tool_error_result
-from agent_app.tool_names import (
+from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
+from agent_app.llm.validation import validate_llm_output
+from agent_app.llm.prompts import multiturn_chat_prompt, nutrition_management_agent_prompt, nutrition_recommendation_agent_prompt
+from agent_app.providers.factory import create_llm_provider
+from agent_app.providers.rule_based import RuleBasedProvider
+from agent_app.llm.responses import missed_dose_hybrid_payload
+from agent_app.tools.calling import normalize_tool_calls
+from agent_app.tools.catalog import ToolCatalog
+from agent_app.tools.executor import McpAgentToolExecutor
+from agent_app.tools.mcp_server import http_status_tool_error_result
+from agent_app.tools.names import (
     CREATE_NUTRITION_MEAL_RECORD,
     GET_MEDICATION_DOSE_STATUS,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
@@ -53,9 +51,9 @@ from agent_app.tool_names import (
     UPSERT_NUTRITION_PREFERENCE_FACT,
     replace_legacy_tool_names,
 )
-from agent_app.tool_permissions import permission_denied_result, validate_tool_permission
-from agent_app.tool_policy import _notification_policy_deltas, deferred_policy_tool_result, is_deferred_policy_tool_call
-from agent_app.tool_protocol import (
+from agent_app.tools.permissions import permission_denied_result, validate_tool_permission
+from agent_app.tools.policy import _notification_policy_deltas, deferred_policy_tool_result, is_deferred_policy_tool_call
+from agent_app.tools.protocol import (
     MCP_METHOD_TOOLS_CALL,
     MCP_METHOD_TOOLS_LIST,
     mcp_json_rpc_request,
@@ -63,9 +61,9 @@ from agent_app.tool_protocol import (
     mcp_tools_list,
     tool_result_from_mcp_result,
 )
-from agent_app.tool_results import tool_calls_payload, tool_result_summary
-from agent_app.tool_runtime import ToolRuntime
-from agent_app.tool_side_effects import ae_tool_call_from_lookup
+from agent_app.tools.results import tool_calls_payload
+from agent_app.tools.runtime import ToolRuntime
+from agent_app.tools.side_effects import ae_tool_call_from_lookup
 from shared.schemas import (
     AgentCallbackContext,
     DailyMedicationPattern,
@@ -77,63 +75,7 @@ from shared.schemas import (
     ToolCallResult,
 )
 from shared.settings import get_settings
-
-
-class NativeChatProvider(BaseLLMProvider):
-    def chat_model(self):
-        return NativeProviderChatModel(provider=self)
-
-
-class NativeProviderChatModel(BaseChatModel):
-    provider: Any
-    bound_tools: list[dict[str, Any]] = Field(default_factory=list)
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    @property
-    def _llm_type(self) -> str:
-        return "native_test_chat_model"
-
-    def bind_tools(self, tools, *, tool_choice: str | None = None, **kwargs):
-        self.provider.bound_tool_names = [langchain_tool_name(tool) for tool in tools]
-        return self.model_copy(update={"bound_tools": list(tools)})
-
-    def _generate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager=None, **kwargs: Any) -> ChatResult:
-        return asyncio.run(self._agenerate(messages, stop=stop, run_manager=None, **kwargs))
-
-    async def _agenerate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager=None, **kwargs: Any) -> ChatResult:
-        history = getattr(self.provider, "chat_model_bound_tool_history", [])
-        history.append([langchain_tool_name(tool) for tool in self.bound_tools])
-        self.provider.chat_model_bound_tool_history = history
-
-        payload = human_payload_from_messages(messages)
-        tool_results = tool_results_from_messages(messages)
-        if tool_results:
-            finalizer = getattr(self.provider, "finalize_tool_results", None)
-            if callable(finalizer):
-                output = await finalizer(system_prompt_from_messages(messages), payload, tool_results)
-                if not isinstance(output, dict):
-                    output = {}
-                next_tool_calls = normalize_tool_calls(output)
-                if next_tool_calls:
-                    return _chat_result(
-                        ai_message_from_tool_calls(
-                            next_tool_calls,
-                            content=natural_chat_summary(output),
-                            model_output=output,
-                        )
-                    )
-                return _chat_result(AIMessage(content=natural_chat_summary(output), response_metadata={"model_output": output}))
-            fallback = tool_result_summary(tool_results, "도구 실행 결과를 확인했습니다.")
-            return _chat_result(AIMessage(content=fallback, response_metadata={"model_output": {"message": fallback, "fallback": "tool_result_summary"}}))
-
-        output = await self.provider.generate_json(system_prompt_from_messages(messages), payload)
-        if not isinstance(output, dict):
-            output = {}
-        tool_calls = normalize_tool_calls(output)
-        if tool_calls:
-            return _chat_result(ai_message_from_tool_calls(tool_calls, content=natural_chat_summary(output), model_output=output))
-        return _chat_result(AIMessage(content=natural_chat_summary(output), response_metadata={"model_output": output}))
+from tests.support.llm import NativeChatProvider, NativeProviderChatModel
 
 
 def _chat_result(message: AIMessage) -> ChatResult:
@@ -146,7 +88,7 @@ class NativeFakeProvider(NativeChatProvider):
         self.seen_prompts: list[str] = []
         self.bound_tool_names: list[str] = []
 
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         self.seen_prompts.append(system_prompt)
         self.seen_payloads.append(user_payload)
         response_mode = user_payload.get("response_mode")
@@ -195,7 +137,7 @@ class NativeDelegatingMedicationProvider(NativeChatProvider):
         self.bound_tool_names: list[str] = []
         self.bound_tool_history: list[list[str]] = []
 
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         self.seen_payloads.append(user_payload)
         self.bound_tool_history.append(list(self.bound_tool_names))
         if user_payload.get("response_mode") == "multiturn_chat":
@@ -229,7 +171,7 @@ class NativeDelegatingNutritionManagementProvider(NativeChatProvider):
         self.bound_tool_names: list[str] = []
         self.bound_tool_history: list[list[str]] = []
 
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         self.seen_payloads.append(user_payload)
         self.bound_tool_history.append(list(self.bound_tool_names))
         if user_payload.get("response_mode") == "multiturn_chat":
@@ -260,7 +202,7 @@ class NativeDelegatingNutritionRecommendationProvider(NativeChatProvider):
         self.bound_tool_names: list[str] = []
         self.bound_tool_history: list[list[str]] = []
 
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         self.seen_payloads.append(user_payload)
         self.bound_tool_history.append(list(self.bound_tool_names))
         if user_payload.get("response_mode") == "multiturn_chat":
@@ -292,9 +234,6 @@ class NativeMultiStepNutritionFoodUpdateProvider(NativeChatProvider):
 
     def chat_model(self):
         return NativeMultiStepNutritionFoodUpdateChatModel(provider=self)
-
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
-        raise AssertionError("NativeMultiStepNutritionFoodUpdateChatModel handles generation directly")
 
 
 class NativeMultiStepNutritionFoodUpdateChatModel(NativeProviderChatModel):
@@ -377,7 +316,7 @@ class NativeSideEffectLookupProvider(NativeChatProvider):
         self.bound_tool_names: list[str] = []
         self.bound_tool_history: list[list[str]] = []
 
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         self.seen_payloads.append(user_payload)
         self.bound_tool_history.append(list(self.bound_tool_names))
         if user_payload.get("response_mode") == "multiturn_chat":
@@ -414,9 +353,6 @@ class NativeLoopLimitProvider(NativeChatProvider):
         self.chat_model_call_count += 1
         return NativeLoopLimitChatModel(provider=self)
 
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
-        raise AssertionError("NativeLoopLimitChatModel handles generation directly")
-
 
 class NativeLoopLimitChatModel(NativeProviderChatModel):
     async def _agenerate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager=None, **kwargs: Any) -> ChatResult:
@@ -438,7 +374,7 @@ class NativeRecentChatProvider(NativeChatProvider):
         self.seen_payloads: list[dict[str, Any]] = []
         self.seen_prompts: list[str] = []
 
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         self.seen_prompts.append(system_prompt)
         self.seen_payloads.append(user_payload)
         return {
@@ -449,7 +385,7 @@ class NativeRecentChatProvider(NativeChatProvider):
 
 
 class InvalidMissedDoseHybridProvider(NativeChatProvider):
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         assert user_payload["response_mode"] == "missed_dose_coaching"
         return {
             "patient_message": "확인했습니다.",
@@ -458,7 +394,7 @@ class InvalidMissedDoseHybridProvider(NativeChatProvider):
 
 
 class UnsafeMissedDoseToolProvider(NativeChatProvider):
-    async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         assert user_payload["response_mode"] == "missed_dose_coaching"
         return {
             "patient_message": "복용 완료를 기록하겠습니다.",
@@ -730,6 +666,15 @@ def test_nutrition_record_verification_prompts_do_not_trust_recent_chat():
     assert "Do not infer current records from recent chat" in management_prompt
     assert "Use context.recent_diet_recommendations before search_nutrition_food_candidates" in management_prompt
     assert "prefer meal-like foods over snacks or beverages" in recommendation_prompt
+
+
+def test_multiturn_prompt_routes_global_notification_control_to_application_ui():
+    supervisor_prompt = multiturn_chat_prompt()
+
+    assert "turn all medication reminders and missed-dose AI notifications on or off globally" in supervisor_prompt
+    assert "do not call propose_notification_policy, propose_system_policy, or any other tool" in supervisor_prompt
+    assert "change the setting directly in the application" in supervisor_prompt
+    assert "continue using propose_notification_policy for slot-specific" in supervisor_prompt
 
 
 def test_agent_app_health_reports_native_runtime():
@@ -1234,14 +1179,11 @@ def test_agent_app_mcp_allows_nutrition_tools():
 
 
 def test_rule_based_provider_splits_explicit_nutrition_preferences_by_entity():
-    result = asyncio.run(
-        RuleBasedProvider().generate_json(
-            "",
-            {
-                "response_mode": "multiturn_chat",
-                "message": "나는 짜장면 싫어하고 땅콩 알레르기가 있어",
-            },
-        )
+    result = RuleBasedProvider().model_output(
+        {
+            "response_mode": "multiturn_chat",
+            "message": "나는 짜장면 싫어하고 땅콩 알레르기가 있어",
+        }
     )
 
     calls = result["tool_calls"]
@@ -1467,7 +1409,7 @@ def test_agent_app_nutrition_preference_confirmation_stops_specialist_and_finish
         def __init__(self) -> None:
             self.bound_tool_names: list[str] = []
 
-        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
             if user_payload.get("response_mode") == "multiturn_chat":
                 return {
                     "message": "I will delegate the nutrition preference update.",
@@ -1564,7 +1506,7 @@ def test_agent_app_interprets_pending_mutation_confirmation_reply_without_tools(
             self.seen_payloads: list[dict[str, Any]] = []
             self.bound_tool_names: list[str] = []
 
-        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
             self.seen_payloads.append(user_payload)
             assert user_payload["response_mode"] == "mutation_confirmation_reply"
             return {"intent": intent, "message": f"confirmation reply: {intent}"}
@@ -1612,7 +1554,7 @@ def test_agent_app_continues_new_request_after_pending_confirmation_reply_classi
             self.seen_payloads: list[dict[str, Any]] = []
             self.bound_tool_names: list[str] = []
 
-        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
             self.seen_payloads.append(user_payload)
             if user_payload.get("response_mode") == "mutation_confirmation_reply":
                 return {"intent": "new_request", "message": "This is a new request."}
@@ -1666,7 +1608,7 @@ def test_agent_app_revises_pending_preference_confirmation_with_a_new_proposal(m
             self.seen_payloads: list[dict[str, Any]] = []
             self.bound_tool_names: list[str] = []
 
-        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
             self.seen_payloads.append(user_payload)
             response_mode = user_payload.get("response_mode")
             if response_mode == "mutation_confirmation_reply":
@@ -1775,7 +1717,7 @@ def test_agent_app_empty_pending_confirmation_context_uses_standard_supervisor_r
         def __init__(self) -> None:
             self.bound_tool_names: list[str] = []
 
-        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
             assert user_payload["response_mode"] == "multiturn_chat"
             return {"message": "standard response"}
 
@@ -1848,7 +1790,7 @@ def test_agent_app_mutation_confirmation_resolution_finishes_in_supervisor(monke
             self.bound_tool_names: list[str] = []
             self.bound_tool_history: list[list[str]] = []
 
-        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
             self.seen_payloads.append(user_payload)
             self.bound_tool_history.append(list(self.bound_tool_names))
             status = str((user_payload.get("context") or {}).get("mutation_resolution", {}).get("status") or "")
@@ -1930,7 +1872,7 @@ def test_agent_app_mutation_resolution_continues_only_remaining_work(monkeypatch
             self.finalized_payloads: list[dict[str, Any]] = []
             self.bound_tool_names: list[str] = []
 
-        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
             self.seen_payloads.append(user_payload)
             response_mode = user_payload.get("response_mode")
             if response_mode == "mutation_resolution_continuation":
@@ -2059,7 +2001,7 @@ def test_agent_app_nutrition_preference_resolution_continues_to_recommendation(m
             self.finalized_payloads: list[dict[str, Any]] = []
             self.bound_tool_names: list[str] = []
 
-        async def generate_json(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
             self.seen_payloads.append(user_payload)
             response_mode = user_payload.get("response_mode")
             if response_mode == "mutation_resolution_continuation":
@@ -2518,18 +2460,21 @@ def test_ae_tool_call_from_lookup_normalizes_generic_phr_effect_to_pro_ctcae_sym
 def test_rule_based_provider_requires_repeated_daily_pattern_before_policy_tool_call():
     provider = RuleBasedProvider()
 
-    daily_output = asyncio.run(provider.generate_json("", {**build_daily_pattern().model_dump(mode="json"), "response_mode": "daily_pattern_analysis"}))
-    repeated_daily_output = asyncio.run(provider.generate_json("", {**build_repeated_daily_pattern().model_dump(mode="json"), "response_mode": "daily_pattern_analysis"}))
-    chat_output = asyncio.run(provider.generate_json("", build_taken_chat_request().model_dump(mode="json") | {"response_mode": "multiturn_chat"}))
-    side_effect_output = asyncio.run(
-        provider.generate_json(
-            "",
-            {
-                **build_missed_payload().model_dump(mode="json"),
-                "response_mode": "missed_dose_coaching",
-                "chat_context": [{"role": "user", "content": "속이 메스꺼운데 약 때문일까?"}],
-            },
-        )
+    daily_output = provider.model_output(
+        {**build_daily_pattern().model_dump(mode="json"), "response_mode": "daily_pattern_analysis"}
+    )
+    repeated_daily_output = provider.model_output(
+        {**build_repeated_daily_pattern().model_dump(mode="json"), "response_mode": "daily_pattern_analysis"}
+    )
+    chat_output = provider.model_output(
+        build_taken_chat_request().model_dump(mode="json") | {"response_mode": "multiturn_chat"}
+    )
+    side_effect_output = provider.model_output(
+        {
+            **build_missed_payload().model_dump(mode="json"),
+            "response_mode": "missed_dose_coaching",
+            "chat_context": [{"role": "user", "content": "속이 메스꺼운데 약 때문일까?"}],
+        }
     )
 
     assert daily_output["tool_calls"] == []
@@ -2558,7 +2503,7 @@ def test_rule_based_provider_returns_general_chat_when_no_tool_needed():
         },
     )
 
-    chat_output = asyncio.run(provider.generate_json("", request.model_dump(mode="json") | {"response_mode": "multiturn_chat"}))
+    chat_output = provider.model_output(request.model_dump(mode="json") | {"response_mode": "multiturn_chat"})
 
     assert "tool_call" not in chat_output
     assert "속이 메스꺼운데 약때문일까?" in chat_output["advice"]
@@ -2575,7 +2520,7 @@ def test_rule_based_provider_answers_nutrition_and_medication_chat_together():
         context={"nutrition": {"today_summary": {"status": "exceeded"}}},
     )
 
-    chat_output = asyncio.run(provider.generate_json("", request.model_dump(mode="json") | {"response_mode": "multiturn_chat"}))
+    chat_output = provider.model_output(request.model_dump(mode="json") | {"response_mode": "multiturn_chat"})
 
     assert "tool_call" not in chat_output
     assert "tool_calls" not in chat_output

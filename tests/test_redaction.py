@@ -8,9 +8,9 @@ from shared.schemas import AgentNotificationRequest, AgentResponse, ToolCallResu
 from system_app.models import AgentDecisionAudit, ChatMessage, Notification
 from system_app.services.agent_callback_service import process_agent_notification_callback
 from system_app.services.audit_service import create_agent_decision_audit, record_agent_audit
-from agent_app.tool_names import CREATE_NUTRITION_MEAL_RECORD, UPDATE_MEDICATION_DOSE_EVENT_STATUS
-from agent_app.tool_protocol import mcp_result_from_json_rpc_response, mcp_result_from_tool_result, tool_result_from_mcp_result
-from agent_app.tool_results import tool_calls_payload, tool_result_summary
+from agent_app.tools.names import CREATE_NUTRITION_MEAL_RECORD, UPDATE_MEDICATION_DOSE_EVENT_STATUS
+from agent_app.tools.protocol import mcp_result_from_json_rpc_response, mcp_result_from_tool_result, tool_result_from_mcp_result
+from agent_app.tools.results import tool_calls_payload, tool_result_summary
 from tests.helpers import build_session
 
 

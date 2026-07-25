@@ -1,4 +1,10 @@
-from agent_app.bedrock_provider import model_supports_temperature
+from agent_app.providers.bedrock import BedrockAnthropicProvider, model_supports_temperature
+
+
+def test_bedrock_provider_exposes_only_langchain_chat_model_generation():
+    assert not hasattr(BedrockAnthropicProvider, "generate_json")
+    assert not hasattr(BedrockAnthropicProvider, "_invoke_model")
+    assert not hasattr(BedrockAnthropicProvider, "_converse_with_bearer_token")
 
 
 def test_claude_sonnet_5_models_do_not_support_temperature():

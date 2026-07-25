@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=settings_env_files(), env_file_encoding="utf-8", extra="ignore")
 
     app_env: str = "development"
+    app_release_version: str = ""
     patient_id: str = "demo-patient"
 
     system_database_url: str = "sqlite:///./data/system.db"
@@ -57,6 +58,23 @@ class Settings(BaseSettings):
     system_base_url: str = "http://127.0.0.1:8000"
     agent_base_url: str = "http://127.0.0.1:8001"
     phr_base_url: str = "http://127.0.0.1:8002"
+    backend_read_database_url: str = ""
+    backend_query_max_rows: int = 100
+    backend_record_change_path: str = "/agent/sync/record-change"
+    backend_notification_policy_change_path: str = "/agent/sync/notification-policy-change"
+    backend_api_token: str | None = None
+    backend_api_timeout_seconds: float = 90.0
+    backend_api_max_retries: int = 2
+    agent_sync_api_token: str | None = None
+    agent_sync_chat_timeout_seconds: float = 90.0
+    agent_sync_max_retries: int = 2
+    agent_sync_lock_lease_seconds: int = 120
+    agent_sync_request_retention_seconds: int = 86_400
+    agent_sync_retry_after_seconds: int = 1
+    agent_trace_retention_seconds: int = 2_592_000
+    agent_tool_execution_retention_seconds: int = 2_592_000
+    agent_pending_action_retention_seconds: int = 2_592_000
+    agent_feedback_retention_seconds: int = 604_800
     qa_feedback_form_url: str = ""
     qa_feedback_sheet_url: str = ""
     internal_api_token: str | None = None
@@ -134,6 +152,18 @@ class Settings(BaseSettings):
     def require_internal_api_token_in_production(self) -> None:
         if self.is_production() and not (self.internal_api_token or "").strip():
             raise RuntimeError("INTERNAL_API_TOKEN is required when APP_ENV=production.")
+
+    def require_agent_sync_api_token_in_production(self) -> None:
+        if self.is_production() and not ((self.agent_sync_api_token or self.internal_api_token or "").strip()):
+            raise RuntimeError("AGENT_SYNC_API_TOKEN or INTERNAL_API_TOKEN is required when APP_ENV=production.")
+
+    def require_backend_api_token_in_production(self) -> None:
+        if self.is_production() and not ((self.backend_api_token or "").strip()):
+            raise RuntimeError("BACKEND_API_TOKEN is required when APP_ENV=production.")
+
+    def require_backend_read_database_url_in_production(self) -> None:
+        if self.is_production() and not self.backend_read_database_url.strip():
+            raise RuntimeError("BACKEND_READ_DATABASE_URL is required when APP_ENV=production.")
 
 
 @lru_cache

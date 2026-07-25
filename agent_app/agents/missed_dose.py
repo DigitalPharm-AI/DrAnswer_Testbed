@@ -11,16 +11,16 @@ from agent_app.agents.tool_chat import (
     tool_chat_message_flow,
 )
 from agent_app.errors import AgentExecutionError
-from agent_app.generation import PROMPT_VERSION_ID, agent_error
-from agent_app.prompt_builders import missed_dose_prompt
-from agent_app.providers import BaseLLMProvider
-from agent_app.response_builders import missed_dose_hybrid_payload, string_list, text_field
-from agent_app.tool_names import (
+from agent_app.llm.generation import PROMPT_VERSION_ID, agent_error
+from agent_app.llm.prompts import missed_dose_prompt
+from agent_app.providers.base import BaseLLMProvider
+from agent_app.llm.responses import missed_dose_hybrid_payload, string_list, text_field
+from agent_app.tools.names import (
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     SOURCE_MISSED_DOSE,
 )
-from agent_app.tool_results import tool_calls_payload
-from agent_app.tool_runtime import ToolRuntime
+from agent_app.tools.results import tool_calls_payload
+from agent_app.tools.runtime import ToolRuntime
 from shared.schemas import AgentResponse, MissedDoseEventPayload
 
 

@@ -288,6 +288,16 @@ def mutation_confirmation_view(metadata: dict) -> dict | None:
 
 def chat_message_view(message) -> dict:
     metadata = parse_metadata_json(getattr(message, "metadata_json", "{}"))
+    contract_message = {}
+    if message.role == "assistant" and getattr(message, "ai_request_id", ""):
+        payload = parse_metadata_json(getattr(message, "message_payload_json", "{}"))
+        if payload:
+            contract_message = {
+                "message_type": getattr(message, "message_type", "text"),
+                "message": payload,
+                "conversation_id": getattr(message, "conversation_id", ""),
+                "source_chat_request_id": getattr(message, "ai_request_id", ""),
+            }
     from_user = message.role == "user" or message.sender_type in {"patient", "user"}
     from_ai = message.role == "assistant" or message.sender_type == "assistant"
     one_way_alert = message.category in {"missed_dose", "policy_confirmation", "side_effect_reminder_safety", "error"} and not from_user
@@ -316,6 +326,7 @@ def chat_message_view(message) -> dict:
         "food_selection": food_selection_view(metadata, message.id),
         "diet_recommendations": diet_recommendations_view(metadata),
         "mutation_confirmation": mutation_confirmation_view(metadata),
+        "contract_message": contract_message,
     }
 
 def is_hidden_policy_confirmation_reply(message) -> bool:

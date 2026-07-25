@@ -4,8 +4,8 @@ import asyncio
 from datetime import datetime
 
 from agent_app.agents.tool_chat import AGENT_TOOL_LOOP_LIMIT
-from agent_app.graph import AgentLangGraphNativeOrchestrator
-from agent_app.tool_names import (
+from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
+from agent_app.tools.names import (
     DELEGATE_TO_MEDICATION_AGENT,
     DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT,
     DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT,
@@ -15,8 +15,8 @@ from agent_app.tool_names import (
     UPSERT_NUTRITION_PREFERENCE_FACT,
 )
 from shared.schemas import MultiturnChatRequest
+from tests.support.llm import NativeChatProvider
 from tests.test_agent_app_langgraph_native import (
-    NativeChatProvider,
     NativeDelegatingMedicationProvider,
     NativeFakeToolExecutor,
     NativeRecentChatProvider,
@@ -73,7 +73,7 @@ def test_supervisor_delegation_returns_to_bound_llm_before_final_response():
 
 
 class SequentialNutritionSupervisorProvider(NativeChatProvider):
-    async def generate_json(self, system_prompt, user_payload):
+    async def model_output(self, system_prompt, user_payload):
         response_mode = user_payload.get("response_mode")
         if response_mode == "multiturn_chat":
             return {
@@ -171,7 +171,7 @@ def test_supervisor_loops_across_preference_management_and_recommendation():
 
 
 class BatchedNutritionSupervisorProvider(SequentialNutritionSupervisorProvider):
-    async def generate_json(self, system_prompt, user_payload):
+    async def model_output(self, system_prompt, user_payload):
         if user_payload.get("response_mode") == "multiturn_chat":
             return {
                 "message": "I will save the allergy and request a suitable dinner recommendation.",
@@ -192,7 +192,7 @@ class BatchedNutritionSupervisorProvider(SequentialNutritionSupervisorProvider):
                     },
                 ],
             }
-        return await super().generate_json(system_prompt, user_payload)
+        return await super().model_output(system_prompt, user_payload)
 
 
 def test_supervisor_executes_every_delegation_from_one_model_response():
@@ -260,7 +260,7 @@ def test_supervisor_returns_technical_failure_at_tool_loop_limit():
 
 
 class MedicationStatusSummaryProvider(NativeDelegatingMedicationProvider):
-    async def generate_json(self, system_prompt, user_payload):
+    async def model_output(self, system_prompt, user_payload):
         self.seen_payloads.append(user_payload)
         self.bound_tool_history.append(list(self.bound_tool_names))
         response_mode = user_payload.get("response_mode")

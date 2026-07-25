@@ -6,7 +6,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from agent_app import trace_logging
-from agent_app.agent_delegation import (
+from agent_app.orchestration.delegation import (
     delegation_reason,
     delegation_target,
     delegation_tools_payload,
@@ -21,7 +21,7 @@ from agent_app.agents.tool_chat import (
     ITERATIVE_TOOL_EXECUTION_MODE,
     TOOL_LOOP_MODE,
 )
-from agent_app.chat_tooling import (
+from agent_app.llm.messages import (
     ai_message_from_tool_calls,
     build_chat_messages,
     langchain_tools_from_catalog,
@@ -30,24 +30,24 @@ from agent_app.chat_tooling import (
     tool_calls_from_ai_message,
     tool_messages_from_results,
 )
-from agent_app.continuation_policy import async_continuation_summary, async_continuation_type
+from agent_app.orchestration.continuation import async_continuation_summary, async_continuation_type
 from agent_app.errors import AgentExecutionError
-from agent_app.generation import PROMPT_VERSION_ID, agent_error
-from agent_app.output_validation import validate_llm_output, validate_mutation_confirmation_reply_output
-from agent_app.prompt_builders import (
+from agent_app.llm.generation import PROMPT_VERSION_ID, agent_error
+from agent_app.llm.validation import validate_llm_output, validate_mutation_confirmation_reply_output
+from agent_app.llm.prompts import (
     multiturn_chat_prompt,
     mutation_confirmation_prompt,
     mutation_confirmation_reply_prompt,
     mutation_resolution_prompt,
 )
-from agent_app.providers import BaseLLMProvider
-from agent_app.response_builders import finalized_chat_summary, natural_chat_summary, string_list
-from agent_app.tool_catalog import ToolCatalog
-from agent_app.tool_names import DELEGATE_TO_MEDICATION_AGENT, SIDE_EFFECT_TOOLS
-from agent_app.tool_permissions import POLICY_TOOLS
-from agent_app.tool_policy import has_deferred_policy_tool_call, normalize_policy_tool_calls
-from agent_app.tool_results import tool_calls_payload, tool_result_summary
-from agent_app.tool_runtime import ToolRuntime
+from agent_app.providers.base import BaseLLMProvider
+from agent_app.llm.responses import finalized_chat_summary, natural_chat_summary, string_list
+from agent_app.tools.catalog import ToolCatalog
+from agent_app.tools.names import DELEGATE_TO_MEDICATION_AGENT, SIDE_EFFECT_TOOLS
+from agent_app.tools.permissions import POLICY_TOOLS
+from agent_app.tools.policy import has_deferred_policy_tool_call, normalize_policy_tool_calls
+from agent_app.tools.results import tool_calls_payload, tool_result_summary
+from agent_app.tools.runtime import ToolRuntime
 from shared.redaction import safe_exception_summary
 from shared.schemas import AgentResponse, MultiturnChatRequest, ToolCallResult
 

@@ -963,6 +963,7 @@ def meal_view(session: Session, meal: NutritionMeal) -> dict[str, Any]:
         "meal_time": meal.meal_time,
         "scenario_key": meal.scenario_key,
         "description": meal.description,
+        "version": meal.version,
         "foods": foods,
     }
 
@@ -973,6 +974,7 @@ def food_view(food: NutritionFood) -> dict[str, Any]:
         "food_ref_id": food.food_ref_id,
         "food_name": food.food_name,
         "portion": food.portion,
+        "version": food.version,
         "nutrients": {
             "칼로리": {"value": food.calories, "unit": "kcal"},
             "단백질": {"value": food.protein, "unit": "g"},

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from agent_app.tool_names import PROPOSE_NOTIFICATION_POLICY, PROPOSE_SYSTEM_POLICY
+from agent_app.tools.names import PROPOSE_NOTIFICATION_POLICY, PROPOSE_SYSTEM_POLICY
 from shared.schemas import AgentResponse, NotificationPolicyDelta, SystemPolicyDelta
 from system_app.services.audit_service import record_agent_audit
 from system_app.services.clock_service import pause_simulation_clock_for_conversation

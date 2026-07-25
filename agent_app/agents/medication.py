@@ -3,11 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from agent_app.agents.tool_chat import ToolChatAgentGraph
-from agent_app.prompt_builders import medication_agent_prompt
-from agent_app.providers import BaseLLMProvider
-from agent_app.tool_names import SOURCE_MEDICATION_AGENT
-from agent_app.tool_permissions import MEDICATION_CHAT_TOOLS
-from agent_app.tool_runtime import ToolRuntime
+from agent_app.llm.prompts import medication_agent_prompt
+from agent_app.providers.base import BaseLLMProvider
+from agent_app.tools.names import SOURCE_MEDICATION_AGENT
+from agent_app.tools.permissions import MEDICATION_CHAT_TOOLS
+from agent_app.tools.runtime import ToolRuntime
 from shared.schemas import AgentResponse
 
 

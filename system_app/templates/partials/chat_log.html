@@ -18,6 +18,72 @@
         {% else %}
           <div class="chat-content">{{ message.content }}</div>
         {% endif %}
+        {% if message.contract_message %}
+          {% set contract = message.contract_message %}
+          {% set contract_payload = contract.message %}
+          {% if contract_payload.get('message_title') %}
+            <div class="chat-action-card">
+              <strong>{{ contract_payload.get('message_title') }}</strong>
+            </div>
+          {% endif %}
+          {% for table in contract_payload.get('tables') or [] %}
+            <div class="policy-change-table-wrap">
+              {% if table.get('table_title') %}<strong>{{ table.get('table_title') }}</strong>{% endif %}
+              <table class="policy-change-table">
+                <tbody>
+                  {% for row in table.get('rows') or [] %}
+                    <tr><th>{{ row.get('column') }}</th><td>{{ row.get('value') }}</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% endfor %}
+          {% if contract.message_type == 'selection_box' and contract_payload.get('selections') %}
+            <div class="chat-action-card">
+              <div class="chat-action-row policy-choice-actions">
+                {% for selection in contract_payload.get('selections') %}
+                  <form action="/chat/contract-response" method="post" hx-post="/chat/contract-response" hx-target="#chat-panel" hx-swap="outerHTML">
+                    <input type="hidden" name="conversation_id" value="{{ contract.conversation_id }}">
+                    <input type="hidden" name="source_chat_request_id" value="{{ contract.source_chat_request_id }}">
+                    <input type="hidden" name="response_kind" value="selection">
+                    <input type="hidden" name="selection_message" value="{{ selection }}">
+                    <button class="ghost compact-button" type="submit">{{ selection }}</button>
+                  </form>
+                {% endfor %}
+              </div>
+            </div>
+          {% elif contract.message_type == 'input_box' and contract_payload.get('inputs') %}
+            <form class="stack-form inline-chat-reply-form chat-action-card" action="/chat/contract-response" method="post" hx-post="/chat/contract-response" hx-target="#chat-panel" hx-swap="outerHTML">
+              <input type="hidden" name="conversation_id" value="{{ contract.conversation_id }}">
+              <input type="hidden" name="source_chat_request_id" value="{{ contract.source_chat_request_id }}">
+              <input type="hidden" name="response_kind" value="input">
+              {% for input_item in contract_payload.get('inputs') %}
+                {% set options = input_item.get('options') or {} %}
+                <input type="hidden" name="input_labels" value="{{ input_item.get('label') }}">
+                <label>{{ input_item.get('label') }}</label>
+                {% if input_item.get('type') == 'dropdown' %}
+                  <select name="input_values" required>
+                    {% for option in options.get('selections') or [] %}
+                      <option value="{{ option }}" {% if option == input_item.get('value') %}selected{% endif %}>{{ option }}</option>
+                    {% endfor %}
+                  </select>
+                {% else %}
+                  <div class="chat-action-row">
+                    <input
+                      type="number"
+                      name="input_values"
+                      required
+                      min="{{ options.get('lower') }}"
+                      max="{{ options.get('upper') }}"
+                      value="{{ input_item.get('value') if input_item.get('value') is not none else '' }}">
+                    {% if options.get('unit') %}<span>{{ options.get('unit') }}</span>{% endif %}
+                  </div>
+                {% endif %}
+              {% endfor %}
+              <button type="submit">입력값 보내기</button>
+            </form>
+          {% endif %}
+        {% endif %}
         {% if message.mutation_confirmation %}
           {% set mutation = message.mutation_confirmation %}
           {% set display = mutation.display %}

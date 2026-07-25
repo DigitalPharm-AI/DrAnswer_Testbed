@@ -9,12 +9,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import agent_app.main as agent_main
-from agent_app import db as agent_db
-from agent_app.async_tasks import DEAD, enqueue_async_task
-from agent_app.models import AgentAsyncTask
-from agent_app.models import Base as AgentBase
-from agent_app.ops_readiness import agent_ops_readiness_payload
-from agent_app.worker_status import mark_worker_started
+from agent_app.persistence import db as agent_db
+from agent_app.jobs.tasks import DEAD, enqueue_async_task
+from agent_app.persistence.models import AgentAsyncTask
+from agent_app.persistence.models import Base as AgentBase
+from agent_app.jobs.readiness import agent_ops_readiness_payload
+from agent_app.jobs.status import mark_worker_started
 from shared.settings import get_settings
 from shared.time_utils import utc_now
 

@@ -16,6 +16,7 @@ from system_app.migrations import run_migrations
 from system_app.routes import (
     create_agent_api_router,
     create_agent_async_api_router,
+    create_backend_v12_router,
     create_chat_router,
     create_health_router,
     create_medications_router,
@@ -100,6 +101,7 @@ async def lifespan(_: FastAPI):
     from shared.settings import get_settings
 
     get_settings().require_internal_api_token_in_production()
+    get_settings().require_backend_api_token_in_production()
     run_migrations(engine)
     from system_app.services.nutrition_preference_service import seed_nutrition_ontology
 
@@ -152,6 +154,7 @@ def create_app() -> FastAPI:
     fastapi_app.include_router(create_chat_router(get_runtime))
     fastapi_app.include_router(create_agent_api_router(get_runtime))
     fastapi_app.include_router(create_agent_async_api_router(get_runtime))
+    fastapi_app.include_router(create_backend_v12_router(get_runtime))
     fastapi_app.include_router(create_health_router())
     return fastapi_app
 
