@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Sequence
+
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
@@ -54,19 +58,72 @@ def mark_phr_sync_needed(session: Session) -> None:
     clock.last_tick_real_at = utc_now()
     session.flush()
 
-def build_phr_registration_items(session: Session) -> list[PhrMedicationRegistrationItem]:
-    rows = session.scalars(select(MedicationPlan).where(MedicationPlan.active.is_(True)).order_by(MedicationPlan.medication_name.asc())).all()
-    return [PhrMedicationRegistrationItem(item_name=row.medication_name, dosage=row.dosage or "") for row in rows]
+def build_phr_registration_items(
+    session: Session,
+    *,
+    patient_id: str | None = None,
+) -> list[PhrMedicationRegistrationItem]:
+    scoped_patient_id = settings.patient_id if patient_id is None else patient_id
+    rows = session.scalars(
+        select(MedicationPlan).where(
+            MedicationPlan.patient_id == scoped_patient_id,
+            MedicationPlan.active.is_(True),
+        )
+    ).all()
+    items = [
+        PhrMedicationRegistrationItem(
+            item_name=row.medication_name,
+            dosage=row.dosage or "",
+        )
+        for row in rows
+    ]
+    return sorted(items, key=lambda item: (item.item_name, item.dosage))
 
-def apply_phr_registration_result(session: Session, result: PhrPatientRegistrationResult) -> SimulationPatientProfile:
+
+def phr_medication_snapshot_fingerprint(
+    medications: Sequence[PhrMedicationRegistrationItem],
+) -> str:
+    canonical_items = sorted(
+        (
+            {
+                "item_name": item.item_name,
+                "dosage": item.dosage or "",
+            }
+            for item in medications
+        ),
+        key=lambda item: (item["item_name"], item["dosage"]),
+    )
+    canonical_payload = json.dumps(
+        canonical_items,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical_payload).hexdigest()
+
+
+def apply_phr_registration_result(
+    session: Session,
+    result: PhrPatientRegistrationResult,
+    *,
+    expected_medication_fingerprint: str,
+) -> SimulationPatientProfile:
+    current_medications = build_phr_registration_items(session)
+    current_fingerprint = phr_medication_snapshot_fingerprint(current_medications)
+    snapshot_is_current = current_fingerprint == expected_medication_fingerprint
     profile = ensure_patient_profile(session)
     now = utc_now()
     profile.phr_patient_key = result.phr_patient_key
-    profile.sync_status = PHR_SYNC_SYNCED
+    profile.sync_status = PHR_SYNC_SYNCED if snapshot_is_current else PHR_SYNC_NEEDS_SYNC
     profile.error_message = ""
     if profile.registered_at is None:
         profile.registered_at = now
     profile.updated_at = now
+    if not snapshot_is_current:
+        clock = ensure_clock(session)
+        clock.is_running = False
+        clock.speed_multiplier = 0
+        clock.last_tick_real_at = now
     session.flush()
     return profile
 
@@ -114,7 +171,15 @@ def phr_profile_view(session: Session) -> dict:
 
 
 def active_medication_count(session: Session) -> int:
-    return session.scalar(select(func.count(MedicationPlan.id)).where(MedicationPlan.active.is_(True))) or 0
+    return (
+        session.scalar(
+            select(func.count(MedicationPlan.id)).where(
+                MedicationPlan.patient_id == settings.patient_id,
+                MedicationPlan.active.is_(True),
+            )
+        )
+        or 0
+    )
 
 
 def simulation_readiness(session: Session) -> dict:

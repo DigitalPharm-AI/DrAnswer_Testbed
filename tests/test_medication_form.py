@@ -4,6 +4,7 @@ import system_app.main as system_main
 from system_app.db import SessionLocal
 from system_app.main import app
 from system_app.models import MedicationPlan, SimulationPatientProfile
+from system_app.services.medication_plan_service import reset_simulation_state
 from system_app.services.patient_profile_service import ensure_base_data
 from system_app.services.phr_client import PhrServiceError
 
@@ -149,7 +150,7 @@ def test_phr_register_failure_stores_public_failure_copy(monkeypatch):
     monkeypatch.setattr(system_main, "phr_client", FailingPhrClient())
 
     with SessionLocal() as session:
-        session.query(MedicationPlan).delete()
+        reset_simulation_state(session)
         session.query(SimulationPatientProfile).delete()
         ensure_base_data(session)
         session.commit()
@@ -171,7 +172,7 @@ def test_phr_register_failure_stores_public_failure_copy(monkeypatch):
         profile = session.query(SimulationPatientProfile).one()
         error_message = profile.error_message
         sync_status = profile.sync_status
-        session.query(MedicationPlan).delete()
+        reset_simulation_state(session)
         session.query(SimulationPatientProfile).delete()
         session.commit()
 

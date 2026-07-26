@@ -8,8 +8,8 @@ from typing import Any
 
 from sqlalchemy import desc, select
 
-from agent_app.integration.chat_contracts import ChatSyncRequest
-from agent_app.tools.names import CREATE_MEDICATION_SIDE_EFFECT_RECORD
+from shared.chat_contracts import ChatSyncRequest
+from shared.tool_names import CREATE_MEDICATION_SIDE_EFFECT_RECORD
 from shared.json_utils import dump_json as dump_metadata_json
 from shared.json_utils import parse_json_object as parse_metadata_json
 from shared.redaction import safe_exception_summary

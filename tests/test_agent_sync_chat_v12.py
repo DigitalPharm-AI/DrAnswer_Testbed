@@ -11,7 +11,11 @@ from sqlalchemy import delete, inspect, select
 
 from agent_app import main as agent_main
 from agent_app import security as agent_security
-from agent_app.integration.chat_contracts import ChatSyncRequest, chat_sync_response
+from agent_app.integration.chat_contracts import (
+    ChatSyncRequest,
+    ChatSyncResponse,
+    chat_sync_response,
+)
 from agent_app.integration.idempotency import (
     COMPLETED,
     FINAL_FAILED,
@@ -35,10 +39,30 @@ from agent_app.persistence.models import (
 )
 from agent_app.persistence.trace_store import AgentTraceStore
 from agent_app.persistence.retention import purge_expired_agent_state
+from agent_app.routes import chat as chat_routes
 from shared.db import create_session_factory
 from shared.schemas import AgentResponse
 
 NOW = datetime(2026, 7, 25, 10, 30, tzinfo=UTC)
+SYNC_HEADERS = {"Authorization": "Bearer pytest-agent-sync-token"}
+
+
+class StubBackendQueryTools:
+    def validate_chat_message(self, payload: ChatSyncRequest) -> dict:
+        return {
+            "backend_message_verified": True,
+            "message_id": payload.message_id,
+        }
+
+
+@pytest.fixture(autouse=True)
+def configured_backend_query_tools(monkeypatch):
+    backend_queries = StubBackendQueryTools()
+    monkeypatch.setattr(
+        chat_routes,
+        "_backend_query_tools_getter",
+        lambda: backend_queries,
+    )
 
 
 def chat_request(
@@ -153,6 +177,81 @@ def test_chat_contract_rejects_naive_datetime_and_invalid_input_box_json() -> No
     ):
         ChatSyncRequest.model_validate(base)
 
+    base["message"] = '{"체중":"70","체중":"71"}'
+    with pytest.raises(ValidationError, match="input_box_message_keys_must_be_unique"):
+        ChatSyncRequest.model_validate(base)
+
+    base["message"] = '{"체중":{"value":"70"}}'
+    with pytest.raises(ValidationError, match="input_box_message_values_must_be_scalar"):
+        ChatSyncRequest.model_validate(base)
+
+
+@pytest.mark.parametrize(
+    ("message_type", "message", "error"),
+    [
+        (
+            "text",
+            {
+                "message_title": None,
+                "text": "텍스트",
+                "tables": None,
+                "selections": ["금지"],
+                "inputs": None,
+            },
+            "text_message_forbids_selections",
+        ),
+        (
+            "selection_box",
+            {
+                "message_title": None,
+                "text": "선택",
+                "tables": None,
+                "selections": ["예"],
+                "inputs": [],
+            },
+            "selection_box_forbids_inputs",
+        ),
+        (
+            "input_box",
+            {
+                "message_title": None,
+                "text": "입력",
+                "tables": None,
+                "selections": [],
+                "inputs": [
+                    {
+                        "type": "dropdown",
+                        "label": "식사",
+                        "value": None,
+                        "options": {
+                            "unit": None,
+                            "lower": None,
+                            "upper": None,
+                            "selections": ["아침", "점심"],
+                        },
+                    }
+                ],
+            },
+            "input_box_forbids_selections",
+        ),
+    ],
+)
+def test_chat_response_contract_forbids_message_type_incompatible_fields(
+    message_type: str,
+    message: dict,
+    error: str,
+) -> None:
+    with pytest.raises(ValidationError, match=error):
+        ChatSyncResponse.model_validate(
+            {
+                "request_id": "request-contract-validation",
+                "message_id": "message-contract-validation",
+                "message_type": message_type,
+                "message": message,
+                "message_at": NOW,
+            }
+        )
+
 
 def test_agent_sync_migrations_create_internal_state_tables(tmp_path: Path) -> None:
     database_path = (tmp_path / "agent-sync-migrations.db").as_posix()
@@ -200,6 +299,7 @@ def test_agent_state_retention_expires_pending_and_deletes_expired_records(
                     expires_at=past,
                 )
             )
+            session.flush()
             session.add(
                 AgentRunStep(
                     trace_id="expired-trace",
@@ -332,6 +432,65 @@ def test_chat_response_maps_mutation_confirmation_to_selection_box() -> None:
     assert response.message_type == "selection_box"
     assert response.message.message_title == "복약 기록 변경"
     assert response.message.selections == ["변경 적용", "취소"]
+
+
+def test_chat_response_preserves_structured_input_and_table_payload() -> None:
+    request = chat_request()
+    response = chat_sync_response(
+        request,
+        agent_response(
+            summary="현재 값을 확인하고 수정해주세요.",
+            structured_payload={
+                "chat_response": {
+                    "message_type": "input_box",
+                    "message": {
+                        "message_title": "복약 정보 확인",
+                        "text": "현재 값을 확인하고 수정해주세요.",
+                        "tables": [
+                            {
+                                "table_title": "현재 복약 정보",
+                                "rows": [
+                                    {"column": "복용 시간", "value": "08:00"},
+                                    {"column": "상태", "value": "복용 전"},
+                                ],
+                            }
+                        ],
+                        "selections": None,
+                        "inputs": [
+                            {
+                                "type": "number",
+                                "label": "복용량",
+                                "value": 1,
+                                "options": {
+                                    "unit": "정",
+                                    "lower": 0.5,
+                                    "upper": 3,
+                                    "selections": None,
+                                },
+                            },
+                            {
+                                "type": "dropdown",
+                                "label": "복용 시점",
+                                "value": "아침",
+                                "options": {
+                                    "unit": None,
+                                    "lower": None,
+                                    "upper": None,
+                                    "selections": ["아침", "점심", "저녁"],
+                                },
+                            },
+                        ],
+                    },
+                }
+            },
+        ),
+    )
+
+    assert response.message_type == "input_box"
+    assert response.message.tables is not None
+    assert response.message.tables[0].rows[0].value == "08:00"
+    assert response.message.inputs is not None
+    assert [item.label for item in response.message.inputs] == ["복용량", "복용 시점"]
 
 
 def test_trace_store_hashes_sensitive_tool_payloads_instead_of_storing_raw_values() -> None:
@@ -572,10 +731,12 @@ def test_sync_chat_http_replays_exact_success_without_second_agent_call(monkeypa
             first = client.post(
                 "/agent/sync/chat",
                 json=request.model_dump(mode="json"),
+                headers=SYNC_HEADERS,
             )
             second = client.post(
                 "/agent/sync/chat",
                 json=request.model_dump(mode="json"),
+                headers=SYNC_HEADERS,
             )
 
         assert first.status_code == 200
@@ -620,15 +781,24 @@ def test_sync_chat_http_returns_contract_errors_for_invalid_and_conflicting_body
         with TestClient(agent_main.app) as client:
             invalid_body = request.model_dump(mode="json")
             invalid_body["message_at"] = "2026-07-25T10:30:00"
-            invalid = client.post("/agent/sync/chat", json=invalid_body)
+            invalid = client.post(
+                "/agent/sync/chat",
+                json=invalid_body,
+                headers=SYNC_HEADERS,
+            )
 
             first = client.post(
                 "/agent/sync/chat",
                 json=request.model_dump(mode="json"),
+                headers=SYNC_HEADERS,
             )
             conflicting_body = request.model_dump(mode="json")
             conflicting_body["message"] = "변경된 본문"
-            conflict = client.post("/agent/sync/chat", json=conflicting_body)
+            conflict = client.post(
+                "/agent/sync/chat",
+                json=conflicting_body,
+                headers=SYNC_HEADERS,
+            )
 
         assert invalid.status_code == 400
         assert invalid.json()["error"]["code"] == "INVALID_REQUEST"
@@ -661,10 +831,12 @@ def test_sync_chat_http_exposes_request_and_conversation_lock_errors(monkeypatch
             in_progress = client.post(
                 "/agent/sync/chat",
                 json=request.model_dump(mode="json"),
+                headers=SYNC_HEADERS,
             )
             conversation_busy = client.post(
                 "/agent/sync/chat",
                 json=competing.model_dump(mode="json"),
+                headers=SYNC_HEADERS,
             )
 
         assert in_progress.status_code == 409
@@ -678,27 +850,58 @@ def test_sync_chat_http_exposes_request_and_conversation_lock_errors(monkeypatch
         cleanup_request(competing)
 
 
-def test_sync_chat_http_requires_bearer_token_when_configured(monkeypatch) -> None:
+def test_sync_chat_http_accepts_only_dedicated_agent_sync_token(monkeypatch) -> None:
     request = chat_request()
 
     class TokenSettings:
         agent_sync_api_token = "sync-secret"
-        internal_api_token = None
+        backend_api_token = "backend-secret"
+        internal_api_token = "internal-secret"
 
         @staticmethod
-        def require_agent_sync_api_token_in_production() -> None:
-            return None
+        def require_agent_sync_api_token() -> str:
+            return "sync-secret"
+
+    class StubOrchestrator:
+        async def invoke(
+            self,
+            request_kind: str,
+            payload: dict,
+            *,
+            trace_id: str | None = None,
+        ) -> AgentResponse:
+            return agent_response(trace_id=trace_id or "fallback-trace")
 
     monkeypatch.setattr(agent_security, "get_settings", lambda: TokenSettings())
+    monkeypatch.setattr(agent_main, "orchestrator", StubOrchestrator())
     try:
         with TestClient(agent_main.app) as client:
             missing = client.post(
                 "/agent/sync/chat",
                 json=request.model_dump(mode="json"),
             )
+            wrong = client.post(
+                "/agent/sync/chat",
+                json=request.model_dump(mode="json"),
+                headers={"Authorization": "Bearer wrong-secret"},
+            )
+            backend_direction = client.post(
+                "/agent/sync/chat",
+                json=request.model_dump(mode="json"),
+                headers={"Authorization": "Bearer backend-secret"},
+            )
+            internal_fallback = client.post(
+                "/agent/sync/chat",
+                json=request.model_dump(mode="json"),
+                headers={"Authorization": "Bearer internal-secret"},
+            )
+            accepted = client.post(
+                "/agent/sync/chat",
+                json=request.model_dump(mode="json"),
+                headers={"Authorization": "Bearer sync-secret"},
+            )
 
-        assert missing.status_code == 401
-        assert missing.json() == {
+        expected_error = {
             "error": {
                 "code": "UNAUTHORIZED",
                 "message": "Authorization failed.",
@@ -706,5 +909,56 @@ def test_sync_chat_http_requires_bearer_token_when_configured(monkeypatch) -> No
                 "details": None,
             }
         }
+        assert missing.status_code == 401
+        assert missing.json() == expected_error
+        assert wrong.status_code == 401
+        assert wrong.json() == expected_error
+        assert backend_direction.status_code == 401
+        assert backend_direction.json() == expected_error
+        assert internal_fallback.status_code == 401
+        assert internal_fallback.json() == expected_error
+        assert accepted.status_code == 200
+    finally:
+        cleanup_request(request)
+
+
+def test_sync_chat_fails_closed_when_backend_query_tools_are_unavailable(monkeypatch) -> None:
+    request = chat_request()
+
+    class UnexpectedOrchestrator:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def invoke(
+            self,
+            request_kind: str,
+            payload: dict,
+            *,
+            trace_id: str | None = None,
+        ) -> AgentResponse:
+            self.calls += 1
+            raise AssertionError("unavailable BackendQueryTools must block orchestration")
+
+    orchestrator = UnexpectedOrchestrator()
+    monkeypatch.setattr(agent_main, "orchestrator", orchestrator)
+    monkeypatch.setattr(chat_routes, "_backend_query_tools_getter", lambda: None)
+    try:
+        with TestClient(agent_main.app) as client:
+            response = client.post(
+                "/agent/sync/chat",
+                json=request.model_dump(mode="json"),
+                headers=SYNC_HEADERS,
+            )
+
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": {
+                "code": "BACKEND_DB_UNAVAILABLE",
+                "message": "The Backend read database is temporarily unavailable.",
+                "retryable": True,
+                "details": None,
+            }
+        }
+        assert orchestrator.calls == 0
     finally:
         cleanup_request(request)

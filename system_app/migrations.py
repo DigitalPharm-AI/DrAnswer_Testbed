@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from sqlalchemy import Engine, text
 
+from shared.backend_read_contract import BACKEND_READ_VIEW_DEFINITIONS
 from shared.migrations import run_sql_migrations, table_columns
 
 MIGRATIONS: list[tuple[str, str]] = [
@@ -449,6 +450,14 @@ MIGRATIONS: list[tuple[str, str]] = [
         "20260725_0004_chat_assistant_request_unique",
         "SELECT 1",
     ),
+    (
+        "20260725_0005_external_public_ids",
+        "SELECT 1",
+    ),
+    (
+        "20260726_0001_medication_plan_submission_id",
+        "SELECT 1",
+    ),
 ]
 
 
@@ -497,6 +506,13 @@ VERSIONED_TABLE_COLUMNS: dict[str, dict[str, str]] = {
     },
 }
 
+EXTERNAL_PUBLIC_ID_TABLES: dict[str, str] = {
+    "chat_messages": "msg",
+    "dose_events": "dose",
+    "nutrition_meals": "meal",
+    "nutrition_foods": "food",
+}
+
 
 def ensure_reminder_policy_columns(engine: Engine) -> None:
     with engine.begin() as connection:
@@ -520,10 +536,20 @@ def ensure_reminder_policy_columns(engine: Engine) -> None:
             )
         connection.execute(
             text(
+                "UPDATE reminder_policies "
+                "SET version = COALESCE(version, 1), "
+                "updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_reminder_policies_public_id "
                 "ON reminder_policies (public_id)"
             )
         )
+        if connection.dialect.name == "postgresql":
+            connection.execute(text("ALTER TABLE reminder_policies ALTER COLUMN public_id SET NOT NULL"))
+            connection.execute(text("ALTER TABLE reminder_policies ALTER COLUMN version SET NOT NULL"))
 
 
 def ensure_chat_message_columns(engine: Engine) -> None:
@@ -550,6 +576,66 @@ def ensure_chat_message_columns(engine: Engine) -> None:
         )
 
 
+def ensure_medication_plan_submission_id(engine: Engine) -> None:
+    """Add nullable browser-submission idempotency without rewriting legacy rows."""
+
+    with engine.begin() as connection:
+        existing_columns = table_columns(connection, "medication_plans")
+        if not existing_columns:
+            return
+        if "submission_id" not in existing_columns:
+            connection.execute(
+                text("ALTER TABLE medication_plans ADD COLUMN submission_id VARCHAR(36)")
+            )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_medication_plan_patient_submission "
+                "ON medication_plans (patient_id, submission_id) "
+                "WHERE submission_id IS NOT NULL"
+            )
+        )
+
+
+def ensure_external_public_ids(engine: Engine) -> None:
+    """Add and backfill opaque API identifiers without replacing internal PKs."""
+
+    with engine.begin() as connection:
+        for table_name, default_prefix in EXTERNAL_PUBLIC_ID_TABLES.items():
+            existing_columns = table_columns(connection, table_name)
+            if not existing_columns:
+                continue
+            if "public_id" not in existing_columns:
+                connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN public_id VARCHAR(80)"))
+
+            missing_rows = connection.execute(
+                text(f"SELECT id{', role' if table_name == 'chat_messages' else ''} "
+                     f"FROM {table_name} WHERE public_id IS NULL OR public_id = ''")
+            ).mappings().all()
+            for row in missing_rows:
+                prefix = default_prefix
+                if table_name == "chat_messages":
+                    prefix = {
+                        "user": "user_msg",
+                        "assistant": "assistant_msg",
+                    }.get(str(row.get("role") or "").strip().lower(), "msg")
+                connection.execute(
+                    text(f"UPDATE {table_name} SET public_id = :public_id WHERE id = :record_id"),
+                    {
+                        "public_id": f"{prefix}_{uuid4().hex}",
+                        "record_id": row["id"],
+                    },
+                )
+
+            connection.execute(
+                text(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS uq_{table_name}_public_id "
+                    f"ON {table_name} (public_id)"
+                )
+            )
+            if connection.dialect.name == "postgresql":
+                connection.execute(text(f"ALTER TABLE {table_name} ALTER COLUMN public_id SET NOT NULL"))
+
+
 def ensure_versioned_table_columns(engine: Engine) -> None:
     with engine.begin() as connection:
         for table_name, required_columns in VERSIONED_TABLE_COLUMNS.items():
@@ -567,11 +653,70 @@ def ensure_versioned_table_columns(engine: Engine) -> None:
                     "updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)"
                 )
             )
+            if connection.dialect.name == "postgresql":
+                connection.execute(text(f"ALTER TABLE {table_name} ALTER COLUMN version SET NOT NULL"))
+
+
+def ensure_backend_read_views(engine: Engine) -> bool:
+    """Create the versioned, least-privilege projections consumed by AI Server.
+
+    The views are managed on every Backend startup so compatible projection
+    changes do not depend on an AI Server deployment. If the core Backend
+    tables do not exist yet (for example a migration-only unit test), no
+    partial contract is published. Once every source table exists, any source
+    column drift is a startup error rather than a silently degraded query.
+    """
+
+    with engine.begin() as connection:
+        missing_tables: set[str] = set()
+        missing_columns: dict[str, set[str]] = {}
+        source_requirements: dict[str, set[str]] = {}
+        for definition in BACKEND_READ_VIEW_DEFINITIONS.values():
+            for table_name, columns in dict(definition["sources"]).items():
+                source_requirements.setdefault(str(table_name), set()).update(str(column) for column in columns)
+
+        for table_name, required_columns in source_requirements.items():
+            actual_columns = table_columns(connection, table_name)
+            if not actual_columns:
+                missing_tables.add(table_name)
+                continue
+            difference = required_columns - actual_columns
+            if difference:
+                missing_columns[table_name] = difference
+
+        if missing_tables:
+            _drop_backend_read_views(connection)
+            return False
+        if missing_columns:
+            details = ";".join(
+                f"{table_name}:{','.join(sorted(columns))}"
+                for table_name, columns in sorted(missing_columns.items())
+            )
+            raise RuntimeError(f"backend_read_source_schema_mismatch:{details}")
+
+        if connection.dialect.name == "sqlite":
+            _drop_backend_read_views(connection)
+            for view_name, definition in BACKEND_READ_VIEW_DEFINITIONS.items():
+                connection.execute(text(f"CREATE VIEW {view_name} AS {definition['select']}"))
+        elif connection.dialect.name == "postgresql":
+            for view_name, definition in BACKEND_READ_VIEW_DEFINITIONS.items():
+                connection.execute(text(f"CREATE OR REPLACE VIEW {view_name} AS {definition['select']}"))
+        else:
+            raise RuntimeError(f"backend_read_contract_unsupported_dialect:{connection.dialect.name}")
+    return True
+
+
+def _drop_backend_read_views(connection) -> None:
+    for view_name in reversed(BACKEND_READ_VIEW_DEFINITIONS):
+        connection.execute(text(f"DROP VIEW IF EXISTS {view_name}"))
 
 
 def run_migrations(engine: Engine) -> list[str]:
+    applied = run_sql_migrations(engine, MIGRATIONS)
     ensure_reminder_policy_columns(engine)
     ensure_chat_message_columns(engine)
+    ensure_medication_plan_submission_id(engine)
     ensure_versioned_table_columns(engine)
-    applied = run_sql_migrations(engine, MIGRATIONS)
+    ensure_external_public_ids(engine)
+    ensure_backend_read_views(engine)
     return applied

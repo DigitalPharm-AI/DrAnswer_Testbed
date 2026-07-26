@@ -12,6 +12,13 @@
 </head>
 <body data-active-tab="home">
   {% include "partials/time_bar.html" %}
+  <div
+    id="app-request-feedback"
+    class="app-request-feedback"
+    role="status"
+    aria-live="assertive"
+    aria-atomic="true"
+    hidden></div>
   <div id="popup-stack" class="popup-stack" aria-live="polite" aria-atomic="false"></div>
 
   <div class="page-shell">

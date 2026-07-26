@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from fastapi import APIRouter, Depends, Form
+from fastapi import APIRouter, Depends, Form, HTTPException
 from sqlalchemy.orm import Session
 
 from system_app.db import get_session
@@ -18,6 +18,9 @@ from system_app.services.patient_profile_service import can_run_simulation
 from system_app.services.side_effect_reminder_safety import (
     set_reminder_suppressed_after_side_effect,
 )
+
+ALLOWED_CLOCK_ADVANCE_MINUTES = frozenset({30, 180})
+ALLOWED_CLOCK_SPEED_MULTIPLIERS = frozenset({1, 5, 15, 30, 60})
 
 
 def simulation_guard_allows_run(session: Session) -> bool:
@@ -35,6 +38,8 @@ def create_simulation_router(get_runtime: Callable[[], SystemRuntime]) -> APIRou
 
     @router.post("/clock/advance")
     async def advance_clock(minutes: int = Form(...), session: Session = Depends(get_session)):
+        if minutes not in ALLOWED_CLOCK_ADVANCE_MINUTES:
+            raise HTTPException(status_code=422, detail="clock_advance_minutes_invalid")
         with get_runtime().write_lock:
             if not simulation_guard_allows_run(session):
                 return hx_refresh()
@@ -43,6 +48,8 @@ def create_simulation_router(get_runtime: Callable[[], SystemRuntime]) -> APIRou
 
     @router.post("/clock/play")
     async def play_clock(speed_multiplier: int = Form(...), session: Session = Depends(get_session)):
+        if speed_multiplier not in ALLOWED_CLOCK_SPEED_MULTIPLIERS:
+            raise HTTPException(status_code=422, detail="clock_speed_multiplier_invalid")
         with get_runtime().write_lock:
             if not simulation_guard_allows_run(session):
                 return hx_refresh()
@@ -89,7 +96,9 @@ def create_simulation_router(get_runtime: Callable[[], SystemRuntime]) -> APIRou
     @router.post("/doses/{dose_event_id}/take")
     async def take_dose(dose_event_id: int, session: Session = Depends(get_session)):
         with get_runtime().write_lock:
-            mark_dose_taken_command(session, dose_event_id)
+            event = mark_dose_taken_command(session, dose_event_id)
+            if event is None:
+                raise HTTPException(status_code=404, detail="dose_event_not_found")
             session.commit()
         return hx_refresh()
 

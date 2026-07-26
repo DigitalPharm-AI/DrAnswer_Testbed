@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+from sqlalchemy import delete
 
 from agent_app.integration.contracts import (
     NotificationPolicyChangeResponse,
@@ -10,6 +11,8 @@ from agent_app.integration.contracts import (
     RecordChangeResponse,
     RecordChangeResult,
 )
+from agent_app.persistence.db import SessionLocal
+from agent_app.persistence.models import AgentBackendWriteRequest
 from agent_app.tools.backend_write import BACKEND_WRITE_TOOL_SPECS
 from agent_app.tools.catalog import ToolCatalog
 from agent_app.tools.mcp_server import AgentMcpToolServer
@@ -24,6 +27,17 @@ from agent_app.tools.names import (
 from agent_app.tools.protocol import tool_result_from_mcp_result
 
 NOW = datetime(2026, 7, 25, 16, 30, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def clear_backend_write_state() -> None:
+    with SessionLocal() as session:
+        session.execute(delete(AgentBackendWriteRequest))
+        session.commit()
+    yield
+    with SessionLocal() as session:
+        session.execute(delete(AgentBackendWriteRequest))
+        session.commit()
 
 
 class FakeBackendV12Client:
@@ -207,8 +221,7 @@ async def test_v12_record_write_tool_calls_backend_in_same_turn_with_stable_requ
     )
 
     assert first.status == second.status == "success"
-    assert len(client.record_requests) == 2
-    assert client.record_requests[0].request_id == client.record_requests[1].request_id
+    assert len(client.record_requests) == 1
     assert client.record_requests[0].source_chat_request_id == "chat-request-001"
     assert client.record_requests[0].confirmation_message_id == "501"
     assert client.record_requests[0].conversation_id == "conversation-001"
@@ -278,10 +291,8 @@ async def test_v12_update_write_tool_resolves_expected_version_inside_tool() -> 
     )
 
     assert result.status == replay.status == "success"
-    assert len(client.record_requests) == 2
+    assert len(client.record_requests) == 1
     assert client.record_requests[0].expected_version == 7
-    assert client.record_requests[1].expected_version == 7
-    assert client.record_requests[0].request_id == client.record_requests[1].request_id
     assert client.record_requests[0].patient_id == "patient-001"
     assert client.record_requests[0].payload.reason == "사용자 채팅 메시지에서 명시적으로 확인된 AI Tool 실행"
     assert queries.version_queries == [

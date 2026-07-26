@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from agent_app import trace_logging
@@ -21,6 +21,7 @@ from agent_app.jobs.tasks import (
     retry_dead_async_task,
 )
 from agent_app.security import require_internal_api_token
+from agent_app.tools.backend_query import BackendQueryTools
 from shared.schemas import (
     AgentAsyncAccepted,
     AgentAsyncClinicianAlertRequest,
@@ -35,11 +36,19 @@ router = APIRouter()
 
 SessionFactory = Callable[[], Session]
 _session_factory_getter: Callable[[], SessionFactory] | None = None
+_backend_query_tools_getter: Callable[[], BackendQueryTools | None] | None = None
 
 
 def configure_session_factory(getter: Callable[[], SessionFactory]) -> None:
     global _session_factory_getter
     _session_factory_getter = getter
+
+
+def configure_backend_query_tools(
+    getter: Callable[[], BackendQueryTools | None],
+) -> None:
+    global _backend_query_tools_getter
+    _backend_query_tools_getter = getter
 
 
 def _session() -> Session:
@@ -102,9 +111,22 @@ def async_task_status() -> dict:
 
 
 @router.get("/agent/ops/readiness", dependencies=[Depends(require_internal_api_token)])
-def agent_ops_readiness() -> dict:
+def agent_ops_readiness(response: Response) -> dict:
     with _session() as session:
-        return agent_ops_readiness_payload(session)
+        payload = agent_ops_readiness_payload(session)
+    backend_read = _backend_readiness()
+    payload["backend_read"] = backend_read
+    if not backend_read["ok"]:
+        payload["alerts"].append(
+            {
+                "code": "backend_read_contract_unavailable",
+                "severity": "critical",
+                "message": "Backend read-only DB contract is unavailable.",
+            }
+        )
+        payload["status"] = "critical"
+        response.status_code = 503
+    return payload
 
 
 @router.get("/agent/async/tasks", dependencies=[Depends(require_internal_api_token)])
@@ -178,6 +200,27 @@ def _request_id(task_type: str, callback_context) -> str:
         if callback_context.notification_id is not None:
             return f"{task_type}:notification:{callback_context.notification_id}"
     return f"{task_type}:{uuid.uuid4().hex}"
+
+
+def _backend_readiness() -> dict:
+    if _backend_query_tools_getter is None:
+        return {
+            "ok": False,
+            "error": "backend_query_tools_not_configured",
+        }
+    try:
+        backend_queries = _backend_query_tools_getter()
+        if backend_queries is None:
+            return {
+                "ok": False,
+                "error": "backend_read_database_url_not_configured",
+            }
+        return backend_queries.verify_contract()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+        }
 
 
 def _enqueue_agent_task(session: Session, task_type: str, payload: dict, request_id: str) -> AgentAsyncAccepted:

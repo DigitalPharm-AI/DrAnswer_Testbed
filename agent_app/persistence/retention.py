@@ -11,6 +11,7 @@ from agent_app.integration.idempotency import (
     RETRYABLE_FAILED,
 )
 from agent_app.persistence.models import (
+    AgentBackendWriteRequest,
     AgentConversationLock,
     AgentFeedbackLink,
     AgentPendingAction,
@@ -62,6 +63,11 @@ def purge_expired_agent_state(
                 )
             )
         ).rowcount
+        deleted_backend_write_requests = session.execute(
+            delete(AgentBackendWriteRequest).where(
+                AgentBackendWriteRequest.expires_at <= current
+            )
+        ).rowcount
         deleted_traces = session.execute(
             delete(AgentRunTrace).where(AgentRunTrace.expires_at <= current)
         ).rowcount
@@ -96,6 +102,9 @@ def purge_expired_agent_state(
         "deleted_pending_actions": int(deleted_pending_actions or 0),
         "deleted_feedback_links": int(deleted_feedback_links or 0),
         "deleted_tool_executions": int(deleted_tool_executions or 0),
+        "deleted_backend_write_requests": int(
+            deleted_backend_write_requests or 0
+        ),
         "deleted_run_steps": int(deleted_steps or 0),
         "deleted_run_traces": int(deleted_traces or 0),
         "deleted_sync_requests": int(deleted_sync_requests or 0),

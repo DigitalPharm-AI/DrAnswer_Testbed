@@ -10,7 +10,7 @@
       <p class="muted">{{ phr_profile.detail }}</p>
     </div>
     <form action="/phr/register" method="post" hx-post="/phr/register">
-      <button type="submit" class="secondary-button">
+      <button type="submit" class="secondary-button" {% if not plans %}disabled aria-disabled="true"{% endif %}>
         {% if phr_profile.sync_status in ['synced', 'needs_sync'] %}
           PHR 재동기화
         {% else %}
@@ -18,6 +18,9 @@
         {% endif %}
       </button>
     </form>
+    {% if not plans %}
+      <p class="muted inline-note">PHR 등록 전에 복약 계획을 하나 이상 추가해주세요.</p>
+    {% endif %}
   </div>
 
   {% if phr_profile.sync_status == 'synced' %}
@@ -29,6 +32,7 @@
     <div class="section-split medication-split">
       <div class="medication-form-stack">
         <form class="stack-form" action="/medications" method="post" hx-post="/medications">
+          <input type="hidden" name="submission_id" value="{{ medication_submission_id }}">
           <label>복약 조합</label>
           <div class="choice-grid choice-grid-2">
             {% for option in schedule_preset_options %}
@@ -59,7 +63,7 @@
               </label>
             {% endfor %}
           </div>
-          <input name="medication_name_custom" placeholder="직접 입력 선택 시 사용">
+          <input name="medication_name_custom" maxlength="255" placeholder="직접 입력 선택 시 사용">
 
           <label>용량</label>
           <div class="choice-grid">
@@ -75,7 +79,7 @@
               </label>
             {% endfor %}
           </div>
-          <input name="dosage_custom" placeholder="직접 입력 선택 시 사용">
+          <input name="dosage_custom" maxlength="255" placeholder="직접 입력 선택 시 사용">
 
           <label>복약 기간</label>
           <div class="grid-2">
@@ -84,7 +88,7 @@
           </div>
 
           <label>추가 지시</label>
-          <textarea name="instructions" rows="3" placeholder="식후 복용 등"></textarea>
+          <textarea name="instructions" rows="3" maxlength="2000" placeholder="식후 복용 등"></textarea>
 
           <button type="submit">복약 일정 추가</button>
         </form>
@@ -93,13 +97,13 @@
           <h3>식단 선호도 입력</h3>
 
           <label>선호 음식 리스트</label>
-          <input name="preferred_foods_csv" placeholder="예: 현미밥, 연어, 두부">
+          <input name="preferred_foods_csv" maxlength="4000" placeholder="예: 현미밥, 연어, 두부">
 
           <label>비선호 음식 리스트</label>
-          <input name="avoided_foods_csv" placeholder="예: 짜장면, 매운 음식">
+          <input name="avoided_foods_csv" maxlength="4000" placeholder="예: 짜장면, 매운 음식">
 
           <label>식단 성향 리스트</label>
-          <input name="diet_styles_csv" placeholder="예: 저나트륨, 고단백, 한식">
+          <input name="diet_styles_csv" maxlength="4000" placeholder="예: 저나트륨, 고단백, 한식">
 
           <button type="submit" class="secondary-button">식단 선호도 저장</button>
         </form>

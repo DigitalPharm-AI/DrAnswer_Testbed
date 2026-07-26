@@ -90,8 +90,12 @@ def record_change_request_from_tool(
     if tool_name == DELETE_NUTRITION_FOOD_RECORD:
         parent_record_id = _pop_required_id(values, "meal_id")
         record_id = _pop_required_id(values, "food_id")
-        if values.pop("delete_empty_meal", True) is not True:
-            raise ValueError("delete_empty_meal_false_not_supported_by_v12_contract")
+        if "delete_empty_meal" in values:
+            raise ValueError("delete_empty_meal_is_tool_managed")
+        if values:
+            raise ValueError(
+                f"unsupported_nutrition_food_delete_arguments:{','.join(sorted(values))}"
+            )
         return _record_request(
             context,
             resource_type="nutrition_food",
@@ -107,7 +111,7 @@ def record_change_request_from_tool(
         values.pop("source_event_type", None)
         payload = MedicationDoseEventMutationPayload(
             status="taken",
-            taken_at=values.pop("taken_at", None),
+            taken_at=context.requested_at,
             reason=str(values.pop("reason", "") or ""),
         )
         if values:

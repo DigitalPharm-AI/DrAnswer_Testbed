@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import hmac
+from typing import Annotated
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from shared.settings import get_settings
+
+agent_sync_bearer = HTTPBearer(
+    auto_error=False,
+    scheme_name="AgentSyncBearer",
+    description="Backend Server가 AI Server v1.2 동기 채팅 API를 호출할 때 사용하는 Bearer token",
+)
 
 
 def require_internal_api_token(x_internal_api_token: str | None = Header(default=None)) -> None:
@@ -17,20 +25,21 @@ def require_internal_api_token(x_internal_api_token: str | None = Header(default
         raise HTTPException(status_code=401, detail="invalid_internal_api_token")
 
 
-def require_agent_sync_bearer_token(authorization: str | None = Header(default=None)) -> None:
+def require_agent_sync_bearer_token(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(agent_sync_bearer),
+    ] = None,
+) -> None:
     settings = get_settings()
-    settings.require_agent_sync_api_token_in_production()
-    expected_token = (settings.agent_sync_api_token or settings.internal_api_token or "").strip()
-    if not expected_token:
-        return
-    scheme, _, credentials = (authorization or "").partition(" ")
+    expected_token = settings.require_agent_sync_api_token()
     if (
-        scheme.lower() != "bearer"
-        or not credentials
-        or not hmac.compare_digest(credentials.strip(), expected_token)
+        credentials is None
+        or credentials.scheme.lower() != "bearer"
+        or not hmac.compare_digest(credentials.credentials, expected_token)
     ):
         raise HTTPException(
-            status_code=401,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
                 "code": "UNAUTHORIZED",
                 "message": "Authorization failed.",

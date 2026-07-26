@@ -1,24 +1,37 @@
 from __future__ import annotations
 
-import json
+import math
 from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.orm import Session
 
-from agent_app.tools.names import CREATE_NUTRITION_MEAL_RECORD
+from shared.chat_contracts import input_box_message
 from shared.json_utils import dump_json, parse_json_object
+from shared.tool_names import CREATE_NUTRITION_MEAL_RECORD
 from shared.schemas import MutationConfirmationPrepareRequest
 from shared.settings import get_settings
 from system_app.db import get_session
 from system_app.models import ChatMessage, MutationConfirmation, Notification
 from system_app.runtime import SystemRuntime
 from system_app.services.background_threads import start_daemon_thread
+from system_app.services.backend_chat_service import (
+    PendingChatResponseError,
+    mark_pending_response_answered,
+    pending_response_for_submission,
+)
 from system_app.services.clock_service import ensure_clock
-from system_app.services.conversation_service import acknowledge_notification as acknowledge_notification_record
-from system_app.services.conversation_service import handle_policy_confirmation_message
-from system_app.services.dashboard_view import build_dashboard_context
+from system_app.services.conversation_service import (
+    POLICY_CONFIRMATION_ERROR,
+    POLICY_CONFIRMATION_INVALID_ACTION,
+    POLICY_CONFIRMATION_NOT_FOUND,
+    POLICY_CONFIRMATION_STALE,
+    POLICY_CONFIRMATION_WRONG_CATEGORY,
+    acknowledge_notification as acknowledge_notification_record,
+    handle_policy_confirmation_message,
+)
+from system_app.services.dashboard_view import build_chat_context
 from system_app.services.food_search_service import english_to_korean_nutrients, scale_nutrients
 from system_app.services.missed_dose_flag_service import is_active_missed_dose_flag_for_event
 from system_app.services.missed_dose_reply_understanding import (
@@ -39,11 +52,37 @@ from system_app.services.mutation_confirmation_service import (
     recover_expired_confirmations,
 )
 from system_app.services.nutrition_service import MEAL_TYPE_LABELS
-from system_app.services.side_effect_reminder_safety import handle_side_effect_reminder_safety_reply
+from system_app.services.side_effect_reminder_safety import (
+    SIDE_EFFECT_REMINDER_SAFETY_INVALID_ACTION,
+    SIDE_EFFECT_REMINDER_SAFETY_NOT_FOUND,
+    SIDE_EFFECT_REMINDER_SAFETY_STALE,
+    SIDE_EFFECT_REMINDER_SAFETY_WRONG_CATEGORY,
+    handle_side_effect_reminder_safety_reply,
+)
 from system_app.services.system_request_service import create_system_event_request
 from system_app.services.timeline_service import add_chat_message, ensure_chat_message_for_conversation_alert
 
 STALE_FOOD_SELECTION_DETAIL = "stale_food_selection"
+MAX_CHAT_MESSAGE_LENGTH = 4000
+ALLOWED_CHAT_EVENT_TYPES = {"multiturn_chat"}
+ALLOWED_CHAT_CONTRACT_VERSIONS = {"legacy", "v1.2"}
+CONFIRMATION_REPLY_HTTP_STATUS = {
+    POLICY_CONFIRMATION_NOT_FOUND: 404,
+    POLICY_CONFIRMATION_WRONG_CATEGORY: 409,
+    POLICY_CONFIRMATION_STALE: 409,
+    POLICY_CONFIRMATION_INVALID_ACTION: 422,
+    POLICY_CONFIRMATION_ERROR: 500,
+    SIDE_EFFECT_REMINDER_SAFETY_NOT_FOUND: 404,
+    SIDE_EFFECT_REMINDER_SAFETY_WRONG_CATEGORY: 409,
+    SIDE_EFFECT_REMINDER_SAFETY_STALE: 409,
+    SIDE_EFFECT_REMINDER_SAFETY_INVALID_ACTION: 422,
+}
+
+
+def raise_for_confirmation_reply_error(result_message: str) -> None:
+    status_code = CONFIRMATION_REPLY_HTTP_STATUS.get(result_message)
+    if status_code is not None:
+        raise HTTPException(status_code=status_code, detail=result_message)
 
 
 def active_missed_dose_conversation_alert(session: Session):
@@ -86,7 +125,7 @@ def has_newer_chat_message(session: Session, message: ChatMessage) -> bool:
 
 def food_selection_for_stage(session: Session, chat_message_id: int, expected_stage: str) -> tuple[ChatMessage, dict, dict]:
     message = session.get(ChatMessage, chat_message_id)
-    if message is None:
+    if message is None or message.patient_id != get_settings().patient_id:
         raise HTTPException(status_code=404, detail="chat_message_not_found")
     metadata = parse_json_object(message.metadata_json)
     fs = metadata.get("food_selection")
@@ -109,8 +148,9 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
     ):
         runtime = get_runtime()
         with runtime.write_lock:
-            handle_policy_confirmation_message(session, message, notification_id)
-        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
+            _, result_message = handle_policy_confirmation_message(session, message, notification_id)
+            raise_for_confirmation_reply_error(result_message)
+        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_chat_context(request, session))
 
     @router.post("/chat/ae-response")
     def ae_response(
@@ -122,8 +162,13 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
     ):
         runtime = get_runtime()
         with runtime.write_lock:
+            normalized_response = response_text.strip()
+            if not normalized_response:
+                raise HTTPException(status_code=422, detail="ae_response_required")
+            if len(normalized_response) > MAX_CHAT_MESSAGE_LENGTH:
+                raise HTTPException(status_code=422, detail="ae_response_too_long")
             message = session.get(ChatMessage, chat_message_id)
-            if message is None:
+            if message is None or message.patient_id != get_settings().patient_id:
                 raise HTTPException(status_code=404, detail="chat_message_not_found")
             metadata = parse_json_object(message.metadata_json)
             ae_payload = metadata.get("ae_pro_ctcae")
@@ -134,16 +179,33 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
             was_complete = bool(questions) and len(responses) >= len(questions)
             if question_index is None:
                 answered = {row.get("question_index") for row in responses if isinstance(row, dict)}
-                question_index = next((index for index in range(len(questions)) if index not in answered), 0)
+                question_index = next((index for index in range(len(questions)) if index not in answered), None)
+            if question_index is None or not 0 <= question_index < len(questions):
+                raise HTTPException(status_code=422, detail="ae_question_invalid")
+            existing_response = next(
+                (
+                    row
+                    for row in responses
+                    if isinstance(row, dict) and row.get("question_index") == question_index
+                ),
+                None,
+            )
+            if existing_response is not None:
+                if str(existing_response.get("response_text") or "").strip() != normalized_response:
+                    raise HTTPException(status_code=409, detail="ae_question_already_answered")
+                return runtime.templates.TemplateResponse(
+                    request,
+                    "partials/chat.html",
+                    build_chat_context(request, session),
+                )
             question_text = ""
-            if 0 <= question_index < len(questions) and isinstance(questions[question_index], dict):
+            if isinstance(questions[question_index], dict):
                 question_text = str(questions[question_index].get("question") or "")
-            responses = [row for row in responses if not (isinstance(row, dict) and row.get("question_index") == question_index)]
             responses.append(
                 {
                     "question_index": question_index,
                     "question": question_text,
-                    "response_text": response_text.strip(),
+                    "response_text": normalized_response,
                 }
             )
             ae_payload["responses"] = responses
@@ -152,7 +214,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
             add_chat_message(
                 session,
                 role="user",
-                content=f"{question_index + 1}번 문항: {response_text.strip()}",
+                content=f"{question_index + 1}번 문항: {normalized_response}",
                 sender_type="patient",
                 category="ae_response",
                 metadata={"ae_response_to": chat_message_id, "question_index": question_index},
@@ -184,7 +246,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
                         completion_message,
                     )
             session.commit()
-        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
+        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_chat_context(request, session))
 
     @router.post("/chat/side-effect-reminder-safety")
     def side_effect_reminder_safety_chat(
@@ -195,9 +257,12 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
     ):
         runtime = get_runtime()
         with runtime.write_lock:
-            handle_side_effect_reminder_safety_reply(session, notification_id, action)
+            _, result_message = handle_side_effect_reminder_safety_reply(session, notification_id, action)
+            if result_message in CONFIRMATION_REPLY_HTTP_STATUS:
+                session.rollback()
+            raise_for_confirmation_reply_error(result_message)
             session.commit()
-        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
+        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_chat_context(request, session))
 
     @router.post("/chat/system")
     def system_chat(
@@ -208,6 +273,15 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
         session: Session = Depends(get_session),
     ):
         runtime = get_runtime()
+        normalized_message = message.strip()
+        if not normalized_message:
+            raise HTTPException(status_code=422, detail="chat_message_required")
+        if len(normalized_message) > MAX_CHAT_MESSAGE_LENGTH:
+            raise HTTPException(status_code=422, detail="chat_message_too_long")
+        if event_type not in ALLOWED_CHAT_EVENT_TYPES:
+            raise HTTPException(status_code=422, detail="chat_event_type_invalid")
+        if contract_version not in ALLOWED_CHAT_CONTRACT_VERSIONS:
+            raise HTTPException(status_code=422, detail="chat_contract_version_invalid")
         with runtime.write_lock:
             patient_id = get_settings().patient_id
             recover_expired_confirmations(session, patient_id)
@@ -228,11 +302,11 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
             missed_dose_prompt = None if pending_confirmation is not None else active_missed_dose_conversation_alert(session)
             if missed_dose_prompt is not None:
                 prompt_message = ensure_chat_message_for_conversation_alert(session, missed_dose_prompt)
-                understanding = build_rule_based_missed_dose_reply_understanding(message)
+                understanding = build_rule_based_missed_dose_reply_understanding(normalized_message)
                 annotate_missed_dose_reply(
                     session,
                     missed_dose_prompt,
-                    patient_reply=message,
+                    patient_reply=normalized_message,
                     understanding=understanding,
                     prompt_message=prompt_message,
                 )
@@ -241,7 +315,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
             request_notification = create_system_event_request(
                 session,
                 event_type,
-                message,
+                normalized_message,
                 clock.current_time,
                 metadata=request_metadata or None,
             )
@@ -250,9 +324,9 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
         start_daemon_thread(
             name=f"system-event-request-{notification_id}",
             target=runtime.system_event_worker,
-            args=(event_type, message, notification_id),
+            args=(event_type, normalized_message, notification_id),
         )
-        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
+        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_chat_context(request, session))
 
     @router.post("/chat/contract-response")
     def contract_response_chat(
@@ -267,23 +341,32 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
     ):
         if response_kind == "selection":
             message = selection_message.strip()
-            requested_return_type = None
+            requested_return_type = "selection_box"
             if not message:
                 raise HTTPException(status_code=422, detail="selection_message_required")
         elif response_kind == "input":
-            if not input_labels or len(input_labels) != len(input_values):
-                raise HTTPException(status_code=422, detail="input_box_values_invalid")
-            message = json.dumps(
-                {label: value for label, value in zip(input_labels, input_values, strict=True)},
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
+            try:
+                message = input_box_message(input_labels, input_values)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             requested_return_type = "input_box"
         else:
             raise HTTPException(status_code=422, detail="contract_response_kind_invalid")
 
         runtime = get_runtime()
         with runtime.write_lock:
+            patient_id = get_settings().patient_id
+            try:
+                pending_response = pending_response_for_submission(
+                    session,
+                    patient_id=patient_id,
+                    conversation_id=conversation_id,
+                    requested_return_type=requested_return_type,
+                    message=message,
+                    source_chat_request_id=source_chat_request_id,
+                )
+            except PendingChatResponseError as exc:
+                raise HTTPException(status_code=409, detail=exc.code) from exc
             clock = ensure_clock(session)
             request_notification = create_system_event_request(
                 session,
@@ -297,6 +380,18 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
                     "requested_return_type": requested_return_type,
                 },
             )
+            request_metadata = parse_json_object(request_notification.metadata_json)
+            response_chat_message = session.get(
+                ChatMessage,
+                int(request_metadata["chat_message_id"]),
+            )
+            if response_chat_message is None:
+                raise HTTPException(status_code=500, detail="contract_response_message_missing")
+            mark_pending_response_answered(
+                pending_response,
+                response_message_id=response_chat_message.public_id,
+                response_request_id=str(request_metadata["ai_request_id"]),
+            )
             notification_id = request_notification.id
             session.commit()
         start_daemon_thread(
@@ -307,7 +402,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
         return runtime.templates.TemplateResponse(
             request,
             "partials/chat.html",
-            build_dashboard_context(request, session),
+            build_chat_context(request, session),
         )
 
     @router.post("/chat/mutation-confirmation")
@@ -354,7 +449,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
         return runtime.templates.TemplateResponse(
             request,
             "partials/chat.html",
-            build_dashboard_context(request, session),
+            build_chat_context(request, session),
         )
 
     @router.post("/chat/food-select")
@@ -376,7 +471,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
             metadata["food_selection"] = fs
             message.metadata_json = dump_json(metadata)
             session.commit()
-        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
+        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_chat_context(request, session))
 
     @router.post("/chat/food-grams")
     def food_grams(
@@ -387,6 +482,10 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
         session: Session = Depends(get_session),
     ):
         runtime = get_runtime()
+        if not math.isfinite(portion_g) or not 1 <= portion_g <= 2000:
+            raise HTTPException(status_code=422, detail="invalid_food_portion")
+        if meal_type not in MEAL_TYPE_LABELS:
+            raise HTTPException(status_code=422, detail="invalid_meal_type")
         with runtime.write_lock:
             message, metadata, fs = food_selection_for_stage(session, chat_message_id, "awaiting_grams")
             if not isinstance(fs.get("selected_food"), dict):
@@ -403,7 +502,7 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
             metadata["food_selection"] = fs
             message.metadata_json = dump_json(metadata)
             session.commit()
-        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
+        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_chat_context(request, session))
 
     @router.post("/chat/food-confirm")
     def food_confirm(
@@ -510,6 +609,6 @@ def create_chat_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
             metadata["food_selection"] = fs
             message.metadata_json = dump_json(metadata)
             session.commit()
-        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
+        return runtime.templates.TemplateResponse(request, "partials/chat.html", build_chat_context(request, session))
 
     return router

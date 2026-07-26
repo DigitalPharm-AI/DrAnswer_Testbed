@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from agent_app.tools.names import (
+from shared.tool_names import (
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     GET_PRO_CTCAE_QUESTIONNAIRE,
     POLICY_TOOLS,
@@ -75,6 +75,7 @@ def create_system_event_request(
     request_metadata = dict(metadata or {})
     request_id = str(request_metadata.get("ai_request_id") or f"chat-{uuid4()}")
     is_v12 = request_metadata.get("contract_version") == "v1.2"
+    requested_return_type = request_metadata.get("requested_return_type")
     chat_message = add_chat_message(
         session,
         role="user",
@@ -83,7 +84,7 @@ def create_system_event_request(
         category=event_type,
         metadata=request_metadata,
         ai_request_id=request_id,
-        message_type="text",
+        message_type=requested_return_type or "text",
         message_payload={"text": message},
         processing_status="pending" if is_v12 else "completed",
     )

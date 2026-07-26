@@ -9,6 +9,8 @@ from shared.redaction import redacted_clinical_text_label, safe_exception_summar
 from shared.settings import get_settings
 
 SUPPORTED_LLM_PROVIDERS = {"bedrock", "bedrock_anthropic", "anthropic_bedrock"}
+RULE_BASED_LLM_PROVIDERS = {"rule_based", "rule-based", "local", "heuristic"}
+RULE_BASED_ALLOWED_ENVS = {"test", "testing", "testbed"}
 
 
 async def collect_system_health(session: Session) -> dict:
@@ -28,7 +30,14 @@ async def collect_system_health(session: Session) -> dict:
         "provider_supported": llm_provider_supported,
         "model_tier": model_tier,
         "model": settings.model_id_for_tier(model_tier),
-        "base_url": "aws-bedrock" if llm_provider_supported else "unsupported",
+        "base_url": (
+            "local-testbed"
+            if settings.llm_provider.strip().lower() in RULE_BASED_LLM_PROVIDERS
+            and llm_provider_supported
+            else "aws-bedrock"
+            if llm_provider_supported
+            else "unsupported"
+        ),
         "api_key_configured": llm_configured,
         "credentials_required": llm_credentials_required,
         "status": "configured" if llm_configured else "unsupported_provider" if not llm_provider_supported else "missing_credentials",
@@ -110,11 +119,18 @@ def _llm_credentials_configured(settings) -> bool:
 
 
 def _llm_provider_supported(settings) -> bool:
-    return settings.llm_provider.strip().lower() in SUPPORTED_LLM_PROVIDERS
+    provider = settings.llm_provider.strip().lower()
+    if provider in SUPPORTED_LLM_PROVIDERS:
+        return True
+    return (
+        provider in RULE_BASED_LLM_PROVIDERS
+        and str(getattr(settings, "app_env", "")).strip().lower()
+        in RULE_BASED_ALLOWED_ENVS
+    )
 
 
 def _llm_credentials_required(settings) -> bool:
-    return _llm_provider_supported(settings)
+    return settings.llm_provider.strip().lower() in SUPPORTED_LLM_PROVIDERS
 
 
 def _llm_credential_sources(settings) -> list[str]:

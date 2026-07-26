@@ -10,6 +10,7 @@
 | Async Ops | `/agent/ops/readiness` status가 `ok` 또는 승인된 `degraded` | `critical` alert 존재 | Backend/Ops |
 | Privacy | `tests/test_redaction.py` 통과, trace 원문 PHI 미노출 | patient_id, PHR key, 증상/식사 자유문장 원문 로그 | Security/Ops |
 | PHR Containment | `PHR_READ_ONLY=true`에서 write 503, read 유지 | read-only 모드에서 register/update 성공 | Data/PHR |
+| Data Boundary | `python tools/verify_testbed_contract.py` 및 runtime write-denial probe 통과 | Agent가 Backend mount를 RW로 받거나 세 서비스가 하나의 RW DB 디렉터리를 공유 | Agent/Backend/Ops |
 | Architecture | system chat은 async-first, slow work는 callback으로 완료 | sync-only 문서/운영 절차로 배포 | Agent/Backend |
 | P1 Load Budget | `tools/p1_load_probe.py`에서 20-50 concurrency probe 실행 | error rate > 1% 또는 P95 budget 초과 | Ops/Backend |
 | P1 Cost Budget | current provider 단가 env 설정 후 일일 비용 추정 | daily budget 초과 또는 단가 미설정 상태로 launch gate 사용 | Ops/Product |
@@ -19,6 +20,7 @@
 권장 P0 CI subset:
 
 ```powershell
+python tools/verify_testbed_contract.py
 py -m pytest -q -p no:cacheprovider tests/test_production_eval_dataset.py tests/test_redaction.py tests/test_agent_ops_readiness.py tests/test_phr_app.py tests/test_agent_async_callbacks.py tests/test_migrations_health.py
 ```
 
@@ -51,6 +53,18 @@ powershell -ExecutionPolicy Bypass -File tools/da_drug_9000_stack.ps1 start
 powershell -ExecutionPolicy Bypass -File tools/da_drug_9000_stack.ps1 verify
 powershell -ExecutionPolicy Bypass -File tools/da_drug_9000_stack.ps1 stop
 ```
+
+`verify`는 세 서비스 health와 worker 상태뿐 아니라 다음 release-blocking 경계를 검사한다.
+
+- Backend, AI, PHR의 자체 SQLite 파일과 RW runtime 경로가 분리되어 있는지
+- AI의 Backend DB URL이 `mode=ro&uri=true`인지
+- AI `/health/ready`가 DB·read contract·인증 설정을 모두 통과해 `status=ready`인지
+- AI 관점에서 Backend DB read가 성공하고 main DB write probe가 거절되는지
+- 실제 `Backend /api/chat/sync → AI /agent/sync/chat → Backend read-only DB` 경로와 replay가 정상인지
+- Backend→AI와 AI→Backend Bearer token이 서로 다른지
+- 저장된 Backend v1.2 OpenAPI가 현재 코드와 일치하는지
+
+동일 검사는 `.github/workflows/testbed-boundary-contract.yml`에서 PR과 push마다 실행한다.
 
 Human review queue for semantic/behavioral evals:
 
@@ -197,7 +211,7 @@ Warning alert codes:
 
 | Scenario | Containment |
 | --- | --- |
-| Provider outage or unsafe LLM output | `LLM_PROVIDER=rule_based`로 agent_app/worker 재시작 |
+| Provider outage or unsafe LLM output | agent_app/worker 중지 또는 승인된 이전 provider/model tier로 rollback (`rule_based`는 test/testbed 전용) |
 | PHR write risk or sync corruption | `PHR_READ_ONLY=true`로 phr_app 재시작 |
 | callback storm or duplicate side effects | agent worker 중지 후 queue/dead task 점검 |
 | policy confirmation bypass risk | worker 중지, policy confirmation route 회귀 테스트 후 재개 |
@@ -224,7 +238,7 @@ Containment 기록에는 owner, approver, start time, affected workflow, rollbac
 
 | Change Type | Rollback |
 | --- | --- |
-| Model quality issue | `LLM_PROVIDER=rule_based` 또는 이전 model tier로 재시작 |
+| Model quality issue | 승인된 이전 provider/model tier로 재시작; test/testbed에서만 `LLM_PROVIDER=rule_based` 사용 |
 | PHR data issue | `PHR_READ_ONLY=true`, PHR sync 중지, last known good DB snapshot 복구 |
 | Async worker issue | worker 중지, running/callback_sent task reset 또는 dead task 재처리 계획 수립 |
 | Prompt/policy issue | prompt workbook/policy workbook 이전 버전 복구 |

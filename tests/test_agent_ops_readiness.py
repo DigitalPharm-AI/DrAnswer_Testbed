@@ -123,6 +123,22 @@ def test_agent_readiness_returns_connections_before_worker_reuse(tmp_path, monke
     monkeypatch.setattr(agent_main, "SessionLocal", session_factory)
     monkeypatch.setattr(agent_db, "SessionLocal", session_factory)
 
+    class HealthyBackendQueries:
+        def verify_contract(self):
+            return {
+                "ok": True,
+                "contract_version": "1.2",
+                "dialect": "sqlite",
+                "read_only": True,
+                "views": [],
+            }
+
+    monkeypatch.setattr(
+        agent_main.mcp_tool_server,
+        "backend_queries",
+        HealthyBackendQueries(),
+    )
+
     async def send_concurrent_requests():
         token = get_settings().internal_api_token
         headers = {"X-Internal-Api-Token": token} if token else {}
@@ -137,3 +153,34 @@ def test_agent_readiness_returns_connections_before_worker_reuse(tmp_path, monke
         assert engine.pool.checkedout() == 0
     finally:
         engine.dispose()
+
+
+def test_agent_readiness_fails_closed_when_backend_read_contract_is_unavailable(
+    monkeypatch,
+):
+    monkeypatch.setattr(agent_main.mcp_tool_server, "backend_queries", None)
+
+    token = get_settings().internal_api_token
+    headers = {"X-Internal-Api-Token": token} if token else {}
+    transport = httpx.ASGITransport(app=agent_main.app)
+
+    async def request_readiness():
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers=headers,
+        ) as client:
+            return await client.get("/agent/ops/readiness")
+
+    response = asyncio.run(request_readiness())
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["status"] == "critical"
+    assert payload["backend_read"] == {
+        "ok": False,
+        "error": "backend_read_database_url_not_configured",
+    }
+    assert {
+        alert["code"] for alert in payload["alerts"]
+    } >= {"backend_read_contract_unavailable"}

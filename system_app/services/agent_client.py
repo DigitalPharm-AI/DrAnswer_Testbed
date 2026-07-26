@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from agent_app.integration.chat_contracts import ChatSyncRequest, ChatSyncResponse
+from shared.chat_contracts import ChatSyncRequest, ChatSyncResponse
 from shared.schemas import (
     AgentAsyncAccepted,
     AgentAsyncClinicianAlertRequest,
@@ -50,6 +50,7 @@ class AgentClient:
         settings = get_settings()
         self.base_url = (base_url or settings.agent_base_url).rstrip("/")
         self.internal_api_token = settings.internal_api_token
+        self.agent_sync_api_token = settings.require_agent_sync_api_token()
         self.llm_timeout_seconds = settings.llm_timeout_seconds
 
     def _headers(self) -> dict[str, str]:
@@ -58,11 +59,7 @@ class AgentClient:
         return {"X-Internal-Api-Token": self.internal_api_token}
 
     def _sync_headers(self) -> dict[str, str]:
-        settings = get_settings()
-        token = settings.agent_sync_api_token or settings.internal_api_token
-        if not token:
-            return {}
-        return {"Authorization": f"Bearer {token}"}
+        return {"Authorization": f"Bearer {self.agent_sync_api_token}"}
 
     async def _request_json(
         self,
@@ -186,11 +183,13 @@ class AgentClient:
                         status_code=response.status_code,
                         error_type="agent_response_invalid",
                     ) from exc
-                return self._validate_response_model(
+                parsed = self._validate_response_model(
                     data,
                     ChatSyncResponse,
                     "에이전트 v1.2 채팅 응답을 해석하지 못했습니다.",
                 )
+                self._validate_sync_chat_correlation(payload, parsed)
+                return parsed
             except httpx.HTTPStatusError as exc:
                 raise self._build_service_error(exc.response) from exc
             except (httpx.TimeoutException, httpx.TransportError) as exc:
@@ -203,6 +202,25 @@ class AgentClient:
                     retryable=True,
                 ) from exc
         raise RuntimeError("unreachable_sync_chat_retry_state")
+
+    @staticmethod
+    def _validate_sync_chat_correlation(
+        request: ChatSyncRequest,
+        response: ChatSyncResponse,
+    ) -> None:
+        if (
+            response.request_id != request.request_id
+            or response.message_id != request.message_id
+        ):
+            raise AgentServiceError(
+                "에이전트 응답 식별자가 요청과 일치하지 않습니다.",
+                error_type="agent_response_correlation_mismatch",
+                retryable=False,
+                details={
+                    "expected_request_id": request.request_id,
+                    "expected_message_id": request.message_id,
+                },
+            )
 
     async def resolve_mutation_confirmation(
         self,

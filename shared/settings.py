@@ -1,8 +1,11 @@
+import base64
+import binascii
+import hmac
 import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MODEL_TIERS = ("fast", "sonnet")
@@ -73,8 +76,15 @@ class Settings(BaseSettings):
     agent_sync_retry_after_seconds: int = 1
     agent_trace_retention_seconds: int = 2_592_000
     agent_tool_execution_retention_seconds: int = 2_592_000
+    agent_backend_write_retention_seconds: int = 2_592_000
     agent_pending_action_retention_seconds: int = 2_592_000
     agent_feedback_retention_seconds: int = 604_800
+    agent_feedback_max_attempts: int = 3
+    agent_feedback_processing_lease_seconds: int = 300
+    agent_feedback_retry_base_seconds: int = 60
+    agent_feedback_retry_max_seconds: int = 3_600
+    agent_feedback_encryption_key: SecretStr | None = None
+    agent_feedback_encryption_key_id: str = "feedback-v1"
     qa_feedback_form_url: str = ""
     qa_feedback_sheet_url: str = ""
     internal_api_token: str | None = None
@@ -153,17 +163,72 @@ class Settings(BaseSettings):
         if self.is_production() and not (self.internal_api_token or "").strip():
             raise RuntimeError("INTERNAL_API_TOKEN is required when APP_ENV=production.")
 
+    def require_agent_sync_api_token(self) -> str:
+        token = (self.agent_sync_api_token or "").strip()
+        if not token:
+            raise RuntimeError("AGENT_SYNC_API_TOKEN is required in every environment.")
+        backend_token = (self.backend_api_token or "").strip()
+        if backend_token and hmac.compare_digest(token, backend_token):
+            raise RuntimeError("AGENT_SYNC_API_TOKEN and BACKEND_API_TOKEN must use distinct values.")
+        return token
+
     def require_agent_sync_api_token_in_production(self) -> None:
-        if self.is_production() and not ((self.agent_sync_api_token or self.internal_api_token or "").strip()):
-            raise RuntimeError("AGENT_SYNC_API_TOKEN or INTERNAL_API_TOKEN is required when APP_ENV=production.")
+        # Kept as a compatibility entrypoint for existing startup code. The v1.2
+        # service boundary is authenticated in development and testbeds as well.
+        self.require_agent_sync_api_token()
+
+    def require_backend_api_token(self) -> str:
+        token = (self.backend_api_token or "").strip()
+        if not token:
+            raise RuntimeError("BACKEND_API_TOKEN is required in every environment.")
+        agent_sync_token = (self.agent_sync_api_token or "").strip()
+        if agent_sync_token and hmac.compare_digest(token, agent_sync_token):
+            raise RuntimeError("AGENT_SYNC_API_TOKEN and BACKEND_API_TOKEN must use distinct values.")
+        return token
 
     def require_backend_api_token_in_production(self) -> None:
-        if self.is_production() and not ((self.backend_api_token or "").strip()):
-            raise RuntimeError("BACKEND_API_TOKEN is required when APP_ENV=production.")
+        # Kept as a compatibility entrypoint for existing startup code. The v1.2
+        # service boundary is authenticated in development and testbeds as well.
+        self.require_backend_api_token()
 
     def require_backend_read_database_url_in_production(self) -> None:
         if self.is_production() and not self.backend_read_database_url.strip():
             raise RuntimeError("BACKEND_READ_DATABASE_URL is required when APP_ENV=production.")
+
+    def require_agent_feedback_encryption(self) -> tuple[str, bytes]:
+        encoded = (
+            self.agent_feedback_encryption_key.get_secret_value().strip()
+            if self.agent_feedback_encryption_key is not None
+            else ""
+        )
+        if not encoded:
+            raise RuntimeError(
+                "AGENT_FEEDBACK_ENCRYPTION_KEY is required in every environment."
+            )
+        try:
+            key = base64.b64decode(
+                encoded + ("=" * (-len(encoded) % 4)),
+                altchars=b"-_",
+                validate=True,
+            )
+        except (ValueError, binascii.Error) as exc:
+            raise RuntimeError(
+                "AGENT_FEEDBACK_ENCRYPTION_KEY must be URL-safe base64."
+            ) from exc
+        if len(key) != 32:
+            raise RuntimeError(
+                "AGENT_FEEDBACK_ENCRYPTION_KEY must decode to exactly 32 bytes."
+            )
+        key_id = self.agent_feedback_encryption_key_id.strip()
+        if not key_id:
+            raise RuntimeError(
+                "AGENT_FEEDBACK_ENCRYPTION_KEY_ID is required."
+            )
+        if len(key_id) > 120:
+            raise RuntimeError(
+                "AGENT_FEEDBACK_ENCRYPTION_KEY_ID must be at most 120 characters."
+            )
+        return key_id, key
 
 
 @lru_cache

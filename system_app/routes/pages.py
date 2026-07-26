@@ -11,7 +11,20 @@ from system_app.models import Notification
 from system_app.runtime import SystemRuntime
 from system_app.services.agent_jobs import create_agent_job
 from system_app.services.clock_service import ensure_clock
-from system_app.services.dashboard_view import build_dashboard_context, resolve_agent_model_config, serialize_notification_feed, serialize_notifications
+from system_app.services.dashboard_view import (
+    build_active_policies_context,
+    build_chat_context,
+    build_chat_history_context,
+    build_chat_log_context,
+    build_dashboard_context,
+    build_notifications_context,
+    build_system_request_history_context,
+    build_time_bar_context,
+    build_timeline_context,
+    resolve_agent_model_config,
+    serialize_notification_feed_page,
+    serialize_notifications,
+)
 from system_app.services.dose_event_service import build_daily_pattern
 from system_app.services.governance_change_log import append_governance_change
 from system_app.services.observability_actions import (
@@ -54,19 +67,31 @@ def create_pages_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
 
     @router.get("/partials/time-bar", response_class=HTMLResponse)
     async def time_bar_partial(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-        return get_runtime().templates.TemplateResponse(request, "partials/time_bar.html", build_dashboard_context(request, session))
+        return get_runtime().templates.TemplateResponse(
+            request,
+            "partials/time_bar.html",
+            build_time_bar_context(request, session),
+        )
 
     @router.get("/partials/timeline", response_class=HTMLResponse)
     async def timeline_partial(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-        return get_runtime().templates.TemplateResponse(request, "partials/timeline.html", build_dashboard_context(request, session))
+        return get_runtime().templates.TemplateResponse(request, "partials/timeline.html", build_timeline_context(request, session))
 
     @router.get("/partials/notifications", response_class=HTMLResponse)
     async def notifications_partial(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-        return get_runtime().templates.TemplateResponse(request, "partials/notifications.html", build_dashboard_context(request, session))
+        return get_runtime().templates.TemplateResponse(
+            request,
+            "partials/notifications.html",
+            build_notifications_context(request, session),
+        )
 
     @router.get("/partials/active-policies", response_class=HTMLResponse)
     async def active_policies_partial(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-        return get_runtime().templates.TemplateResponse(request, "partials/active_policies.html", build_dashboard_context(request, session))
+        return get_runtime().templates.TemplateResponse(
+            request,
+            "partials/active_policies.html",
+            build_active_policies_context(request, session),
+        )
 
     @router.get("/partials/logs", response_class=HTMLResponse)
     async def logs_partial(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
@@ -387,27 +412,36 @@ def create_pages_router(get_runtime: Callable[[], SystemRuntime]) -> APIRouter:
 
     @router.get("/partials/chat", response_class=HTMLResponse)
     async def chat_partial(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-        return get_runtime().templates.TemplateResponse(request, "partials/chat.html", build_dashboard_context(request, session))
+        return get_runtime().templates.TemplateResponse(request, "partials/chat.html", build_chat_context(request, session))
 
     @router.get("/partials/chat-log", response_class=HTMLResponse)
     async def chat_log_partial(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-        return get_runtime().templates.TemplateResponse(request, "partials/chat_log.html", build_dashboard_context(request, session))
+        return get_runtime().templates.TemplateResponse(request, "partials/chat_log.html", build_chat_log_context(request, session))
 
     @router.get("/partials/chat-history", response_class=HTMLResponse)
     async def chat_history_partial(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-        return get_runtime().templates.TemplateResponse(request, "partials/conversation_history.html", build_dashboard_context(request, session))
+        return get_runtime().templates.TemplateResponse(
+            request,
+            "partials/conversation_history.html",
+            build_chat_history_context(request, session),
+        )
 
     @router.get("/partials/system-request-history", response_class=HTMLResponse)
     async def system_request_history_partial(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-        return get_runtime().templates.TemplateResponse(request, "partials/system_request_history.html", build_dashboard_context(request, session))
+        return get_runtime().templates.TemplateResponse(
+            request,
+            "partials/system_request_history.html",
+            build_system_request_history_context(request, session),
+        )
 
     @router.get("/api/notifications/feed")
     async def notifications_feed(after_id: int = 0, session: Session = Depends(get_session)) -> dict:
         clock = ensure_clock(session)
-        notifications = serialize_notification_feed(session, clock.current_time, after_id=after_id)
-        last_seen_id = after_id
-        if notifications:
-            last_seen_id = max(row["id"] for row in notifications)
+        notifications, last_seen_id = serialize_notification_feed_page(
+            session,
+            clock.current_time,
+            after_id=after_id,
+        )
         return {"notifications": notifications, "last_seen_id": last_seen_id, "current_time": clock.current_time.isoformat()}
 
     @router.get("/api/notifications/{notification_id}")

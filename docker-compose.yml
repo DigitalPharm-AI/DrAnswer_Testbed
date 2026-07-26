@@ -6,13 +6,17 @@ services:
     image: da-drug:latest
     command: uvicorn phr_app.main:app --host 0.0.0.0 --port 8002
     env_file:
-      - .env
-      - .env.phr_app
+      - path: .env
+        required: false
+      - path: .env.phr_app
+        required: false
     environment:
       DA_DRUG_SERVICE: phr_app
-      PHR_DATABASE_URL: sqlite:////app/data/phr.db
+      PHR_DATABASE_URL: sqlite:////app/runtime/phr/phr.db
     volumes:
-      - ./data:/app/data
+      - type: volume
+        source: phr-runtime
+        target: /app/runtime/phr
     expose:
       - "8002"
     healthcheck:
@@ -30,28 +34,39 @@ services:
       dockerfile: Dockerfile
     command: uvicorn agent_app.main:app --host 0.0.0.0 --port 8001
     env_file:
-      - .env
-      - .env.agent_app
+      - path: .env
+        required: false
+      - path: .env.agent_app
+        required: false
     environment:
       DA_DRUG_SERVICE: agent_app
-      AGENT_DATABASE_URL: sqlite:////app/data/agent.db
-      BACKEND_READ_DATABASE_URL: sqlite:////app/data/system.db
+      AGENT_DATABASE_URL: sqlite:////app/runtime/agent/agent.db
+      BACKEND_READ_DATABASE_URL: "sqlite:///file:/app/backend-read/system.db?mode=ro&uri=true"
       AGENT_EMBEDDED_WORKER_ENABLED: "false"
       SYSTEM_BASE_URL: http://system-app:8000
       PHR_BASE_URL: http://phr-app:8002
-      PROMPT_WORKBOOK_PATH: /app/data/prompt_registry.xlsx
-      POLICY_WORKBOOK_PATH: /app/data/default_notification_policies.xlsx
+      PROMPT_WORKBOOK_PATH: /app/runtime/agent/prompt_registry.xlsx
+      POLICY_WORKBOOK_PATH: /app/runtime/agent/default_notification_policies.xlsx
+      PRO_CTCAE_WORKBOOK_PATH: /app/runtime/agent/pro_ctcae_korean_parsed.xlsx
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./data:/app/data
+      - type: volume
+        source: agent-runtime
+        target: /app/runtime/agent
+      - type: volume
+        source: system-runtime
+        target: /app/backend-read
+        read_only: true
     expose:
       - "8001"
     depends_on:
       phr-app:
         condition: service_healthy
+      system-app:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3).read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health/ready', timeout=3).read()"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -65,20 +80,29 @@ services:
       dockerfile: Dockerfile
     command: python -m agent_app.worker_main
     env_file:
-      - .env
-      - .env.agent_app
+      - path: .env
+        required: false
+      - path: .env.agent_app
+        required: false
     environment:
       DA_DRUG_SERVICE: agent_app
-      AGENT_DATABASE_URL: sqlite:////app/data/agent.db
-      BACKEND_READ_DATABASE_URL: sqlite:////app/data/system.db
+      AGENT_DATABASE_URL: sqlite:////app/runtime/agent/agent.db
+      BACKEND_READ_DATABASE_URL: "sqlite:///file:/app/backend-read/system.db?mode=ro&uri=true"
       SYSTEM_BASE_URL: http://system-app:8000
       PHR_BASE_URL: http://phr-app:8002
-      PROMPT_WORKBOOK_PATH: /app/data/prompt_registry.xlsx
-      POLICY_WORKBOOK_PATH: /app/data/default_notification_policies.xlsx
+      PROMPT_WORKBOOK_PATH: /app/runtime/agent/prompt_registry.xlsx
+      POLICY_WORKBOOK_PATH: /app/runtime/agent/default_notification_policies.xlsx
+      PRO_CTCAE_WORKBOOK_PATH: /app/runtime/agent/pro_ctcae_korean_parsed.xlsx
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./data:/app/data
+      - type: volume
+        source: agent-runtime
+        target: /app/runtime/agent
+      - type: volume
+        source: system-runtime
+        target: /app/backend-read
+        read_only: true
     depends_on:
       phr-app:
         condition: service_healthy
@@ -95,24 +119,29 @@ services:
       dockerfile: Dockerfile
     command: uvicorn system_app.main:app --host 0.0.0.0 --port 8000
     env_file:
-      - .env
-      - .env.system_app
+      - path: .env
+        required: false
+      - path: .env.system_app
+        required: false
     environment:
       DA_DRUG_SERVICE: system_app
-      SYSTEM_DATABASE_URL: sqlite:////app/data/system.db
+      SYSTEM_DATABASE_URL: sqlite:////app/runtime/system/system.db
       AGENT_BASE_URL: http://agent-app:8001
       SYSTEM_BASE_URL: http://system-app:8000
       PHR_BASE_URL: http://phr-app:8002
-      PROMPT_WORKBOOK_PATH: /app/data/prompt_registry.xlsx
-      POLICY_WORKBOOK_PATH: /app/data/default_notification_policies.xlsx
+      PROMPT_WORKBOOK_PATH: /app/runtime/system/prompt_registry.xlsx
+      POLICY_WORKBOOK_PATH: /app/runtime/system/default_notification_policies.xlsx
     volumes:
-      - ./data:/app/data
+      - type: volume
+        source: system-runtime
+        target: /app/runtime/system
+      - type: bind
+        source: ./data
+        target: /app/data
     ports:
       - "${SYSTEM_PORT:-8000}:8000"
     depends_on:
       phr-app:
-        condition: service_healthy
-      agent-app:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
@@ -121,3 +150,8 @@ services:
       retries: 12
       start_period: 10s
     restart: unless-stopped
+
+volumes:
+  agent-runtime:
+  phr-runtime:
+  system-runtime:

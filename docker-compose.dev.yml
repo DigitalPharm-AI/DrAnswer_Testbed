@@ -2,19 +2,47 @@ services:
   phr-app:
     command: uvicorn phr_app.main:app --host 0.0.0.0 --port 8002 --reload
     volumes:
-      - .:/app
+      - type: bind
+        source: ./phr_app
+        target: /app/phr_app
+        read_only: true
+      - type: bind
+        source: ./shared
+        target: /app/shared
+        read_only: true
 
   agent-app:
     command: uvicorn agent_app.main:app --host 0.0.0.0 --port 8001 --reload
     volumes:
-      - .:/app
+      - type: bind
+        source: ./agent_app
+        target: /app/agent_app
+        read_only: true
+      - type: bind
+        source: ./shared
+        target: /app/shared
+        read_only: true
 
   agent-worker:
     command: python -m agent_app.worker_main
     volumes:
-      - .:/app
+      - type: bind
+        source: ./agent_app
+        target: /app/agent_app
+        read_only: true
+      - type: bind
+        source: ./shared
+        target: /app/shared
+        read_only: true
 
   system-app:
     command: uvicorn system_app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
-      - .:/app
+      - type: bind
+        source: ./system_app
+        target: /app/system_app
+        read_only: true
+      - type: bind
+        source: ./shared
+        target: /app/shared
+        read_only: true

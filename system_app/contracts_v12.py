@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from agent_app.integration.chat_contracts import ChatMessageContent, ChatMessageType, RequestedReturnType
+from shared.chat_contracts import ChatMessageContent, ChatMessageType, RequestedReturnType
 
 
 def _aware(value: datetime) -> datetime:
@@ -35,8 +35,14 @@ class BackendChatRequest(StrictBackendContract):
 class BackendChatResponse(StrictBackendContract):
     request_id: str = Field(min_length=1)
     conversation_id: str = Field(min_length=1)
-    user_message_id: str = Field(min_length=1)
-    assistant_message_id: str = Field(min_length=1)
+    user_message_id: str = Field(
+        min_length=1,
+        description="Persisted user chat_messages.public_id.",
+    )
+    assistant_message_id: str = Field(
+        min_length=1,
+        description="Persisted assistant chat_messages.public_id.",
+    )
     message_type: ChatMessageType
     message: ChatMessageContent
     message_at: datetime

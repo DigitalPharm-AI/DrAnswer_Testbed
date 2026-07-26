@@ -1,7 +1,6 @@
 import { installChatLogScrollPreserver } from "./notifications/chat_scroll.js?v=20260714c";
 import { createPanelRefresher } from "./notifications/panels.js?v=20260714f";
-import { createPolicyConfirmationRenderer } from "./notifications/policy_confirmation.js?v=20260619b";
-import { createButton, escapeHtml, fetchNotification, postAction, postFormAction, showNativeNotification } from "./notifications/shared.js?v=20260619b";
+import { createButton, escapeHtml, fetchNotification, postAction, showNativeNotification } from "./notifications/shared.js?v=20260619b";
 
 (function () {
   const stack = document.getElementById("popup-stack");
@@ -16,7 +15,6 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
     chatScroll: null,
   };
   let panelRefresher = null;
-  let policyConfirmationRenderer = null;
   let changedRefreshTimer = null;
 
   function getActiveTabName() {
@@ -33,10 +31,6 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
 
   function refreshChatPanel() {
     return panelRefresher.refreshChatPanel();
-  }
-
-  function refreshChatHistoryPanel() {
-    return panelRefresher.refreshChatHistoryPanel();
   }
 
   function getPanelRefreshInterval() {
@@ -114,7 +108,7 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
     openPage("chat-page", updateHash);
     state.chatScrollForceBottom = true;
     applyChatPrefill(prefill);
-    await Promise.all([refreshChatPanel(), refreshChatHistoryPanel()]);
+    await refreshChatPanel();
     window.requestAnimationFrame(() => applyChatPrefill(prefill));
   }
 
@@ -247,9 +241,15 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
         writeDraft(input);
       }
     });
-    document.body.addEventListener("submit", (event) => {
-      const form = event.target;
-      if (form instanceof HTMLFormElement && form.classList.contains("chat-composer")) {
+    document.body.addEventListener("htmx:afterRequest", (event) => {
+      const detail = event.detail || {};
+      const form = detail.elt;
+      if (
+        form instanceof HTMLFormElement &&
+        form.classList.contains("chat-composer") &&
+        detail.successful !== false &&
+        !detail.failed
+      ) {
         window.sessionStorage.removeItem(storageKey);
       }
     });
@@ -387,8 +387,7 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
         panelRefresher.refreshNutritionPanel();
       }
       panelRefresher.refreshNotificationsPanel();
-      panelRefresher.refreshChatLogPanel();
-      panelRefresher.refreshChatHistoryPanel();
+      panelRefresher.refreshChatPanel();
     });
   }
 
@@ -448,14 +447,15 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
         showPopup(notification);
         showNativeNotification(notification);
       }
+      const serverCursor = Number(payload.last_seen_id || 0);
+      if (Number.isFinite(serverCursor)) {
+        state.lastSeenId = Math.max(state.lastSeenId, serverCursor);
+      }
       if (hasNewNotification && !isReplyingInAlert()) {
         if (hasNewChatPromptNotification) {
           state.chatScrollForceBottom = true;
         }
         await refreshPanels();
-        if (hasNewChatPromptNotification) {
-          await refreshChatPanel();
-        }
       } else if (hasSuppressedNotification) {
         state.chatScrollForceBottom = true;
         await refreshChatPanel();
@@ -795,17 +795,6 @@ import { createButton, escapeHtml, fetchNotification, postAction, postFormAction
     return panel;
   }
 
-  policyConfirmationRenderer = createPolicyConfirmationRenderer({
-    createButton,
-    fetchNotification,
-    postAction,
-    postFormAction,
-    refreshPanels,
-    updatePopup,
-    dismissPopup,
-    showAgentProcessing,
-    lockNotificationActionArea,
-  });
   panelRefresher = createPanelRefresher({ stack, updatePopup });
   installAppTabs();
   installChatComposerShortcuts();

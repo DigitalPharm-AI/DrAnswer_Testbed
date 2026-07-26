@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 import system_app.main as system_main
 import system_app.routes.notifications as notifications_routes
+import system_app.services.conversation_service as conversation_service
 from agent_app.tools.names import CREATE_MEDICATION_SIDE_EFFECT_RECORD
 from shared.schemas import AgentResponse, MissedDoseEventPayload, PhrPatientRegistrationResult, PhrRegisteredMedication
 from shared.settings import get_settings
@@ -29,6 +30,7 @@ from system_app.models import (
 )
 from system_app.services.agent_jobs import FAILED, PENDING, create_agent_job
 from system_app.services.agent_response_service import maybe_apply_policy_response
+from system_app.services.dashboard_view import visible_chat_prompt_notifications
 from system_app.services.dose_event_service import mark_dose_taken
 from system_app.services.missed_dose_flag_service import activate_missed_dose_flag
 from system_app.services.side_effect_reminder_safety import (
@@ -293,6 +295,49 @@ def test_notifications_feed_returns_expected_shape():
     assert "notifications" in payload
     assert "last_seen_id" in payload
     assert "current_time" in payload
+
+
+def test_notifications_feed_scans_past_hidden_delivery_rows():
+    client = TestClient(app)
+
+    with SessionLocal() as session:
+        session.query(Notification).delete()
+        ensure_base_data(session)
+        clock = ensure_clock(session)
+        for index in range(12):
+            create_notification(
+                session,
+                notification_type="conversation_alert",
+                title=f"숨김 알림 {index}",
+                body="채팅에서만 표시됩니다.",
+                visible_at=clock.current_time,
+                metadata={"delivery_channel": "chat_only"},
+            )
+        visible = create_notification(
+            session,
+            notification_type="medication_alert",
+            title="표시 알림",
+            body="복약 시간입니다.",
+            visible_at=clock.current_time,
+            metadata={},
+        )
+        visible_id = visible.id
+        session.commit()
+
+    response = client.get("/api/notifications/feed?after_id=0")
+    payload = response.json()
+    repeated_response = client.get(f"/api/notifications/feed?after_id={payload['last_seen_id']}")
+
+    with SessionLocal() as session:
+        session.query(Notification).delete()
+        session.commit()
+
+    assert response.status_code == 200
+    assert [row["id"] for row in payload["notifications"]] == [visible_id]
+    assert payload["last_seen_id"] == visible_id
+    assert repeated_response.status_code == 200
+    assert repeated_response.json()["notifications"] == []
+    assert repeated_response.json()["last_seen_id"] == visible_id
 
 
 def test_chat_request_tracking_notifications_are_hidden_from_alert_surfaces():
@@ -1060,6 +1105,31 @@ def test_system_chat_does_not_attach_to_stale_missed_dose_alert_after_later_take
     with SessionLocal() as session:
         mark_dose_taken(session, lunch_event_id, taken_at=lunch_taken_at)
 
+    with SessionLocal() as session:
+        prompt = session.get(Notification, prompt_id)
+        prompt_metadata = json.loads(prompt.metadata_json)
+        clock = ensure_clock(session)
+        assert prompt.acknowledged is True
+        assert prompt_metadata["status"] == "superseded"
+        assert prompt_metadata["superseded_reason"] == "subsequent_same_day_taken"
+        assert prompt_metadata["resolved_at"] == lunch_taken_at.isoformat()
+
+        # Legacy/inconsistent rows may still be unacknowledged. The chat view
+        # must independently reject them when the owning flag is inactive.
+        prompt.acknowledged = False
+        prompt_metadata["status"] = "agent_ready"
+        prompt.metadata_json = json.dumps(prompt_metadata, ensure_ascii=False)
+        session.flush()
+        visible_prompt_ids = {
+            row.id for row in visible_chat_prompt_notifications(session, clock.current_time)
+        }
+        assert prompt_id not in visible_prompt_ids
+
+        prompt.acknowledged = True
+        prompt_metadata["status"] = "superseded"
+        prompt.metadata_json = json.dumps(prompt_metadata, ensure_ascii=False)
+        session.commit()
+
     response = client.post(
         "/chat/system",
         data={"event_type": "multiturn_chat", "message": "아까 무슨 얘기했지?"},
@@ -1079,7 +1149,9 @@ def test_system_chat_does_not_attach_to_stale_missed_dose_alert_after_later_take
         session.query(Notification).delete()
         session.commit()
 
-    assert prompt.acknowledged is False
+    assert prompt.acknowledged is True
+    assert prompt_metadata["status"] == "superseded"
+    assert prompt_metadata["superseded_reason"] == "subsequent_same_day_taken"
     assert "patient_reply" not in prompt_metadata
     assert "missed_dose_reply" not in user_metadata
     assert worker_args == [("multiturn_chat", "아까 무슨 얘기했지?", system_notification_id)]
@@ -1168,6 +1240,13 @@ def test_notification_ack_marks_notification_read():
         refreshed = session.get(Notification, notification_id)
         assert refreshed is not None
         assert refreshed.acknowledged is True
+
+
+def test_notification_ack_returns_404_when_notification_is_missing():
+    response = TestClient(app).post("/notifications/999999999/ack")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "notification_not_found"
 
 
 def test_conversation_alert_partial_routes_replies_to_chat():
@@ -1421,9 +1500,9 @@ def test_side_effect_safety_reply_keep_and_suppress_update_override():
         assert keep_response.status_code == 200
         assert "기존 복약 알림과 미복용 AI 알림을 유지합니다." in keep_response.text
         assert suppress_response.status_code == 200
-        assert duplicate_suppress_response.status_code == 200
+        assert duplicate_suppress_response.status_code == 409
+        assert duplicate_suppress_response.json()["detail"] == "side_effect_reminder_safety_stale"
         assert "복약 알림과 미복용 AI 알림을 모두 껐습니다." in suppress_response.text
-        assert "이미 처리된 알림입니다." in duplicate_suppress_response.text
         assert 'action="/chat/side-effect-reminder-safety"' not in suppress_response.text
         with SessionLocal() as session:
             keep_notification = session.get(Notification, keep_id)
@@ -1472,13 +1551,315 @@ def test_side_effect_safety_reply_keep_and_suppress_update_override():
                     ChatMessage.content == "이미 처리된 알림입니다.",
                 )
                 .count()
-                == 1
+                == 0
             )
     finally:
         with SessionLocal() as session:
             session.query(ChatMessage).delete()
             session.query(Notification).delete()
             session.query(SystemPolicyOverride).filter(SystemPolicyOverride.policy_key == SIDE_EFFECT_REMINDER_SUPPRESSED_POLICY_KEY).delete()
+            session.commit()
+
+
+def test_confirmation_reply_routes_reject_missing_foreign_wrong_category_stale_and_invalid_action():
+    client = TestClient(app)
+    patient_id = get_settings().patient_id
+    created_notification_ids: list[int] = []
+
+    with SessionLocal() as session:
+        ensure_base_data(session)
+        clock = ensure_clock(session)
+
+        def prompt(*, patient: str, category: str, status: str = "agent_ready") -> int:
+            notification = create_notification(
+                session,
+                notification_type="conversation_alert",
+                title="확인 계약 테스트",
+                body="선택해주세요.",
+                visible_at=clock.current_time,
+                patient_id=patient,
+                metadata={"category": category, "status": status},
+            )
+            created_notification_ids.append(notification.id)
+            return notification.id
+
+        policy_foreign_id = prompt(patient="another-patient", category="policy_confirmation")
+        policy_wrong_category_id = prompt(patient=patient_id, category="missed_dose")
+        policy_stale_id = prompt(patient=patient_id, category="policy_confirmation", status="reply_submitted")
+        policy_invalid_id = prompt(patient=patient_id, category="policy_confirmation")
+        safety_foreign_id = prompt(patient="another-patient", category=SIDE_EFFECT_REMINDER_SAFETY_CATEGORY)
+        safety_wrong_category_id = prompt(patient=patient_id, category="missed_dose")
+        safety_stale_id = prompt(
+            patient=patient_id,
+            category=SIDE_EFFECT_REMINDER_SAFETY_CATEGORY,
+            status="reply_completed",
+        )
+        safety_invalid_id = prompt(patient=patient_id, category=SIDE_EFFECT_REMINDER_SAFETY_CATEGORY)
+        session.commit()
+
+    missing_id = 2_147_483_647
+    cases = [
+        ("/chat/policy-confirmation", {"notification_id": missing_id, "message": "increase"}, 404, "notification_not_found"),
+        ("/chat/policy-confirmation", {"notification_id": policy_foreign_id, "message": "increase"}, 404, "notification_not_found"),
+        (
+            "/chat/policy-confirmation",
+            {"notification_id": policy_wrong_category_id, "message": "increase"},
+            409,
+            "notification_does_not_accept_policy_confirmation",
+        ),
+        (
+            "/chat/policy-confirmation",
+            {"notification_id": policy_stale_id, "message": "increase"},
+            409,
+            "policy_confirmation_stale",
+        ),
+        (
+            "/chat/policy-confirmation",
+            {"notification_id": policy_invalid_id, "message": "not-an-action"},
+            422,
+            "policy_confirmation_invalid_action",
+        ),
+        (
+            "/chat/side-effect-reminder-safety",
+            {"notification_id": missing_id, "action": "keep"},
+            404,
+            "notification_not_found",
+        ),
+        (
+            "/chat/side-effect-reminder-safety",
+            {"notification_id": safety_foreign_id, "action": "keep"},
+            404,
+            "notification_not_found",
+        ),
+        (
+            "/chat/side-effect-reminder-safety",
+            {"notification_id": safety_wrong_category_id, "action": "keep"},
+            409,
+            "notification_does_not_accept_side_effect_reminder_safety",
+        ),
+        (
+            "/chat/side-effect-reminder-safety",
+            {"notification_id": safety_stale_id, "action": "keep"},
+            409,
+            "side_effect_reminder_safety_stale",
+        ),
+        (
+            "/chat/side-effect-reminder-safety",
+            {"notification_id": safety_invalid_id, "action": "not-an-action"},
+            422,
+            "side_effect_reminder_safety_invalid_action",
+        ),
+    ]
+
+    try:
+        with SessionLocal() as session:
+            policy_count = session.query(ReminderPolicy).count()
+            override_count = session.query(SystemPolicyOverride).count()
+            chat_count = session.query(ChatMessage).count()
+            audit_count = session.query(AgentDecisionAudit).count()
+        for path, data, expected_status, expected_detail in cases:
+            response = client.post(path, data=data)
+            assert response.status_code == expected_status
+            assert response.json()["detail"] == expected_detail
+        with SessionLocal() as session:
+            assert session.query(ReminderPolicy).count() == policy_count
+            assert session.query(SystemPolicyOverride).count() == override_count
+            assert session.query(ChatMessage).count() == chat_count
+            assert session.query(AgentDecisionAudit).count() == audit_count
+    finally:
+        with SessionLocal() as session:
+            session.query(Notification).filter(Notification.id.in_(created_notification_ids)).delete(synchronize_session=False)
+            session.commit()
+
+
+def test_policy_confirmation_completed_replay_is_idempotent():
+    client = TestClient(app)
+    patient_id = get_settings().patient_id
+    trace_id = "trace-policy-confirmation-replay-contract"
+    slot_label = "확인 계약 06:37"
+    expected_result = f"{slot_label}: 정책이 적용되었습니다."
+
+    with SessionLocal() as session:
+        session.query(AgentDecisionAudit).filter(AgentDecisionAudit.trace_id == trace_id).delete()
+        session.query(ReminderPolicy).filter(ReminderPolicy.slot_label == slot_label).delete()
+        session.query(ChatMessage).filter(
+            ChatMessage.category == "policy_confirmation",
+            ChatMessage.content == expected_result,
+        ).delete()
+        ensure_base_data(session)
+        clock = ensure_clock(session)
+        notification = create_notification(
+            session,
+            notification_type="conversation_alert",
+            title="정책 확인 멱등성 테스트",
+            body="알림 정책을 늘릴까요?",
+            visible_at=clock.current_time,
+            patient_id=patient_id,
+            metadata={
+                "category": "policy_confirmation",
+                "status": "agent_ready",
+                "trace_id": trace_id,
+                "agent_name": "policy_planner",
+                "prompt_version_id": "policy_planner_contract_test",
+                "source_event_type": "daily_pattern",
+                "recommended_action": "increase",
+                "multiple_choice": {
+                    "options": [
+                        {"number": 1, "value": "increase", "label": "늘리기"},
+                        {"number": 2, "value": "keep", "label": "현행 유지"},
+                    ]
+                },
+                "proposed_policies": [
+                    {
+                        "slot_label": slot_label,
+                        "extra_reminders": 2,
+                        "interval_minutes": 10,
+                        "missed_dose_after_minutes": 90,
+                        "primary_reminder_timing": "at",
+                        "primary_reminder_offset_minutes": 0,
+                        "effective_start_date": "2099-01-01",
+                        "effective_end_date": "2099-01-31",
+                        "reason": "완료된 동일 확인 요청의 멱등성 테스트",
+                        "source": "patient_request",
+                    }
+                ],
+            },
+        )
+        notification_id = notification.id
+        session.commit()
+
+    first_response = client.post(
+        "/chat/policy-confirmation",
+        data={"notification_id": notification_id, "message": "increase"},
+    )
+
+    try:
+        assert first_response.status_code == 200
+        assert expected_result in first_response.text
+        with SessionLocal() as session:
+            first_counts = (
+                session.query(ReminderPolicy).filter(ReminderPolicy.slot_label == slot_label).count(),
+                session.query(ChatMessage)
+                .filter(ChatMessage.category == "policy_confirmation", ChatMessage.content == expected_result)
+                .count(),
+                session.query(AgentDecisionAudit).filter(AgentDecisionAudit.trace_id == trace_id).count(),
+            )
+            completed = session.get(Notification, notification_id)
+            assert completed is not None
+            completed_metadata = json.loads(completed.metadata_json)
+            assert completed_metadata["status"] == "reply_completed"
+            assert completed_metadata["reply_action"] == "increase"
+            assert completed_metadata["reply_applied"] is True
+        assert first_counts == (1, 1, 1)
+
+        replay_response = client.post(
+            "/chat/policy-confirmation",
+            data={"notification_id": notification_id, "message": "increase"},
+        )
+        changed_replay_response = client.post(
+            "/chat/policy-confirmation",
+            data={"notification_id": notification_id, "message": "keep"},
+        )
+
+        assert replay_response.status_code == 200
+        assert expected_result in replay_response.text
+        assert changed_replay_response.status_code == 409
+        assert changed_replay_response.json()["detail"] == "policy_confirmation_stale"
+        with SessionLocal() as session:
+            replay_counts = (
+                session.query(ReminderPolicy).filter(ReminderPolicy.slot_label == slot_label).count(),
+                session.query(ChatMessage)
+                .filter(ChatMessage.category == "policy_confirmation", ChatMessage.content == expected_result)
+                .count(),
+                session.query(AgentDecisionAudit).filter(AgentDecisionAudit.trace_id == trace_id).count(),
+            )
+        assert replay_counts == first_counts
+    finally:
+        with SessionLocal() as session:
+            session.query(ChatMessage).filter(
+                ChatMessage.category == "policy_confirmation",
+                ChatMessage.content == expected_result,
+            ).delete()
+            session.query(Notification).filter(Notification.id == notification_id).delete()
+            session.query(ReminderPolicy).filter(ReminderPolicy.slot_label == slot_label).delete()
+            session.query(AgentDecisionAudit).filter(AgentDecisionAudit.trace_id == trace_id).delete()
+            session.commit()
+
+
+def test_policy_confirmation_processing_error_keeps_prompt_retryable(monkeypatch):
+    client = TestClient(app)
+    patient_id = get_settings().patient_id
+
+    with SessionLocal() as session:
+        ensure_base_data(session)
+        clock = ensure_clock(session)
+        notification = create_notification(
+            session,
+            notification_type="conversation_alert",
+            title="정책 확인 재시도 테스트",
+            body="정책을 적용할까요?",
+            visible_at=clock.current_time,
+            patient_id=patient_id,
+            metadata={
+                "category": "policy_confirmation",
+                "status": "agent_ready",
+                "multiple_choice": {
+                    "options": [
+                        {"number": 1, "value": "increase", "label": "늘리기"},
+                        {"number": 2, "value": "keep", "label": "현행 유지"},
+                    ]
+                },
+            },
+        )
+        notification_id = notification.id
+        session.commit()
+
+    def fail_once(*_args, **_kwargs):
+        raise RuntimeError("simulated policy application failure")
+
+    monkeypatch.setattr(
+        conversation_service,
+        "handle_policy_confirmation_reply",
+        fail_once,
+    )
+    failed_response = client.post(
+        "/chat/policy-confirmation",
+        data={"notification_id": notification_id, "message": "increase"},
+    )
+
+    try:
+        assert failed_response.status_code == 500
+        assert failed_response.json()["detail"] == "policy_confirmation_error"
+        with SessionLocal() as session:
+            retryable = session.get(Notification, notification_id)
+            assert retryable is not None
+            assert retryable.acknowledged is False
+            assert json.loads(retryable.metadata_json)["status"] == "agent_ready"
+
+        monkeypatch.setattr(
+            conversation_service,
+            "handle_policy_confirmation_reply",
+            lambda *_args, **_kwargs: (True, "정책 확인 재시도 완료"),
+        )
+        retried_response = client.post(
+            "/chat/policy-confirmation",
+            data={"notification_id": notification_id, "message": "increase"},
+        )
+
+        assert retried_response.status_code == 200
+        assert "정책 확인 재시도 완료" in retried_response.text
+        with SessionLocal() as session:
+            completed = session.get(Notification, notification_id)
+            assert completed is not None
+            assert completed.acknowledged is True
+            assert json.loads(completed.metadata_json)["status"] == "reply_completed"
+    finally:
+        with SessionLocal() as session:
+            session.query(ChatMessage).filter(
+                ChatMessage.category == "policy_confirmation",
+                ChatMessage.content == "정책 확인 재시도 완료",
+            ).delete()
+            session.query(Notification).filter(Notification.id == notification_id).delete()
             session.commit()
 
 
@@ -1705,12 +2086,39 @@ def test_agent_error_notification_can_retry_failed_job(monkeypatch):
     with SessionLocal() as session:
         ensure_base_data(session)
         clock = ensure_clock(session)
+        plan = MedicationPlan(
+            patient_id="demo-patient",
+            medication_name="테스트약",
+            dosage="1정",
+            start_date=date(2026, 4, 20),
+            end_date=date(2026, 4, 20),
+        )
+        session.add(plan)
+        session.flush()
+        schedule = DoseSchedule(
+            plan_id=plan.id,
+            slot_label="아침 08:00",
+            scheduled_time="08:00",
+        )
+        session.add(schedule)
+        session.flush()
+        dose_event = DoseEvent(
+            patient_id="demo-patient",
+            plan_id=plan.id,
+            schedule_id=schedule.id,
+            medication_name="테스트약",
+            slot_label="아침 08:00",
+            scheduled_for=datetime(2026, 4, 20, 8, 0),
+            status="missed",
+        )
+        session.add(dose_event)
+        session.flush()
         job = create_agent_job(
             session,
             "missed_dose",
             MissedDoseEventPayload(
                 patient_id="demo-patient",
-                dose_event_id=999,
+                dose_event_id=dose_event.id,
                 medication_name="테스트약",
                 slot_label="아침 08:00",
                 scheduled_for=datetime(2026, 4, 20, 8, 0),
@@ -1728,16 +2136,31 @@ def test_agent_error_notification_can_retry_failed_job(monkeypatch):
         )
         job_id = job.id
         notification_id = notification.id
+        dose_event_id = dose_event.id
+        schedule_id = schedule.id
+        plan_id = plan.id
         session.commit()
 
-    response = client.post(f"/agent-jobs/{job_id}/retry?notification_id={notification_id}")
+    try:
+        response = client.post(f"/agent-jobs/{job_id}/retry?notification_id={notification_id}")
+        repeated_response = client.post(f"/agent-jobs/{job_id}/retry?notification_id={notification_id}")
 
-    assert response.status_code == 204
-    with SessionLocal() as session:
-        refreshed_job = session.get(AgentJob, job_id)
-        refreshed_notification = session.get(Notification, notification_id)
-        assert refreshed_job is not None
-        assert refreshed_job.status == PENDING
-        assert refreshed_notification is not None
-        assert refreshed_notification.acknowledged is True
-    assert retry_calls == [("missed_dose:conversation:retry-test", "retry", "retry from agent error notification")]
+        assert response.status_code == 204
+        assert repeated_response.status_code == 409
+        assert repeated_response.json()["detail"] == "agent_job_retry_stale"
+        with SessionLocal() as session:
+            refreshed_job = session.get(AgentJob, job_id)
+            refreshed_notification = session.get(Notification, notification_id)
+            assert refreshed_job is not None
+            assert refreshed_job.status == PENDING
+            assert refreshed_notification is not None
+            assert refreshed_notification.acknowledged is True
+        assert retry_calls == [("missed_dose:conversation:retry-test", "retry", "retry from agent error notification")]
+    finally:
+        with SessionLocal() as session:
+            session.query(Notification).filter(Notification.id == notification_id).delete()
+            session.query(AgentJob).filter(AgentJob.id == job_id).delete()
+            session.query(DoseEvent).filter(DoseEvent.id == dose_event_id).delete()
+            session.query(DoseSchedule).filter(DoseSchedule.id == schedule_id).delete()
+            session.query(MedicationPlan).filter(MedicationPlan.id == plan_id).delete()
+            session.commit()

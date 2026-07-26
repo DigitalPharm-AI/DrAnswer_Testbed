@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from agent_app.integration.contracts import (
+from shared.backend_v12_contracts import (
     ContractError,
     MedicationDoseEventMutationPayload,
     NotificationPolicyChangeRequest,
@@ -357,19 +357,18 @@ def _mutate_meal(session: Session, request: RecordChangeRequest) -> RecordChange
         return RecordChangeResult(
             resource_type=request.resource_type,
             operation=request.operation,
-            record_id=str(meal.id),
+            record_id=meal.public_id,
             version=meal.version,
         )
 
-    meal_id = _positive_int(request.record_id, "nutrition_meal_not_found")
-    meal = session.scalar(
-        select(NutritionMeal).where(
-            NutritionMeal.id == meal_id,
-            NutritionMeal.patient_id == request.patient_id,
-        )
+    meal = _meal_by_external_id(
+        session,
+        patient_id=request.patient_id,
+        external_id=request.record_id,
     )
     if meal is None:
         raise ValueError("nutrition_meal_not_found")
+    meal_public_id = meal.public_id
     _require_version(meal.version, request.expected_version)
     next_version = meal.version + 1
     if request.operation == "delete":
@@ -399,32 +398,35 @@ def _mutate_meal(session: Session, request: RecordChangeRequest) -> RecordChange
     return RecordChangeResult(
         resource_type=request.resource_type,
         operation=request.operation,
-        record_id=str(meal_id),
+        record_id=meal_public_id,
         version=next_version,
     )
 
 
 def _mutate_food(session: Session, request: RecordChangeRequest) -> RecordChangeResult:
-    meal_id = _positive_int(request.parent_record_id, "nutrition_meal_not_found")
-    food_id = _positive_int(request.record_id, "nutrition_food_not_found")
-    food = session.scalar(
-        select(NutritionFood)
-        .join(NutritionMeal, NutritionMeal.id == NutritionFood.meal_id)
-        .where(
-            NutritionFood.id == food_id,
-            NutritionFood.meal_id == meal_id,
-            NutritionMeal.patient_id == request.patient_id,
-        )
+    meal = _meal_by_external_id(
+        session,
+        patient_id=request.patient_id,
+        external_id=request.parent_record_id,
+    )
+    if meal is None:
+        raise ValueError("nutrition_meal_not_found")
+    food = _food_by_external_id(
+        session,
+        meal=meal,
+        external_id=request.record_id,
     )
     if food is None:
         raise ValueError("nutrition_food_not_found")
+    food_public_id = food.public_id
+    meal_public_id = meal.public_id
     _require_version(food.version, request.expected_version)
     next_version = food.version + 1
     if request.operation == "delete":
         delete_food(
             session,
-            meal_id=meal_id,
-            food_id=food_id,
+            meal_id=meal.id,
+            food_id=food.id,
             patient_id=request.patient_id,
             reason="agent_v1.2",
             delete_empty_meal=True,
@@ -435,8 +437,8 @@ def _mutate_food(session: Session, request: RecordChangeRequest) -> RecordChange
             raise ValueError("nutrition_food_payload_required")
         update_food(
             session,
-            meal_id=meal_id,
-            food_id=food_id,
+            meal_id=meal.id,
+            food_id=food.id,
             patient_id=request.patient_id,
             food_ref_id=payload.food_ref_id,
             food_name=payload.food_name,
@@ -450,19 +452,17 @@ def _mutate_food(session: Session, request: RecordChangeRequest) -> RecordChange
     return RecordChangeResult(
         resource_type=request.resource_type,
         operation=request.operation,
-        record_id=str(food_id),
-        parent_record_id=str(meal_id),
+        record_id=food_public_id,
+        parent_record_id=meal_public_id,
         version=next_version,
     )
 
 
 def _mutate_dose_event(session: Session, request: RecordChangeRequest) -> RecordChangeResult:
-    event_id = _positive_int(request.record_id, "medication_dose_event_not_found")
-    event = session.scalar(
-        select(DoseEvent).where(
-            DoseEvent.id == event_id,
-            DoseEvent.patient_id == request.patient_id,
-        )
+    event = _dose_event_by_external_id(
+        session,
+        patient_id=request.patient_id,
+        external_id=request.record_id,
     )
     if event is None:
         raise ValueError("medication_dose_event_not_found")
@@ -479,7 +479,7 @@ def _mutate_dose_event(session: Session, request: RecordChangeRequest) -> Record
     return RecordChangeResult(
         resource_type=request.resource_type,
         operation=request.operation,
-        record_id=str(event.id),
+        record_id=event.public_id,
         version=event.version,
     )
 
@@ -492,28 +492,16 @@ def _validate_confirmation_context(
     confirmation_message_id: str,
     source_chat_request_id: str,
 ) -> str | None:
-    try:
-        message_id = int(confirmation_message_id)
-    except (TypeError, ValueError):
-        return "CONFIRMATION_MESSAGE_NOT_FOUND"
-    confirmation = session.scalar(
-        select(ChatMessage).where(
-            ChatMessage.id == message_id,
-            ChatMessage.patient_id == patient_id,
-            ChatMessage.conversation_id == conversation_id,
-            ChatMessage.role == "user",
-        )
+    confirmation = _chat_message_by_external_id(
+        session,
+        patient_id=patient_id,
+        conversation_id=conversation_id,
+        external_id=confirmation_message_id,
+        role="user",
     )
     if confirmation is None:
         return "CONFIRMATION_MESSAGE_NOT_FOUND"
-    source_exists = session.scalar(
-        select(ChatMessage.id).where(
-            ChatMessage.patient_id == patient_id,
-            ChatMessage.conversation_id == conversation_id,
-            ChatMessage.ai_request_id == source_chat_request_id,
-        )
-    )
-    if source_exists is None:
+    if confirmation.ai_request_id != source_chat_request_id:
         return "SOURCE_CHAT_REQUEST_NOT_FOUND"
     return None
 
@@ -531,14 +519,125 @@ def _require_version(actual: int, expected: int | None) -> None:
         raise VersionConflict(expected, actual)
 
 
-def _positive_int(value: str | None, error_code: str) -> int:
-    try:
-        parsed = int(value or "")
-    except ValueError as exc:
-        raise ValueError(error_code) from exc
-    if parsed <= 0:
-        raise ValueError(error_code)
-    return parsed
+def _chat_message_by_external_id(
+    session: Session,
+    *,
+    patient_id: str,
+    conversation_id: str,
+    external_id: str | None,
+    role: str | None = None,
+) -> ChatMessage | None:
+    predicates = [
+        ChatMessage.patient_id == patient_id,
+        ChatMessage.conversation_id == conversation_id,
+    ]
+    if role is not None:
+        predicates.append(ChatMessage.role == role)
+    value = str(external_id or "").strip()
+    if not value:
+        return None
+    message = session.scalar(
+        select(ChatMessage).where(ChatMessage.public_id == value, *predicates)
+    )
+    if message is not None:
+        return message
+    legacy_id = _legacy_positive_id(value)
+    if legacy_id is None:
+        return None
+    return session.scalar(
+        select(ChatMessage).where(ChatMessage.id == legacy_id, *predicates)
+    )
+
+
+def _meal_by_external_id(
+    session: Session,
+    *,
+    patient_id: str,
+    external_id: str | None,
+) -> NutritionMeal | None:
+    value = str(external_id or "").strip()
+    if not value:
+        return None
+    meal = session.scalar(
+        select(NutritionMeal).where(
+            NutritionMeal.public_id == value,
+            NutritionMeal.patient_id == patient_id,
+        )
+    )
+    if meal is not None:
+        return meal
+    legacy_id = _legacy_positive_id(value)
+    if legacy_id is None:
+        return None
+    return session.scalar(
+        select(NutritionMeal).where(
+            NutritionMeal.id == legacy_id,
+            NutritionMeal.patient_id == patient_id,
+        )
+    )
+
+
+def _food_by_external_id(
+    session: Session,
+    *,
+    meal: NutritionMeal,
+    external_id: str | None,
+) -> NutritionFood | None:
+    value = str(external_id or "").strip()
+    if not value:
+        return None
+    food = session.scalar(
+        select(NutritionFood).where(
+            NutritionFood.public_id == value,
+            NutritionFood.meal_id == meal.id,
+        )
+    )
+    if food is not None:
+        return food
+    legacy_id = _legacy_positive_id(value)
+    if legacy_id is None:
+        return None
+    return session.scalar(
+        select(NutritionFood).where(
+            NutritionFood.id == legacy_id,
+            NutritionFood.meal_id == meal.id,
+        )
+    )
+
+
+def _dose_event_by_external_id(
+    session: Session,
+    *,
+    patient_id: str,
+    external_id: str | None,
+) -> DoseEvent | None:
+    value = str(external_id or "").strip()
+    if not value:
+        return None
+    event = session.scalar(
+        select(DoseEvent).where(
+            DoseEvent.public_id == value,
+            DoseEvent.patient_id == patient_id,
+        )
+    )
+    if event is not None:
+        return event
+    legacy_id = _legacy_positive_id(value)
+    if legacy_id is None:
+        return None
+    return session.scalar(
+        select(DoseEvent).where(
+            DoseEvent.id == legacy_id,
+            DoseEvent.patient_id == patient_id,
+        )
+    )
+
+
+def _legacy_positive_id(value: str) -> int | None:
+    if not value.isascii() or not value.isdigit():
+        return None
+    parsed = int(value)
+    return parsed if parsed > 0 else None
 
 
 def _record_failure(

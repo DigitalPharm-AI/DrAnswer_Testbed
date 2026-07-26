@@ -2423,10 +2423,21 @@ def test_agent_app_multiturn_uses_provider_for_general_recent_chat_reply(monkeyp
 
 def test_rule_based_provider_is_test_only_for_runtime_selection(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "rule_based")
+    monkeypatch.setenv("APP_ENV", "development")
     get_settings.cache_clear()
     try:
-        with pytest.raises(RuntimeError, match="test-only"):
+        with pytest.raises(RuntimeError, match="restricted"):
             create_llm_provider()
+    finally:
+        get_settings.cache_clear()
+
+
+def test_rule_based_provider_is_available_only_in_explicit_testbed(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "rule_based")
+    monkeypatch.setenv("APP_ENV", "testbed")
+    get_settings.cache_clear()
+    try:
+        assert isinstance(create_llm_provider(), RuleBasedProvider)
     finally:
         get_settings.cache_clear()
 

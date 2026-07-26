@@ -299,6 +299,12 @@ class AgentMcpToolServer:
             and request_metadata.get("contract_version") == "v1.2"
         )
 
+    def _patient_id_for_tool(self, arguments: dict[str, Any], payload: dict[str, Any]) -> Any:
+        trusted_patient_id = payload.get("patient_id")
+        if self._is_v12_chat(payload):
+            return trusted_patient_id
+        return arguments.get("patient_id") or trusted_patient_id
+
     async def _prepare_mutation_confirmation(
         self,
         tool_name: str,
@@ -447,7 +453,7 @@ class AgentMcpToolServer:
 
     async def _get_medication_dose_status(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
         params = {}
-        patient_id = arguments.get("patient_id") or payload.get("patient_id")
+        patient_id = self._patient_id_for_tool(arguments, payload)
         if patient_id:
             params["patient_id"] = patient_id
         for key in ("target_date", "start_date", "end_date", "status", "medication_name"):
@@ -514,7 +520,7 @@ class AgentMcpToolServer:
         request_payload = {
             "query": arguments.get("query", ""),
             "limit": arguments.get("limit", 6),
-            "patient_id": arguments.get("patient_id") or payload.get("patient_id"),
+            "patient_id": self._patient_id_for_tool(arguments, payload),
             "meal_type": arguments.get("meal_type"),
         }
         if self.backend_queries is not None:
@@ -657,7 +663,7 @@ class AgentMcpToolServer:
 
     async def _list_meals(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
         params = {}
-        patient_id = arguments.get("patient_id") or payload.get("patient_id")
+        patient_id = self._patient_id_for_tool(arguments, payload)
         if patient_id:
             params["patient_id"] = patient_id
         if arguments.get("meal_date"):
@@ -691,7 +697,7 @@ class AgentMcpToolServer:
 
     async def _get_daily_nutrition_summary(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
         params = {}
-        patient_id = arguments.get("patient_id") or payload.get("patient_id")
+        patient_id = self._patient_id_for_tool(arguments, payload)
         if patient_id:
             params["patient_id"] = patient_id
         if arguments.get("meal_date"):
@@ -726,7 +732,7 @@ class AgentMcpToolServer:
     async def _record_nutrition_preference(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
         request_payload = {
             **arguments,
-            "patient_id": arguments.get("patient_id") or payload.get("patient_id"),
+            "patient_id": self._patient_id_for_tool(arguments, payload),
             "source_trace_id": arguments.get("source_trace_id") or trace_id,
         }
         request = NutritionPreferenceFactRequest.model_validate(request_payload)
@@ -749,7 +755,7 @@ class AgentMcpToolServer:
 
     async def _get_nutrition_preferences(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
         params = {}
-        patient_id = arguments.get("patient_id") or payload.get("patient_id")
+        patient_id = self._patient_id_for_tool(arguments, payload)
         if patient_id:
             params["patient_id"] = patient_id
         if self.backend_queries is not None:
@@ -781,7 +787,7 @@ class AgentMcpToolServer:
 
     async def _recommend_diet(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
         request_payload = {
-            "patient_id": arguments.get("patient_id") or payload.get("patient_id"),
+            "patient_id": self._patient_id_for_tool(arguments, payload),
             "constraints": arguments.get("constraints") or {},
             "meal_type": arguments.get("meal_type"),
             "limit": arguments.get("limit", 5),
@@ -871,7 +877,7 @@ class AgentMcpToolServer:
 
     async def _get_side_effect_history(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
         params = {}
-        patient_id = arguments.get("patient_id") or payload.get("patient_id")
+        patient_id = self._patient_id_for_tool(arguments, payload)
         if patient_id:
             params["patient_id"] = patient_id
         if arguments.get("limit") is not None:

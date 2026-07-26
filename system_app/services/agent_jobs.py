@@ -16,6 +16,7 @@ PENDING = "pending"
 RUNNING = "running"
 FAILED = "failed"
 DONE = "done"
+RETRY_REQUESTED = "retry_requested"
 
 
 def create_agent_job(session: Session, job_type: AgentJobType, payload: MissedDoseEventPayload | DailyMedicationPattern) -> AgentJob:
@@ -63,12 +64,17 @@ def claim_next_agent_job(session: Session) -> AgentJob | None:
 
 
 def reset_running_agent_jobs(session: Session) -> int:
-    jobs = session.scalars(select(AgentJob).where(AgentJob.status == RUNNING)).all()
+    jobs = session.scalars(select(AgentJob).where(AgentJob.status.in_([RUNNING, RETRY_REQUESTED]))).all()
     now = utc_now()
     for job in jobs:
-        job.status = PENDING
+        if job.status == RETRY_REQUESTED:
+            job.status = FAILED
+            job.started_at = None
+            job.completed_at = None
+        else:
+            job.status = PENDING
+            job.error_message = "서버 재시작 후 대기 상태로 복구되었습니다."
         job.updated_at = now
-        job.error_message = "서버 재시작 후 대기 상태로 복구되었습니다."
     session.flush()
     return len(jobs)
 
@@ -118,6 +124,41 @@ def retry_agent_job(session: Session, job_id: int) -> AgentJob | None:
     job.started_at = None
     job.completed_at = None
     job.error_message = ""
+    session.flush()
+    return job
+
+
+def mark_agent_job_retry_requested(session: Session, job_id: int) -> AgentJob | None:
+    job = session.get(AgentJob, job_id)
+    if job is None or job.status != FAILED:
+        return job
+    job.status = RETRY_REQUESTED
+    job.updated_at = utc_now()
+    session.flush()
+    return job
+
+
+def complete_agent_job_retry_request(session: Session, job_id: int) -> AgentJob | None:
+    job = session.get(AgentJob, job_id)
+    if job is None or job.status != RETRY_REQUESTED:
+        return job
+    job.status = PENDING
+    job.updated_at = utc_now()
+    job.started_at = None
+    job.completed_at = None
+    job.error_message = ""
+    session.flush()
+    return job
+
+
+def restore_agent_job_retry_failure(session: Session, job_id: int) -> AgentJob | None:
+    job = session.get(AgentJob, job_id)
+    if job is None or job.status != RETRY_REQUESTED:
+        return job
+    job.status = FAILED
+    job.updated_at = utc_now()
+    job.started_at = None
+    job.completed_at = None
     session.flush()
     return job
 

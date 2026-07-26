@@ -363,7 +363,7 @@ class SideEffectAssessmentRequest(BaseModel):
     medication_name: str | None = None
     symptom_text: str
     recent_chat: list[ChatTurn] = Field(default_factory=list)
-    dose_event_id: int | None = None
+    dose_event_id: str | int | None = None
 
 
 class SideEffectAssessmentResult(BaseModel):
@@ -388,7 +388,7 @@ class SideEffectRecordRequest(BaseModel):
     recommendation: str = ""
     source_trace_id: str | None = None
     source_event_type: str = "agent_tool"
-    related_dose_event_id: int | None = None
+    related_dose_event_id: str | int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -406,7 +406,7 @@ class SideEffectRecordView(BaseModel):
     recommendation: str = ""
     source_trace_id: str = ""
     source_event_type: str = ""
-    related_dose_event_id: int | None = None
+    related_dose_event_id: str | int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
@@ -473,7 +473,7 @@ class DoseTakenToolResult(BaseModel):
 
 
 class MedicationDoseEventView(BaseModel):
-    dose_event_id: int
+    dose_event_id: str | int
     patient_id: str
     medication_name: str
     slot_label: str

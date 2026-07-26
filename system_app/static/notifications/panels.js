@@ -73,13 +73,13 @@ export function createPanelRefresher({ stack, updatePopup }) {
     const url = cacheBustedUrl(path);
     if (window.htmx && targetSelector !== "#chat-panel") {
       const composerSnapshot = chatComposerSnapshot(targetSelector);
-      await window.htmx.ajax("GET", url, {
+      const response = await window.htmx.ajax("GET", url, {
         target: targetSelector,
         swap: "outerHTML",
         timeoutMs: PANEL_REQUEST_TIMEOUT_MS,
       });
       restoreChatComposer(composerSnapshot);
-      return true;
+      return Boolean(response && response.ok);
     }
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), PANEL_REQUEST_TIMEOUT_MS);
@@ -136,8 +136,7 @@ export function createPanelRefresher({ stack, updatePopup }) {
       refreshTimelinePanel(),
       refreshNutritionPanel(),
       refreshActivePoliciesPanel(),
-      refreshChatLogPanel(),
-      refreshChatHistoryPanel(),
+      refreshChatPanel(),
     ]);
   }
 
@@ -146,7 +145,7 @@ export function createPanelRefresher({ stack, updatePopup }) {
       return Promise.all([refreshLogsPanel()]);
     }
     if (activeTab === "chat") {
-      return Promise.all([refreshChatLogPanel(), refreshChatHistoryPanel()]);
+      return Promise.all([refreshChatPanel()]);
     }
     if (activeTab === "home") {
       return Promise.all([
@@ -164,7 +163,12 @@ export function createPanelRefresher({ stack, updatePopup }) {
   }
 
   function refreshTimelinePanel() {
-    return replacePanel("/partials/timeline", "#timeline-panel").catch(() => false);
+    const panel = document.querySelector("#timeline-panel");
+    const selectedDate = panel && panel.dataset ? panel.dataset.timelineDate || "" : "";
+    const path = selectedDate
+      ? `/partials/timeline?timeline_date=${encodeURIComponent(selectedDate)}`
+      : "/partials/timeline";
+    return replacePanel(path, "#timeline-panel").catch(() => false);
   }
 
   function refreshActivePoliciesPanel() {

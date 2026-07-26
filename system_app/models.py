@@ -17,15 +17,43 @@ def new_reminder_policy_public_id() -> str:
     return f"npol_{uuid4().hex}"
 
 
+def new_message_public_id(role: str | None = None) -> str:
+    prefix = {
+        "user": "user_msg",
+        "assistant": "assistant_msg",
+    }.get((role or "").strip().lower(), "msg")
+    return f"{prefix}_{uuid4().hex}"
+
+
+def new_dose_event_public_id() -> str:
+    return f"dose_{uuid4().hex}"
+
+
+def new_nutrition_meal_public_id() -> str:
+    return f"meal_{uuid4().hex}"
+
+
+def new_nutrition_food_public_id() -> str:
+    return f"food_{uuid4().hex}"
+
+
 class Base(DeclarativeBase):
     pass
 
 
 class MedicationPlan(Base):
     __tablename__ = "medication_plans"
+    __table_args__ = (
+        UniqueConstraint(
+            "patient_id",
+            "submission_id",
+            name="uq_medication_plan_patient_submission",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
+    submission_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     medication_name: Mapped[str] = mapped_column(String(255))
     dosage: Mapped[str] = mapped_column(String(255), default="")
     instructions: Mapped[str] = mapped_column(Text, default="")
@@ -71,6 +99,12 @@ class NutritionMeal(Base):
     __tablename__ = "nutrition_meals"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(
+        String(80),
+        unique=True,
+        index=True,
+        default=new_nutrition_meal_public_id,
+    )
     patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
     meal_type: Mapped[str] = mapped_column(String(20), index=True)
     meal_date: Mapped[date] = mapped_column(Date, index=True)
@@ -86,6 +120,12 @@ class NutritionFood(Base):
     __tablename__ = "nutrition_foods"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(
+        String(80),
+        unique=True,
+        index=True,
+        default=new_nutrition_food_public_id,
+    )
     meal_id: Mapped[int] = mapped_column(ForeignKey("nutrition_meals.id"), index=True)
     food_ref_id: Mapped[str] = mapped_column(String(120), default="")
     food_name: Mapped[str] = mapped_column(String(255))
@@ -213,6 +253,12 @@ class DoseEvent(Base):
     __table_args__ = (UniqueConstraint("schedule_id", "scheduled_for", name="uq_schedule_datetime"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(
+        String(80),
+        unique=True,
+        index=True,
+        default=new_dose_event_public_id,
+    )
     patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
     plan_id: Mapped[int] = mapped_column(ForeignKey("medication_plans.id"), index=True)
     schedule_id: Mapped[int] = mapped_column(ForeignKey("dose_schedules.id"), index=True)
@@ -339,6 +385,12 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(
+        String(80),
+        unique=True,
+        index=True,
+        default=new_message_public_id,
+    )
     patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
     conversation_id: Mapped[str] = mapped_column(String(180), index=True, default="")
     ai_request_id: Mapped[str] = mapped_column(String(180), index=True, default="")

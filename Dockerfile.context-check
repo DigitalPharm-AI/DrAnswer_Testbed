@@ -1,0 +1,6 @@
+FROM alpine:3.20
+
+WORKDIR /context
+COPY . .
+
+RUN test -z "$(find . -type f -name '.env*' ! -name '*.example' -print -quit)"

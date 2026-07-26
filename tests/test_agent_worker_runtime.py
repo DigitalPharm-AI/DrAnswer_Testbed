@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import agent_app.worker_main as worker_main
 
 
@@ -47,3 +49,22 @@ def test_worker_main_initializes_queue_and_runs_worker(monkeypatch):
         "session_committed",
         ("worker_started", "fake-orchestrator", False),
     ]
+
+
+def test_worker_main_publishes_and_cleans_runtime_pid_file(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    pid_path = tmp_path / "agent-worker.runtime.pid"
+    observed: list[str] = []
+
+    def fake_run_worker() -> None:
+        observed.append(pid_path.read_text(encoding="ascii"))
+
+    monkeypatch.setenv("DA_DRUG_RUNTIME_PID_FILE", str(pid_path))
+    monkeypatch.setattr(worker_main, "_run_worker", fake_run_worker)
+
+    worker_main.main()
+
+    assert observed == [str(os.getpid())]
+    assert not pid_path.exists()

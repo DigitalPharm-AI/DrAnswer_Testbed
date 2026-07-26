@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from agent_app.integration.backend_client import (
     BackendV12Client,
     BackendV12ConfigurationError,
+    BackendV12ResponseError,
 )
 from agent_app.integration.contracts import (
     NotificationPolicyChangeRequest,
@@ -144,8 +145,8 @@ def test_record_adapter_requires_version_for_update() -> None:
         )
 
 
-def test_record_adapter_rejects_delete_behavior_not_represented_by_contract() -> None:
-    with pytest.raises(ValueError, match="delete_empty_meal_false_not_supported"):
+def test_record_adapter_rejects_model_managed_delete_behavior() -> None:
+    with pytest.raises(ValueError, match="delete_empty_meal_is_tool_managed"):
         record_change_request_from_tool(
             DELETE_NUTRITION_FOOD_RECORD,
             {
@@ -164,7 +165,6 @@ def test_record_adapter_maps_medication_update_and_drops_internal_trace() -> Non
         {
             "dose_event_id": 120,
             "expected_version": 7,
-            "taken_at": "2026-07-25T08:03:00+09:00",
             "reason": "사용자 확인",
             "source_trace_id": "internal-only",
             "source_event_type": "medication_agent",
@@ -175,6 +175,8 @@ def test_record_adapter_maps_medication_update_and_drops_internal_trace() -> Non
     dumped = request.model_dump(mode="json")
     assert dumped["resource_type"] == "medication_dose_event"
     assert dumped["payload"]["status"] == "taken"
+    assert request.payload is not None
+    assert request.payload.taken_at == NOW
     assert "source_trace_id" not in dumped["payload"]
     assert "trace_id" not in dumped
 
@@ -273,17 +275,27 @@ async def test_backend_client_retries_503_with_identical_request_and_bearer_toke
 
 
 @pytest.mark.asyncio
-async def test_backend_client_does_not_retry_409() -> None:
+async def test_backend_client_retries_retryable_request_in_progress() -> None:
     calls = 0
+    sleeps: list[float] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
         body = json.loads(request.content.decode("utf-8"))
+        if calls >= 3:
+            return httpx.Response(
+                200,
+                json=successful_record_response(body["request_id"]),
+            )
         return httpx.Response(
             409,
             json=failed_record_response(body["request_id"], "REQUEST_IN_PROGRESS", retryable=True),
+            headers={"Retry-After": "0.25"},
         )
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
 
     client = BackendV12Client(
         base_url="https://backend.test",
@@ -292,14 +304,89 @@ async def test_backend_client_does_not_retry_409() -> None:
         bearer_token="Bearer secret-token",
         max_retries=2,
         transport=httpx.MockTransport(handler),
+        sleep=fake_sleep,
     )
 
     response = await client.change_record(meal_create_request())
 
+    assert response.success is True
+    assert calls == 3
+    assert sleeps == [0.25, 0.25]
+
+
+@pytest.mark.asyncio
+async def test_backend_client_does_not_retry_non_retryable_409() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        body = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            409,
+            json=failed_record_response(
+                body["request_id"],
+                "VERSION_CONFLICT",
+                retryable=False,
+            ),
+        )
+
+    client = BackendV12Client(
+        base_url="https://backend.test",
+        record_change_path="/agent/sync/record-change",
+        notification_policy_change_path="/agent/sync/notification-policy-change",
+        bearer_token="secret-token",
+        max_retries=2,
+        transport=httpx.MockTransport(handler),
+    )
+    response = await client.change_record(meal_create_request())
     assert response.success is False
     assert response.error is not None
-    assert response.error.code == "REQUEST_IN_PROGRESS"
+    assert response.error.code == "VERSION_CONFLICT"
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_backend_client_rejects_mismatched_response_identifiers() -> None:
+    request = meal_create_request()
+
+    def wrong_request_id(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=successful_record_response("different-request-id"),
+        )
+
+    client = BackendV12Client(
+        base_url="https://backend.test",
+        record_change_path="/agent/sync/record-change",
+        notification_policy_change_path="/agent/sync/notification-policy-change",
+        bearer_token="secret-token",
+        transport=httpx.MockTransport(wrong_request_id),
+    )
+    with pytest.raises(
+        BackendV12ResponseError,
+        match="backend_response_request_id_mismatch",
+    ):
+        await client.change_record(request)
+
+    def wrong_target(_: httpx.Request) -> httpx.Response:
+        response = successful_record_response(request.request_id)
+        response["result"]["resource_type"] = "medication_dose_event"
+        response["result"]["operation"] = "update"
+        return httpx.Response(200, json=response)
+
+    client = BackendV12Client(
+        base_url="https://backend.test",
+        record_change_path="/agent/sync/record-change",
+        notification_policy_change_path="/agent/sync/notification-policy-change",
+        bearer_token="secret-token",
+        transport=httpx.MockTransport(wrong_target),
+    )
+    with pytest.raises(
+        BackendV12ResponseError,
+        match="backend_response_record_operation_mismatch",
+    ):
+        await client.change_record(request)
 
 
 @pytest.mark.asyncio

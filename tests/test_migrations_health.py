@@ -55,6 +55,8 @@ def test_run_migrations_tracks_agent_jobs_version():
             "20260725_0002_backend_api_request_lookup",
             "20260725_0003_chat_conversation_lookup",
             "20260725_0004_chat_assistant_request_unique",
+            "20260725_0005_external_public_ids",
+            "20260726_0001_medication_plan_submission_id",
         ]
     assert second_run == []
 
@@ -94,6 +96,8 @@ def test_run_migrations_tracks_agent_jobs_version():
             "20260725_0002_backend_api_request_lookup",
             "20260725_0003_chat_conversation_lookup",
             "20260725_0004_chat_assistant_request_unique",
+            "20260725_0005_external_public_ids",
+            "20260726_0001_medication_plan_submission_id",
         ]
 
 
@@ -121,8 +125,18 @@ def test_health_details_returns_operational_shape():
 def test_rule_based_provider_is_not_runtime_supported():
     class DummySettings:
         llm_provider = "rule_based"
+        app_env = "development"
 
     assert health_service._llm_provider_supported(DummySettings()) is False
+    assert health_service._llm_credentials_required(DummySettings()) is False
+
+
+def test_rule_based_provider_is_supported_without_credentials_in_testbed():
+    class DummySettings:
+        llm_provider = "rule_based"
+        app_env = "testbed"
+
+    assert health_service._llm_provider_supported(DummySettings()) is True
     assert health_service._llm_credentials_required(DummySettings()) is False
 
 

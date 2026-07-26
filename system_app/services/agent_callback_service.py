@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from agent_app.tools.names import UPDATE_MEDICATION_DOSE_EVENT_STATUS
+from shared.tool_names import UPDATE_MEDICATION_DOSE_EVENT_STATUS
 from shared.json_utils import dump_json as dump_metadata_json
 from shared.json_utils import parse_json_object as parse_metadata_json
 from shared.schemas import (

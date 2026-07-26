@@ -35,10 +35,7 @@ def require_backend_api_bearer_token(
     ] = None,
 ) -> None:
     settings = get_settings()
-    settings.require_backend_api_token_in_production()
-    expected_token = settings.backend_api_token
-    if not expected_token:
-        return
+    expected_token = settings.require_backend_api_token()
     if (
         credentials is None
         or credentials.scheme.lower() != "bearer"

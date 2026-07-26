@@ -11,15 +11,48 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Normalize-Process-PathEnvironment {
+    $pathKeys = @(
+        [System.Environment]::GetEnvironmentVariables().Keys |
+            Where-Object { "$_" -ieq "PATH" }
+    )
+    if ($pathKeys.Count -le 1) {
+        return
+    }
+    $pathValue = [System.Environment]::GetEnvironmentVariable(
+        "Path",
+        [System.EnvironmentVariableTarget]::Process
+    )
+    [System.Environment]::SetEnvironmentVariable(
+        "PATH",
+        $null,
+        [System.EnvironmentVariableTarget]::Process
+    )
+    [System.Environment]::SetEnvironmentVariable(
+        "Path",
+        $pathValue,
+        [System.EnvironmentVariableTarget]::Process
+    )
+}
+
+Normalize-Process-PathEnvironment
+
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RunDir = Join-Path $Root ".run\9000-stack"
 $LogDir = Join-Path $Root "outputs\runtime\9000"
 $VerifyPath = Join-Path $LogDir "verify.json"
+$RuntimeDir = Join-Path $Root "runtime"
+$SystemRuntimeDir = Join-Path $RuntimeDir "system"
+$AgentRuntimeDir = Join-Path $RuntimeDir "agent"
+$PhrRuntimeDir = Join-Path $RuntimeDir "phr"
 $Ports = @($SystemPort, $AgentPort, $PhrPort)
 
 function Ensure-Dirs {
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $SystemRuntimeDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $AgentRuntimeDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $PhrRuntimeDir | Out-Null
 }
 
 function Single-Quote([string]$Value) {
@@ -68,14 +101,22 @@ function Read-EnvMap([string]$PathValue) {
 function Service-Specs {
     return @(
         [PSCustomObject]@{ Name = "phr"; Service = "phr_app"; Kind = "uvicorn"; Module = "phr_app.main:app"; Port = $PhrPort },
+        [PSCustomObject]@{ Name = "system"; Service = "system_app"; Kind = "uvicorn"; Module = "system_app.main:app"; Port = $SystemPort },
         [PSCustomObject]@{ Name = "agent"; Service = "agent_app"; Kind = "uvicorn"; Module = "agent_app.main:app"; Port = $AgentPort },
-        [PSCustomObject]@{ Name = "agent-worker"; Service = "agent_app"; Kind = "worker"; Module = "agent_app.worker_main"; Port = 0 },
-        [PSCustomObject]@{ Name = "system"; Service = "system_app"; Kind = "uvicorn"; Module = "system_app.main:app"; Port = $SystemPort }
+        [PSCustomObject]@{ Name = "agent-worker"; Service = "agent_app"; Kind = "worker"; Module = "agent_app.worker_main"; Port = 0 }
     )
 }
 
 function Pid-Path($Spec) {
     return Join-Path $RunDir "$($Spec.Name).pid"
+}
+
+function Launcher-Pid-Path($Spec) {
+    return Join-Path $RunDir "$($Spec.Name).launcher.pid"
+}
+
+function Worker-Runtime-Pid-Path($Spec) {
+    return Join-Path $RunDir "$($Spec.Name).runtime.pid"
 }
 
 function Is-Process-Running([int]$PidValue) {
@@ -98,6 +139,20 @@ function Child-Pids([int]$ParentPid) {
 }
 
 function Stop-ProcessTree([int]$RootPid) {
+    $taskkill = Get-Command taskkill.exe -ErrorAction SilentlyContinue
+    if ($taskkill -and (Is-Process-Running $RootPid)) {
+        $previousErrorAction = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "SilentlyContinue"
+            & $taskkill.Source /PID $RootPid /T /F 2>$null | Out-Null
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorAction
+        }
+        if (-not (Is-Process-Running $RootPid)) {
+            return
+        }
+    }
     foreach ($childPid in Child-Pids $RootPid) {
         Stop-ProcessTree $childPid
     }
@@ -145,6 +200,19 @@ function Wait-Child-Pid([int]$ParentPid) {
     return $null
 }
 
+function Wait-Pid-File([string]$Path) {
+    for ($i = 0; $i -lt 40; $i++) {
+        if (Test-Path -LiteralPath $Path) {
+            $value = (Get-Content -LiteralPath $Path -Raw).Trim()
+            if ($value) {
+                return [int]$value
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    return $null
+}
+
 function Port-Pid([int]$Port) {
     if ($Port -le 0) {
         return $null
@@ -156,7 +224,14 @@ function Port-Pid([int]$Port) {
         }
     }
     catch {
-        return $null
+        # Get-NetTCPConnection can be denied in managed Windows sessions.
+        # netstat still gives us the exact listener PID without requiring CIM.
+        $pattern = "^\s*TCP\s+\S+:$Port\s+\S+\s+LISTENING\s+(\d+)\s*$"
+        foreach ($line in @(& netstat.exe -ano -p tcp 2>$null)) {
+            if ("$line" -match $pattern) {
+                return [int]$Matches[1]
+            }
+        }
     }
     return $null
 }
@@ -176,23 +251,49 @@ function Start-One($Spec) {
     $python = Resolve-Python
     $stdout = Join-Path $LogDir "$($Spec.Name).out.log"
     $stderr = Join-Path $LogDir "$($Spec.Name).err.log"
-    $rootQ = Single-Quote $Root
-    $pythonQ = Single-Quote $python
-    $envFileQ = Single-Quote $EnvFile
-    $serviceQ = Single-Quote $Spec.Service
+    $arguments = @("-m")
     if ($Spec.Kind -eq "worker") {
-        $command = "`$env:DA_DRUG_SERVICE=$serviceQ; `$env:DA_DRUG_ENV_FILE=$envFileQ; Set-Location $rootQ; & $pythonQ -m $($Spec.Module)"
+        $arguments += @($Spec.Module)
     }
     else {
-        $command = "`$env:DA_DRUG_SERVICE=$serviceQ; `$env:DA_DRUG_ENV_FILE=$envFileQ; Set-Location $rootQ; & $pythonQ -m uvicorn $($Spec.Module) --host 127.0.0.1 --port $($Spec.Port)"
+        $arguments += @(
+            "uvicorn",
+            $Spec.Module,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "$($Spec.Port)"
+        )
     }
-    $proc = Start-Process -FilePath "powershell.exe" `
-        -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $command) `
-        -PassThru `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $stdout `
-        -RedirectStandardError $stderr
+    $previousService = $env:DA_DRUG_SERVICE
+    $previousEnvFile = $env:DA_DRUG_ENV_FILE
+    $previousRuntimePidFile = $env:DA_DRUG_RUNTIME_PID_FILE
+    $runtimePidPath = Worker-Runtime-Pid-Path $Spec
+    try {
+        $env:DA_DRUG_SERVICE = $Spec.Service
+        $env:DA_DRUG_ENV_FILE = $EnvFile
+        if ($Spec.Kind -eq "worker") {
+            Remove-Item -LiteralPath $runtimePidPath -Force -ErrorAction SilentlyContinue
+            $env:DA_DRUG_RUNTIME_PID_FILE = $runtimePidPath
+        }
+        else {
+            $env:DA_DRUG_RUNTIME_PID_FILE = $null
+        }
+        $proc = Start-Process -FilePath $python `
+            -ArgumentList $arguments `
+            -WorkingDirectory $Root `
+            -PassThru `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr
+    }
+    finally {
+        $env:DA_DRUG_SERVICE = $previousService
+        $env:DA_DRUG_ENV_FILE = $previousEnvFile
+        $env:DA_DRUG_RUNTIME_PID_FILE = $previousRuntimePidFile
+    }
     $servicePid = $proc.Id
+    Set-Content -LiteralPath (Launcher-Pid-Path $Spec) -Value $proc.Id -Encoding ascii
     if ($Spec.Kind -eq "uvicorn") {
         $portPid = Wait-Port-Pid $Spec.Port
         if ($portPid) {
@@ -200,24 +301,37 @@ function Start-One($Spec) {
         }
     }
     else {
-        $childPid = Wait-Child-Pid $proc.Id
-        if ($childPid) {
-            $servicePid = $childPid
+        $runtimePid = Wait-Pid-File $runtimePidPath
+        if ($runtimePid) {
+            $servicePid = $runtimePid
         }
     }
     Set-Content -LiteralPath (Pid-Path $Spec) -Value $servicePid -Encoding ascii
-    Write-Host "started $($Spec.Name) pid=$servicePid wrapper_pid=$($proc.Id) log=$stdout"
+    Write-Host "started $($Spec.Name) pid=$servicePid launcher_pid=$($proc.Id) log=$stdout"
 }
 
 function Stop-One($Spec) {
     $pidValue = Existing-Pid $Spec
     if ($pidValue) {
         Stop-ProcessTree $pidValue
-        Remove-Item -LiteralPath (Pid-Path $Spec) -Force -ErrorAction SilentlyContinue
         Write-Host "stopped $($Spec.Name) pid=$pidValue"
-        return
     }
-    Write-Host "$($Spec.Name) pid file not active"
+    else {
+        Write-Host "$($Spec.Name) pid file not active"
+    }
+    $launcherPath = Launcher-Pid-Path $Spec
+    if (Test-Path -LiteralPath $launcherPath) {
+        $launcherText = (Get-Content -LiteralPath $launcherPath -Raw).Trim()
+        if ($launcherText) {
+            $launcherPid = [int]$launcherText
+            if ($launcherPid -ne $pidValue -and (Is-Process-Running $launcherPid)) {
+                Stop-ProcessTree $launcherPid
+            }
+        }
+    }
+    Remove-Item -LiteralPath (Pid-Path $Spec) -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $launcherPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Worker-Runtime-Pid-Path $Spec) -Force -ErrorAction SilentlyContinue
 }
 
 function Stop-Unknown-Ports {
@@ -269,6 +383,72 @@ function Request-Json([string]$Url, [hashtable]$Headers = @{}) {
     }
 }
 
+function Wait-Service-Ready($Spec) {
+    if ($Spec.Kind -ne "uvicorn") {
+        return
+    }
+    $healthPath = if ($Spec.Name -eq "agent") { "/health/ready" } else { "/health" }
+    $expectedStatus = if ($Spec.Name -eq "agent") { "ready" } else { "ok" }
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $health = Request-Json "http://127.0.0.1:$($Spec.Port)$healthPath"
+        if ($health.status -eq $expectedStatus) {
+            return
+        }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+    throw "$($Spec.Name) did not become healthy on port $($Spec.Port). See $(Join-Path $LogDir "$($Spec.Name).err.log")"
+}
+
+function Invoke-BoundaryContractVerification {
+    $python = Resolve-Python
+    $scriptPath = Join-Path $Root "tools\verify_testbed_contract.py"
+    $output = @(
+        & $python $scriptPath `
+            --scope all `
+            --env-file $EnvFile `
+            --runtime `
+            --json 2>&1
+    )
+    $exitCode = $LASTEXITCODE
+    $raw = ($output | ForEach-Object { "$_" }) -join "`n"
+    try {
+        $result = $raw | ConvertFrom-Json
+    }
+    catch {
+        return [PSCustomObject]@{
+            ok = $false
+            exit_code = $exitCode
+            violations = @("boundary verifier did not return valid JSON")
+            output = $raw
+        }
+    }
+    if ($exitCode -ne 0) {
+        $result.ok = $false
+    }
+    return $result
+}
+
+function Test-System-Details([object]$Details, [hashtable]$EnvMap) {
+    if ($Details.status -eq "ok") {
+        return $true
+    }
+    $appEnv = "$($EnvMap["APP_ENV"])".Trim().ToLowerInvariant()
+    $provider = "$($EnvMap["LLM_PROVIDER"])".Trim().ToLowerInvariant()
+    $isRuleBasedTestbed = (
+        $appEnv -in @("test", "testing", "testbed") -and
+        $provider -in @("rule_based", "rule-based", "local", "heuristic")
+    )
+    if (-not $isRuleBasedTestbed -or $Details.status -ne "degraded") {
+        return $false
+    }
+    $unexpectedWarnings = @(
+        @($Details.warnings) |
+            Where-Object { "$_" -ne "llm_provider_unsupported" }
+    )
+    return $unexpectedWarnings.Count -eq 0
+}
+
 function Verify-Stack {
     $envMap = Read-EnvMap $EnvFile
     $token = $envMap["INTERNAL_API_TOKEN"]
@@ -280,17 +460,22 @@ function Verify-Stack {
     $last = $null
     do {
         $systemHealth = Request-Json "http://127.0.0.1:$SystemPort/health"
-        $agentHealth = Request-Json "http://127.0.0.1:$AgentPort/health"
+        $agentHealth = Request-Json "http://127.0.0.1:$AgentPort/health/ready"
         $phrHealth = Request-Json "http://127.0.0.1:$PhrPort/health"
         $agentAsync = Request-Json "http://127.0.0.1:$AgentPort/agent/async/tasks/status" $headers
         $systemDetails = Request-Json "http://127.0.0.1:$SystemPort/health/details"
+        $runningWorkers = @(
+            @($agentAsync.workers) |
+                Where-Object { $_.status -eq "running" }
+        )
+        $systemDetailsAccepted = Test-System-Details $systemDetails $envMap
         $ok = (
             $systemHealth.status -eq "ok" -and
-            $agentHealth.status -eq "ok" -and
+            $agentHealth.status -eq "ready" -and
             $phrHealth.status -eq "ok" -and
             $agentAsync.status -eq "ok" -and
-            $agentAsync.workers.Count -gt 0 -and
-            $systemDetails.status -eq "ok"
+            $runningWorkers.Count -gt 0 -and
+            $systemDetailsAccepted
         )
         $last = [PSCustomObject]@{
             ok = [bool]$ok
@@ -302,6 +487,8 @@ function Verify-Stack {
             phr_health = $phrHealth
             agent_async = $agentAsync
             system_details = $systemDetails
+            system_details_accepted = [bool]$systemDetailsAccepted
+            boundary_contract = $null
         }
         if ($ok) {
             break
@@ -309,6 +496,10 @@ function Verify-Stack {
         Start-Sleep -Seconds 2
     } while ((Get-Date) -lt $deadline)
 
+    if ($last.ok) {
+        $last.boundary_contract = Invoke-BoundaryContractVerification
+        $last.ok = [bool]($last.ok -and $last.boundary_contract.ok)
+    }
     $last | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $VerifyPath -Encoding utf8
     $last | ConvertTo-Json -Depth 12
     if (-not $last.ok) {
@@ -322,6 +513,7 @@ switch ($Action) {
     "start" {
         foreach ($spec in Service-Specs) {
             Start-One $spec
+            Wait-Service-Ready $spec
         }
         Verify-Stack
     }
@@ -345,6 +537,7 @@ switch ($Action) {
         Start-Sleep -Seconds 1
         foreach ($spec in Service-Specs) {
             Start-One $spec
+            Wait-Service-Ready $spec
         }
         Verify-Stack
     }

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from agent_app.integration.contracts import (
+from shared.backend_v12_contracts import (
     ContractError,
     NotificationPolicyChangeRequest,
     NotificationPolicyChangeResponse,
@@ -21,6 +21,7 @@ from system_app.security import require_backend_api_bearer_token
 from system_app.services.agent_client import AgentServiceError
 from system_app.services.backend_chat_service import (
     BackendChatConflict,
+    PendingChatResponseError,
     build_agent_chat_request,
     call_agent_and_persist_response,
     existing_backend_chat_response,
@@ -45,6 +46,8 @@ RECORD_CHANGE_RESPONSES = {
     },
     422: {"model": RecordChangeResponse, "description": "Request or business validation failed."},
     500: {"model": RecordChangeResponse, "description": "Unexpected Backend processing error."},
+    503: {"model": RecordChangeResponse, "description": "Backend write dependency is unavailable."},
+    504: {"model": RecordChangeResponse, "description": "Backend write processing timed out."},
 }
 POLICY_CHANGE_RESPONSES = {
     401: {"model": NotificationPolicyChangeResponse, "description": "Bearer authentication failed."},
@@ -60,6 +63,14 @@ POLICY_CHANGE_RESPONSES = {
     500: {
         "model": NotificationPolicyChangeResponse,
         "description": "Unexpected Backend processing error.",
+    },
+    503: {
+        "model": NotificationPolicyChangeResponse,
+        "description": "Backend write dependency is unavailable.",
+    },
+    504: {
+        "model": NotificationPolicyChangeResponse,
+        "description": "Backend write processing timed out.",
     },
 }
 
@@ -87,6 +98,7 @@ def create_backend_v12_router(get_runtime: Callable[[], SystemRuntime]) -> APIRo
                 if replay is not None:
                     return replay
                 user_message_id = user_message.id
+                user_message_public_id = user_message.public_id
         except BackendChatConflict:
             session.rollback()
             return JSONResponse(
@@ -95,6 +107,19 @@ def create_backend_v12_router(get_runtime: Callable[[], SystemRuntime]) -> APIRo
                     "error": {
                         "code": "IDEMPOTENCY_CONFLICT",
                         "message": "The request_id was already used with a different chat body.",
+                        "retryable": False,
+                        "details": None,
+                    }
+                },
+            )
+        except PendingChatResponseError as exc:
+            session.rollback()
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": {
+                        "code": exc.code,
+                        "message": exc.message,
                         "retryable": False,
                         "details": None,
                     }
@@ -123,7 +148,7 @@ def create_backend_v12_router(get_runtime: Callable[[], SystemRuntime]) -> APIRo
             failure = BackendChatFailure(
                 request_id=request_id,
                 conversation_id=payload.conversation_id,
-                user_message_id=str(user_message_id),
+                user_message_id=user_message_public_id,
                 error_code=exc.error_type,
                 retryable=exc.retryable,
             )
@@ -141,7 +166,7 @@ def create_backend_v12_router(get_runtime: Callable[[], SystemRuntime]) -> APIRo
             failure = BackendChatFailure(
                 request_id=request_id,
                 conversation_id=payload.conversation_id,
-                user_message_id=str(user_message_id),
+                user_message_id=user_message_public_id,
                 error_code="BACKEND_CHAT_PROCESSING_ERROR",
                 retryable=True,
             )

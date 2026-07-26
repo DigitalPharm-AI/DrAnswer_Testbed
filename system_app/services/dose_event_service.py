@@ -513,6 +513,8 @@ def mark_dose_taken_command(session: Session, dose_event_id: int, taken_at: date
     event = session.get(DoseEvent, dose_event_id)
     if event is None:
         return None
+    if event.status == "taken" and event.taken_at is not None:
+        return event
     event.taken_at = taken_at or ensure_clock(session).current_time
     if event.status == "missed":
         event.note = "late_taken_after_miss"

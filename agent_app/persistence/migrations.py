@@ -280,17 +280,24 @@ def _base_migrations(engine: Engine) -> list[tuple[str, str]]:
                 id {_id_column_type(engine)},
                 api_path VARCHAR(160) NOT NULL,
                 request_id VARCHAR(160) NOT NULL,
+                request_hash VARCHAR(64) NOT NULL DEFAULT '',
                 message_id VARCHAR(160) NOT NULL,
                 conversation_id VARCHAR(160) NOT NULL,
                 patient_id_hash VARCHAR(64) NOT NULL,
                 trace_id VARCHAR(160) NOT NULL DEFAULT '',
-                feedback BOOLEAN,
+                feedback BOOLEAN NOT NULL,
                 feedback_text_ciphertext TEXT NOT NULL DEFAULT '',
                 feedback_text_hash VARCHAR(64) NOT NULL DEFAULT '',
                 encryption_key_id VARCHAR(120) NOT NULL DEFAULT '',
                 status VARCHAR(32) NOT NULL DEFAULT 'ACCEPTED',
                 error_code VARCHAR(80) NOT NULL DEFAULT '',
+                response_status INTEGER NOT NULL DEFAULT 202,
+                response_json TEXT NOT NULL DEFAULT '{{"status":"accepted"}}',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 3,
                 feedback_at {timestamp} NOT NULL,
+                next_attempt_at {timestamp},
+                last_attempt_at {timestamp},
                 processed_at {timestamp},
                 created_at {timestamp} NOT NULL,
                 updated_at {timestamp} NOT NULL,
@@ -334,7 +341,76 @@ def _base_migrations(engine: Engine) -> list[tuple[str, str]]:
             ON agent_feedback_links (expires_at)
             """,
         ),
+        (
+            "20260725_0021_agent_backend_write_requests",
+            f"""
+            CREATE TABLE IF NOT EXISTS agent_backend_write_requests (
+                id {_id_column_type(engine)},
+                request_id VARCHAR(160) NOT NULL,
+                source_chat_request_id VARCHAR(160) NOT NULL,
+                conversation_id_hash VARCHAR(64) NOT NULL DEFAULT '',
+                trusted_context_hash VARCHAR(64) NOT NULL,
+                tool_call_id VARCHAR(180) NOT NULL,
+                tool_name VARCHAR(160) NOT NULL,
+                argument_hash VARCHAR(64) NOT NULL,
+                expected_version INTEGER,
+                status VARCHAR(32) NOT NULL DEFAULT 'PREPARED',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                response_status INTEGER,
+                response_json TEXT NOT NULL DEFAULT '',
+                response_hash VARCHAR(64) NOT NULL DEFAULT '',
+                error_code VARCHAR(80) NOT NULL DEFAULT '',
+                created_at {timestamp} NOT NULL,
+                updated_at {timestamp} NOT NULL,
+                last_attempt_at {timestamp},
+                completed_at {timestamp},
+                expires_at {timestamp} NOT NULL,
+                CONSTRAINT uq_agent_backend_write_requests_request UNIQUE (request_id),
+                CONSTRAINT uq_agent_backend_write_requests_logical_call
+                UNIQUE (
+                    source_chat_request_id,
+                    tool_name,
+                    argument_hash,
+                    trusted_context_hash
+                )
+            )
+            """,
+        ),
+        (
+            "20260725_0022_agent_backend_write_request_indexes",
+            """
+            CREATE INDEX IF NOT EXISTS ix_agent_backend_write_requests_source_status
+            ON agent_backend_write_requests (source_chat_request_id, status)
+            """,
+        ),
+        (
+            "20260725_0023_agent_backend_write_request_expiry_index",
+            """
+            CREATE INDEX IF NOT EXISTS ix_agent_backend_write_requests_expires_at
+            ON agent_backend_write_requests (expires_at)
+            """,
+        ),
+        (
+            "20260725_0024_agent_backend_write_logical_call_index",
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_backend_write_requests_logical_call
+            ON agent_backend_write_requests (
+                source_chat_request_id,
+                tool_name,
+                argument_hash,
+                trusted_context_hash
+            )
+            """,
+        ),
+        (
+            "20260725_0025_agent_feedback_processing_policy",
+            "SELECT 1",
+        ),
     ]
+
+
+def required_migration_versions(engine: Engine) -> tuple[str, ...]:
+    return tuple(version for version, _sql in _base_migrations(engine))
 
 
 def ensure_agent_async_task_columns(engine: Engine) -> None:
@@ -374,8 +450,66 @@ def ensure_agent_worker_heartbeat_columns(engine: Engine) -> None:
             connection.execute(text(f"ALTER TABLE agent_worker_heartbeats ADD COLUMN {column_name} {column_type}"))
 
 
+def ensure_agent_feedback_columns(engine: Engine) -> None:
+    timestamp = _timestamp_type(engine)
+    false_literal = "FALSE" if engine.dialect.name == "postgresql" else "0"
+    columns: dict[str, str] = {
+        "request_hash": "VARCHAR(64) NOT NULL DEFAULT ''",
+        "response_status": "INTEGER NOT NULL DEFAULT 202",
+        "response_json": "TEXT NOT NULL DEFAULT '{\"status\":\"accepted\"}'",
+        "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+        "max_attempts": "INTEGER NOT NULL DEFAULT 3",
+        "next_attempt_at": timestamp,
+        "last_attempt_at": timestamp,
+    }
+    with engine.begin() as connection:
+        existing_columns = table_columns(connection, "agent_feedback_links")
+        if not existing_columns:
+            return
+        for column_name, column_type in columns.items():
+            if column_name in existing_columns:
+                continue
+            connection.execute(
+                text(
+                    "ALTER TABLE agent_feedback_links "
+                    f"ADD COLUMN {column_name} {column_type}"
+                )
+            )
+        connection.execute(
+            text(
+                "UPDATE agent_feedback_links "
+                f"SET feedback = COALESCE(feedback, {false_literal}), "
+                "response_status = COALESCE(response_status, 202), "
+                "response_json = COALESCE("
+                "NULLIF(response_json, ''), '{\"status\":\"accepted\"}'"
+                "), "
+                "attempt_count = COALESCE(attempt_count, 0), "
+                "max_attempts = COALESCE(max_attempts, 3), "
+                "next_attempt_at = COALESCE("
+                "next_attempt_at, created_at, CURRENT_TIMESTAMP"
+                ") "
+                "WHERE status IN ('ACCEPTED', 'RETRYABLE_FAILED')"
+            )
+        )
+        if connection.dialect.name == "postgresql":
+            connection.execute(
+                text(
+                    "ALTER TABLE agent_feedback_links "
+                    "ALTER COLUMN feedback SET NOT NULL"
+                )
+            )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_agent_feedback_links_next_attempt_at "
+                "ON agent_feedback_links (next_attempt_at)"
+            )
+        )
+
+
 def run_migrations(engine: Engine) -> list[str]:
     applied = run_sql_migrations(engine, _base_migrations(engine))
     ensure_agent_async_task_columns(engine)
     ensure_agent_worker_heartbeat_columns(engine)
+    ensure_agent_feedback_columns(engine)
     return applied

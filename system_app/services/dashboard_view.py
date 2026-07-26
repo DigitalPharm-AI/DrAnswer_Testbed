@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from fastapi import Request
 from sqlalchemy import desc, select
@@ -14,6 +15,7 @@ from system_app.models import AgentJob, ChatMessage, DoseEvent, Notification, Re
 from system_app.services.agent_client import AgentClient
 from system_app.services.clock_service import ensure_clock
 from system_app.services.medication_plan_service import get_schedule_map, list_medication_plans
+from system_app.services.missed_dose_flag_service import is_active_missed_dose_flag_for_event
 from system_app.services.mutation_confirmation_service import (
     has_executing_confirmation,
     recover_expired_confirmations,
@@ -297,6 +299,7 @@ def chat_message_view(message) -> dict:
                 "message": payload,
                 "conversation_id": getattr(message, "conversation_id", ""),
                 "source_chat_request_id": getattr(message, "ai_request_id", ""),
+                "response_pending": metadata.get("pending_response_status") == "pending",
             }
     from_user = message.role == "user" or message.sender_type in {"patient", "user"}
     from_ai = message.role == "assistant" or message.sender_type == "assistant"
@@ -676,6 +679,12 @@ def visible_chat_prompt_notifications(session: Session, current_time: datetime) 
             continue
         if metadata.get("category") not in CHAT_PROMPT_CATEGORIES:
             continue
+        if (
+            metadata.get("category") == "missed_dose"
+            and row.related_dose_event_id is not None
+            and not is_active_missed_dose_flag_for_event(session, row.related_dose_event_id)
+        ):
+            continue
         prompts.append(row)
     return prompts
 
@@ -753,23 +762,61 @@ def serialize_notification_feed(
     after_id: int = 0,
     limit: int = 10,
 ) -> list[dict]:
-    stmt = (
-        select(Notification)
-        .where(
-            Notification.visible_at <= current_time,
-            Notification.id > after_id,
-            Notification.acknowledged.is_(False),
-            Notification.notification_type != "system_policy_request",
-        )
-        .order_by(Notification.id.asc())
-        .limit(limit)
+    notifications, _ = serialize_notification_feed_page(
+        session,
+        current_time,
+        after_id=after_id,
+        limit=limit,
     )
-    rows = [
-        row
-        for row in session.scalars(stmt).all()
-        if is_patient_visible_notification_metadata(parse_metadata_json(row.metadata_json))
-    ]
-    return serialize_notifications(session, rows)
+    return notifications
+
+
+def serialize_notification_feed_page(
+    session: Session,
+    current_time: datetime,
+    after_id: int = 0,
+    limit: int = 10,
+) -> tuple[list[dict], int]:
+    """Return visible notifications and the last ID inspected by the feed.
+
+    Delivery-channel filtering cannot safely happen after applying the public
+    result limit: a run of hidden rows would otherwise block every later
+    patient-visible notification. Scan in bounded batches and expose the scan
+    cursor so the client can advance past hidden rows as well.
+    """
+
+    visible_rows: list[Notification] = []
+    last_scanned_id = max(after_id, 0)
+    batch_size = max(limit * 4, 20)
+
+    while len(visible_rows) < limit:
+        stmt = (
+            select(Notification)
+            .where(
+                Notification.visible_at <= current_time,
+                Notification.id > last_scanned_id,
+                Notification.acknowledged.is_(False),
+                Notification.notification_type != "system_policy_request",
+            )
+            .order_by(Notification.id.asc())
+            .limit(batch_size)
+        )
+        batch = list(session.scalars(stmt).all())
+        if not batch:
+            break
+
+        for row in batch:
+            last_scanned_id = row.id
+            if not is_patient_visible_notification_metadata(parse_metadata_json(row.metadata_json)):
+                continue
+            visible_rows.append(row)
+            if len(visible_rows) >= limit:
+                break
+
+        if len(visible_rows) >= limit or len(batch) < batch_size:
+            break
+
+    return serialize_notifications(session, visible_rows), last_scanned_id
 
 def get_system_request_history(session: Session, current_time: datetime) -> list[dict]:
     day_start = datetime.combine(current_time.date(), datetime.min.time())
@@ -836,6 +883,110 @@ def daily_pattern_job_status_view(session: Session) -> dict | None:
     }
 
 
+def _selected_timeline_date(request: Request, current_time: datetime) -> tuple[date, str | None]:
+    timeline_date_param = request.query_params.get("timeline_date")
+    try:
+        selected_date = date.fromisoformat(timeline_date_param) if timeline_date_param else current_time.date()
+    except ValueError:
+        return current_time.date(), None
+    return selected_date, timeline_date_param
+
+
+def build_timeline_context(request: Request, session: Session) -> dict:
+    """Build only the medication timeline fragment state."""
+
+    clock = ensure_clock(session)
+    selected_timeline_date, timeline_date_param = _selected_timeline_date(request, clock.current_time)
+    return {
+        "request": request,
+        "clock": clock,
+        "dose_events": get_dose_events_for_date(session, selected_timeline_date),
+        "selected_timeline_date": selected_timeline_date,
+        "timeline_date_param": timeline_date_param,
+        "timeline_calendar": dose_calendar_month_view(session, selected_timeline_date, clock.current_time.date()),
+    }
+
+
+def build_notifications_context(request: Request, session: Session) -> dict:
+    """Build only the notification-center fragment state."""
+
+    clock = ensure_clock(session)
+    notifications = get_notification_history(session, clock.current_time)
+    return {
+        "request": request,
+        "notifications": notifications,
+        "notification_metadata_map": {
+            notification.id: parse_metadata_json(notification.metadata_json) for notification in notifications
+        },
+        "dose_status_map": get_dose_status_map(session, list(notifications)),
+    }
+
+
+def build_active_policies_context(request: Request, session: Session) -> dict:
+    """Build only the active-policy fragment state."""
+
+    clock = ensure_clock(session)
+    return {
+        "request": request,
+        "active_policies": get_active_policies(session, clock.current_time.date()),
+        "system_policies": [daily_pattern_conversation_time_view(session)],
+        "reminder_suppressed_after_side_effect": is_reminder_suppressed_after_side_effect(session),
+    }
+
+
+def build_nutrition_context(request: Request, session: Session) -> dict:
+    """Build only the nutrition fragment state."""
+
+    return {
+        "request": request,
+        "nutrition": nutrition_dashboard_view(session),
+    }
+
+
+def build_chat_log_context(request: Request, session: Session) -> dict:
+    """Build only the current conversation log fragment state."""
+
+    clock = ensure_clock(session)
+    return {
+        "request": request,
+        "chat_messages": agent_conversation_views(session, clock.current_time),
+    }
+
+
+def build_chat_history_context(request: Request, session: Session) -> dict:
+    """Build only the archived conversation fragment state."""
+
+    clock = ensure_clock(session)
+    return {
+        "request": request,
+        "conversation_history_messages": conversation_history_views(session, clock.current_time),
+    }
+
+
+def build_chat_context(request: Request, session: Session) -> dict:
+    """Build the chat panel without running unrelated dashboard queries or recovery writes."""
+
+    clock = ensure_clock(session)
+    return {
+        "request": request,
+        "chat_messages": agent_conversation_views(session, clock.current_time),
+        "conversation_history_messages": conversation_history_views(session, clock.current_time),
+        "active_chat_prompt": active_chat_prompt_view(session, clock.current_time),
+        "active_ae_prompt": active_ae_prompt_view(session),
+        "mutation_execution_in_progress": has_executing_confirmation(session, settings.patient_id),
+    }
+
+
+def build_system_request_history_context(request: Request, session: Session) -> dict:
+    """Build only the system-request history fragment state."""
+
+    clock = ensure_clock(session)
+    return {
+        "request": request,
+        "system_request_history": get_system_request_history(session, clock.current_time),
+    }
+
+
 def build_dashboard_context(request: Request, session: Session, agent_model_config: dict | None = None) -> dict:
     if recover_expired_confirmations(session, settings.patient_id):
         session.commit()
@@ -860,6 +1011,7 @@ def build_dashboard_context(request: Request, session: Session, agent_model_conf
         "medication_form_options": MEDICATION_FORM_OPTIONS,
         "dosage_form_options": DOSAGE_FORM_OPTIONS,
         "custom_choice": CUSTOM_CHOICE,
+        "medication_submission_id": str(uuid4()),
         "default_medication_start_date": clock.current_time.date(),
         "default_medication_end_date": clock.current_time.date() + timedelta(days=7),
         "phr_profile": phr_profile_view(session),
@@ -886,6 +1038,17 @@ def build_dashboard_context(request: Request, session: Session, agent_model_conf
         "agent_model_config": agent_model_config or fallback_agent_model_config_view(),
         "mutation_execution_in_progress": has_executing_confirmation(session, settings.patient_id),
     }
+
+
+def build_time_bar_context(request: Request, session: Session) -> dict:
+    """Build only the state rendered by the one-second polling fragment."""
+
+    return {
+        "request": request,
+        "clock": ensure_clock(session),
+        "simulation_readiness": simulation_readiness(session),
+    }
+
 
 async def resolve_agent_model_config(agent_client: AgentClient) -> dict[str, Any]:
     try:

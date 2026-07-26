@@ -28,9 +28,16 @@
           name="{% if active_ae_prompt and not active_chat_prompt %}response_text{% else %}message{% endif %}"
           rows="2"
           required
+          maxlength="4000"
           {% if mutation_execution_in_progress %}disabled{% endif %}
+          {% if mutation_execution_in_progress %}aria-describedby="chat-composer-disabled-note"{% endif %}
           placeholder="{{ active_chat_prompt.placeholder if active_chat_prompt else active_ae_prompt.placeholder if active_ae_prompt else ' ' }}"></textarea>
-        <button type="submit">보내기</button>
+        <button type="submit" {% if mutation_execution_in_progress %}disabled aria-disabled="true"{% endif %}>보내기</button>
+        {% if mutation_execution_in_progress %}
+          <p id="chat-composer-disabled-note" class="muted inline-note" role="status">
+            변경 작업이 완료되면 입력창이 자동으로 다시 활성화됩니다.
+          </p>
+        {% endif %}
       </form>
     </div>
     {% include "partials/conversation_history.html" %}

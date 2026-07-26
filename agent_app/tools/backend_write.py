@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
@@ -16,6 +15,12 @@ from agent_app.integration.mutations import (
     notification_policy_request,
     record_change_request_from_tool,
 )
+from agent_app.integration.write_state import (
+    BackendWriteIdentity,
+    BackendWriteStateStore,
+    canonical_payload_hash,
+)
+from agent_app.persistence.db import SessionLocal
 from agent_app.tools.backend_query import BackendQueryTools
 from agent_app.tools.names import (
     BACKEND_V12_POLICY_WRITE_TOOLS,
@@ -30,6 +35,7 @@ from agent_app.tools.names import (
     UPDATE_NUTRITION_MEAL_RECORD,
 )
 from shared.schemas import ToolCallResult
+from shared.settings import get_settings
 
 BackendWriteEndpoint = Literal["record_change", "notification_policy_change"]
 INTERNAL_WRITE_REASON = "사용자 채팅 메시지에서 명시적으로 확인된 AI Tool 실행"
@@ -46,7 +52,7 @@ MODEL_FORBIDDEN_TECHNICAL_ARGUMENTS = frozenset(
     }
 )
 MODEL_WRITE_ARGUMENTS: dict[str, frozenset[str]] = {
-    UPDATE_MEDICATION_DOSE_EVENT_STATUS: frozenset({"dose_event_id", "taken_at"}),
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS: frozenset({"dose_event_id"}),
     CREATE_NUTRITION_MEAL_RECORD: frozenset(
         {"meal_type", "meal_date", "meal_time", "description", "foods"}
     ),
@@ -65,9 +71,7 @@ MODEL_WRITE_ARGUMENTS: dict[str, frozenset[str]] = {
     UPDATE_NUTRITION_FOOD_RECORD: frozenset(
         {"meal_id", "food_id", "food_ref_id", "food_name", "portion", "nutrients"}
     ),
-    DELETE_NUTRITION_FOOD_RECORD: frozenset(
-        {"meal_id", "food_id", "delete_empty_meal"}
-    ),
+    DELETE_NUTRITION_FOOD_RECORD: frozenset({"meal_id", "food_id"}),
     CHANGE_NOTIFICATION_POLICY: frozenset({"policy_id", "decision", "changes"}),
 }
 
@@ -79,6 +83,13 @@ class BackendWriteToolSpec:
     resource_type: str
     operation: str
     requires_expected_version: bool
+
+
+@dataclass(frozen=True)
+class PreparedBackendWrite:
+    request_id: str
+    internal_arguments: dict[str, Any]
+    cached_response: dict[str, Any] | None
 
 
 BACKEND_WRITE_TOOL_SPECS: dict[str, BackendWriteToolSpec] = {
@@ -160,10 +171,15 @@ class BackendSyncWriteTools:
         self,
         client: BackendV12Client,
         backend_queries: BackendQueryTools | None = None,
+        state_store: BackendWriteStateStore | None = None,
     ) -> None:
         self.client = client
         self.backend_queries = backend_queries
-        self._request_arguments: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        settings = get_settings()
+        self.state_store = state_store or BackendWriteStateStore(
+            SessionLocal,
+            retention_seconds=settings.agent_backend_write_retention_seconds,
+        )
         self._request_arguments_lock = anyio.Lock()
 
     async def execute(
@@ -190,6 +206,32 @@ class BackendSyncWriteTools:
             tool_call_id=tool_call_id,
             arguments=arguments,
         )
+        identity = BackendWriteIdentity(
+            request_id=request_id,
+            source_chat_request_id=context.source_chat_request_id,
+            conversation_id_hash=canonical_payload_hash(
+                {"conversation_id": context.conversation_id}
+            ),
+            trusted_context_hash=canonical_payload_hash(
+                {
+                    "source_chat_request_id": context.source_chat_request_id,
+                    "source_message_id": context.source_message_id,
+                    "conversation_id": context.conversation_id,
+                    "patient_id": context.patient_id,
+                    "requested_at": context.requested_at,
+                }
+            ),
+            tool_call_id=tool_call_id.strip(),
+            tool_name=tool_name,
+            argument_hash=canonical_payload_hash(arguments),
+        )
+        prepared = await self._stable_internal_arguments(
+            identity,
+            spec,
+            arguments,
+            patient_id=context.patient_id,
+        )
+        request_id = prepared.request_id
         mutation_context = ConfirmedMutationContext(
             request_id=request_id,
             source_chat_request_id=context.source_chat_request_id,
@@ -198,62 +240,128 @@ class BackendSyncWriteTools:
             patient_id=context.patient_id,
             requested_at=context.requested_at,
         )
-        internal_arguments = await self._stable_internal_arguments(
-            request_id,
-            spec,
-            arguments,
-            patient_id=context.patient_id,
-        )
+        if prepared.cached_response is not None:
+            return _tool_result_from_response_body(
+                tool_name,
+                request_id,
+                prepared.cached_response,
+            )
+        internal_arguments = prepared.internal_arguments
 
-        if spec.endpoint == "record_change":
-            request = record_change_request_from_tool(tool_name, internal_arguments, mutation_context)
-            response = await self.client.change_record(request)
-        else:
-            values = dict(internal_arguments)
-            response = await self.client.change_notification_policy(
-                notification_policy_request(
-                    context=mutation_context,
-                    policy_id=str(values.pop("policy_id", "") or ""),
-                    expected_version=_required_expected_version(values),
-                    decision=str(values.pop("decision", "") or ""),
-                    changes=values.pop("changes", None),
-                    reason=str(values.pop("reason", "") or INTERNAL_WRITE_REASON),
+        await anyio.to_thread.run_sync(
+            lambda: self.state_store.begin_attempt(request_id)
+        )
+        try:
+            if spec.endpoint == "record_change":
+                request = record_change_request_from_tool(
+                    tool_name,
+                    internal_arguments,
+                    mutation_context,
+                )
+                response = await self.client.change_record(request)
+            else:
+                values = dict(internal_arguments)
+                response = await self.client.change_notification_policy(
+                    notification_policy_request(
+                        context=mutation_context,
+                        policy_id=str(values.pop("policy_id", "") or ""),
+                        expected_version=_required_expected_version(values),
+                        decision=str(values.pop("decision", "") or ""),
+                        changes=values.pop("changes", None),
+                        reason=str(
+                            values.pop("reason", "") or INTERNAL_WRITE_REASON
+                        ),
+                    )
+                )
+                if values:
+                    raise ValueError(
+                        "unsupported_notification_policy_arguments:"
+                        f"{','.join(sorted(values))}"
+                    )
+        except Exception as exc:
+            await anyio.to_thread.run_sync(
+                lambda: self.state_store.record_transport_failure(
+                    request_id,
+                    error_code=type(exc).__name__,
                 )
             )
-            if values:
-                raise ValueError(f"unsupported_notification_policy_arguments:{','.join(sorted(values))}")
+            raise
 
         response_body = response.model_dump(mode="json")
-        return ToolCallResult(
-            tool_name=tool_name,
-            status="success" if response.success else "error",
-            response=response_body,
-            error=response.error.code if response.error else "",
-            idempotency_key=request_id,
+        error_code = response.error.code if response.error else ""
+        terminal = response.success or not (
+            response.error is not None and response.error.retryable
+        )
+        stored = await anyio.to_thread.run_sync(
+            lambda: self.state_store.record_response(
+                request_id,
+                status_code=_response_status(response.success, error_code),
+                body=response_body,
+                terminal=terminal,
+                error_code=error_code,
+            )
+        )
+        authoritative_body = stored.response_body or response_body
+        return _tool_result_from_response_body(
+            tool_name,
+            request_id,
+            authoritative_body,
         )
 
     async def _stable_internal_arguments(
         self,
-        request_id: str,
+        identity: BackendWriteIdentity,
         spec: BackendWriteToolSpec,
         arguments: dict[str, Any],
         *,
         patient_id: str,
-    ) -> dict[str, Any]:
-        async with self._request_arguments_lock:
-            cached = self._request_arguments.get(request_id)
-            if cached is not None:
-                self._request_arguments.move_to_end(request_id)
-                return dict(cached)
-            resolved = await self._internal_arguments(
-                spec,
-                arguments,
-                patient_id=patient_id,
+    ) -> PreparedBackendWrite:
+        state = await anyio.to_thread.run_sync(
+            lambda: self.state_store.load(identity)
+        )
+        if state is not None:
+            return PreparedBackendWrite(
+                request_id=state.request_id,
+                internal_arguments=_internal_arguments_from_state(
+                    spec,
+                    arguments,
+                    state.expected_version,
+                ),
+                cached_response=state.response_body,
             )
-            self._request_arguments[request_id] = dict(resolved)
-            while len(self._request_arguments) > 1024:
-                self._request_arguments.popitem(last=False)
-            return resolved
+
+        async with self._request_arguments_lock:
+            state = await anyio.to_thread.run_sync(
+                lambda: self.state_store.load(identity)
+            )
+            if state is None:
+                state = await anyio.to_thread.run_sync(
+                    lambda: self.state_store.find_equivalent(identity)
+                )
+            if state is None:
+                resolved = await self._internal_arguments(
+                    spec,
+                    arguments,
+                    patient_id=patient_id,
+                )
+                expected_version = resolved.get("expected_version")
+                if not spec.requires_expected_version:
+                    expected_version = None
+                state = await anyio.to_thread.run_sync(
+                    lambda: self.state_store.prepare(
+                        identity,
+                        expected_version=expected_version,
+                    )
+                )
+            return PreparedBackendWrite(
+                request_id=state.request_id,
+                internal_arguments=_internal_arguments_from_state(
+                    spec,
+                    arguments,
+                    state.expected_version,
+                ),
+                cached_response=state.response_body,
+            )
 
     async def _internal_arguments(
         self,
@@ -333,3 +441,60 @@ def _record_identifiers(
     if spec.resource_type == "nutrition_food":
         return values.get("food_id"), values.get("meal_id")
     raise ValueError(f"unsupported_versioned_resource:{spec.resource_type}")
+
+
+def _internal_arguments_from_state(
+    spec: BackendWriteToolSpec,
+    arguments: dict[str, Any],
+    expected_version: int | None,
+) -> dict[str, Any]:
+    values = dict(arguments)
+    if spec.requires_expected_version:
+        if (
+            isinstance(expected_version, bool)
+            or not isinstance(expected_version, int)
+            or expected_version < 0
+        ):
+            raise RuntimeError("persisted_expected_version_missing")
+        values["expected_version"] = expected_version
+    values["reason"] = INTERNAL_WRITE_REASON
+    return values
+
+
+def _tool_result_from_response_body(
+    tool_name: str,
+    request_id: str,
+    body: dict[str, Any],
+) -> ToolCallResult:
+    success = body.get("success") is True
+    error = body.get("error")
+    error_code = (
+        str(error.get("code") or "")
+        if isinstance(error, dict)
+        else ""
+    )
+    return ToolCallResult(
+        tool_name=tool_name,
+        status="success" if success else "error",
+        response=body,
+        error=error_code,
+        idempotency_key=request_id,
+    )
+
+
+def _response_status(success: bool, error_code: str) -> int:
+    if success:
+        return 200
+    if error_code in {
+        "IDEMPOTENCY_CONFLICT",
+        "REQUEST_IN_PROGRESS",
+        "VERSION_CONFLICT",
+        "CONFIRMATION_MESSAGE_NOT_FOUND",
+        "SOURCE_CHAT_REQUEST_NOT_FOUND",
+    }:
+        return 409
+    if error_code.endswith("_not_found") or error_code.endswith("_NOT_FOUND"):
+        return 404
+    if error_code in {"BACKEND_PROCESSING_ERROR", "BACKEND_UNAVAILABLE"}:
+        return 503
+    return 422

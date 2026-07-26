@@ -5,7 +5,7 @@ from datetime import date
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from agent_app.tools.names import (
+from shared.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,

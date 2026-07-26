@@ -10,7 +10,7 @@ import httpx
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from agent_app.tools.permissions import requires_human_handoff
+from shared.tool_permissions import requires_human_handoff
 from shared.readiness_budget import CostBudget, evaluate_cost_budget
 from shared.redaction import redact_inline_secrets, stable_hash
 from shared.settings import get_settings

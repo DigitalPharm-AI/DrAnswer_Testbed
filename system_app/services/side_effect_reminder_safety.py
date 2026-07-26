@@ -15,6 +15,10 @@ settings = get_settings()
 
 SIDE_EFFECT_REMINDER_SAFETY_CATEGORY = "side_effect_reminder_safety"
 SIDE_EFFECT_REMINDER_SUPPRESSED_POLICY_KEY = "side_effect_reminder_suppressed"
+SIDE_EFFECT_REMINDER_SAFETY_NOT_FOUND = "notification_not_found"
+SIDE_EFFECT_REMINDER_SAFETY_WRONG_CATEGORY = "notification_does_not_accept_side_effect_reminder_safety"
+SIDE_EFFECT_REMINDER_SAFETY_STALE = "side_effect_reminder_safety_stale"
+SIDE_EFFECT_REMINDER_SAFETY_INVALID_ACTION = "side_effect_reminder_safety_invalid_action"
 SIDE_EFFECT_REMINDER_SAFETY_MESSAGE = (
     "부작용에 대해 기록했습니다. 증상이 너무 심하다고 느껴지면 병원에 내원해보는 것이 좋겠습니다. "
     "복약 관련해서는 의료진과 충분한 상담이 필요하니 병원에 내원해서 다시 상담을 받아보는 게 어떨까요? "
@@ -163,30 +167,6 @@ def _sync_safety_prompt_chat_metadata(session: Session, notification_id: int, me
         message.metadata_json = dump_json(message_metadata)
 
 
-def _add_duplicate_safety_reply_feedback(session: Session, notification_id: int) -> None:
-    rows = session.scalars(
-        select(ChatMessage)
-        .where(
-            ChatMessage.category == SIDE_EFFECT_REMINDER_SAFETY_CATEGORY,
-            ChatMessage.content == "이미 처리된 알림입니다.",
-        )
-        .order_by(desc(ChatMessage.created_at), desc(ChatMessage.id))
-        .limit(20)
-    ).all()
-    for row in rows:
-        metadata = parse_json_object(row.metadata_json)
-        if metadata.get("notification_id") == notification_id and metadata.get("duplicate_reply") is True:
-            return
-    add_chat_message(
-        session,
-        role="assistant",
-        content="이미 처리된 알림입니다.",
-        sender_type="assistant",
-        category=SIDE_EFFECT_REMINDER_SAFETY_CATEGORY,
-        metadata={"notification_id": notification_id, "duplicate_reply": True},
-    )
-
-
 def _side_effect_safety_action(message: str) -> str | None:
     payload = parse_json_object(message)
     if payload:
@@ -207,19 +187,17 @@ def handle_side_effect_reminder_safety_reply(
     action: str,
 ) -> tuple[bool, str]:
     notification = session.get(Notification, notification_id) if notification_id is not None else None
-    if notification is None:
-        return False, "notification_not_found"
+    if notification is None or notification.patient_id != settings.patient_id:
+        return False, SIDE_EFFECT_REMINDER_SAFETY_NOT_FOUND
     metadata = parse_json_object(notification.metadata_json)
     if notification.notification_type != "conversation_alert" or metadata.get("category") != SIDE_EFFECT_REMINDER_SAFETY_CATEGORY:
-        return False, "notification_does_not_accept_side_effect_reminder_safety"
-    if metadata.get("status") == "reply_completed":
-        _sync_safety_prompt_chat_metadata(session, notification.id, metadata)
-        _add_duplicate_safety_reply_feedback(session, notification.id)
-        return is_reminder_suppressed_after_side_effect(session), "이미 처리된 알림입니다."
+        return False, SIDE_EFFECT_REMINDER_SAFETY_WRONG_CATEGORY
+    if notification.acknowledged or metadata.get("status") != "agent_ready":
+        return False, SIDE_EFFECT_REMINDER_SAFETY_STALE
 
     resolved_action = _side_effect_safety_action(action)
     if resolved_action is None:
-        return False, "알림 유지 또는 끄기 중 하나를 선택해주세요."
+        return False, SIDE_EFFECT_REMINDER_SAFETY_INVALID_ACTION
 
     suppressed = resolved_action == "suppress"
     set_reminder_suppressed_after_side_effect(session, suppressed)

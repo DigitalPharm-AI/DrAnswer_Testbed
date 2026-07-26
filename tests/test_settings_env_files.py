@@ -74,6 +74,43 @@ def test_development_allows_empty_internal_api_token():
     settings.require_internal_api_token_in_production()
 
 
+@pytest.mark.parametrize("app_env", ["development", "testbed", "production"])
+def test_agent_sync_api_token_is_required_in_every_environment(app_env):
+    settings = Settings(
+        app_env=app_env,
+        agent_sync_api_token="",
+        backend_api_token="backend-secret",
+    )
+
+    with pytest.raises(RuntimeError, match="AGENT_SYNC_API_TOKEN"):
+        settings.require_agent_sync_api_token()
+
+
+@pytest.mark.parametrize("app_env", ["development", "testbed", "production"])
+def test_backend_api_token_is_required_in_every_environment(app_env):
+    settings = Settings(
+        app_env=app_env,
+        agent_sync_api_token="agent-sync-secret",
+        backend_api_token="",
+    )
+
+    with pytest.raises(RuntimeError, match="BACKEND_API_TOKEN"):
+        settings.require_backend_api_token()
+
+
+def test_v12_direction_tokens_must_use_distinct_values():
+    settings = Settings(
+        app_env="development",
+        agent_sync_api_token="shared-secret",
+        backend_api_token="shared-secret",
+    )
+
+    with pytest.raises(RuntimeError, match="must use distinct values"):
+        settings.require_agent_sync_api_token()
+    with pytest.raises(RuntimeError, match="must use distinct values"):
+        settings.require_backend_api_token()
+
+
 def _chdir_without_parent_env(monkeypatch, tmp_path):
     parent = tmp_path / "workspace"
     child = parent / "DA_drug"

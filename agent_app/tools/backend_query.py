@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, event, text
+from sqlalchemy import Engine, create_engine, event, inspect, text
 from sqlalchemy.engine import make_url
 
 from agent_app.integration.chat_contracts import ChatSyncRequest
@@ -18,6 +18,11 @@ from agent_app.integration.contracts import (
     POLICY_MIN_INTERVAL_MINUTES,
     POLICY_MIN_MISSED_DOSE_AFTER_MINUTES,
     POLICY_MIN_PRIMARY_REMINDER_OFFSET_MINUTES,
+)
+from shared.backend_read_contract import (
+    BACKEND_READ_CONTRACT_VERSION,
+    BACKEND_READ_NON_NULL_INVARIANTS,
+    BACKEND_READ_VIEW_COLUMNS,
 )
 from shared.settings import Settings, get_settings
 
@@ -34,6 +39,10 @@ class BackendRecordNotFound(BackendQueryError):
     pass
 
 
+class BackendReadContractError(BackendQueryError):
+    pass
+
+
 class BackendQueryTools:
     """Fixed, parameterized Backend DB reads. No caller-supplied SQL is accepted."""
 
@@ -42,6 +51,11 @@ class BackendQueryTools:
             raise ValueError("backend_read_database_url_required")
         self.engine = _read_only_engine(database_url)
         self.max_rows = max(1, min(int(max_rows), 500))
+        try:
+            self.verify_contract()
+        except Exception:
+            self.engine.dispose()
+            raise
 
     @classmethod
     def from_settings(cls, settings: Settings | None = None) -> BackendQueryTools | None:
@@ -53,18 +67,80 @@ class BackendQueryTools:
             max_rows=resolved.backend_query_max_rows,
         )
 
-    def validate_chat_message(self, request: ChatSyncRequest, *, history_limit: int = 20) -> dict[str, Any]:
+    def verify_contract(self) -> dict[str, Any]:
+        """Verify the live view schema and DB-enforced read-only session."""
+
         try:
-            message_id = int(request.message_id)
-        except ValueError as exc:
-            raise BackendChatMessageNotFound("backend_chat_message_not_found") from exc
+            with self.engine.connect() as connection:
+                dialect = connection.dialect.name
+                if dialect == "sqlite":
+                    read_only = int(connection.exec_driver_sql("PRAGMA query_only").scalar_one()) == 1
+                elif dialect == "postgresql":
+                    value = connection.execute(text("SHOW transaction_read_only")).scalar_one()
+                    read_only = str(value).strip().lower() in {"on", "true", "1"}
+                else:
+                    raise BackendReadContractError(
+                        f"backend_read_contract_unsupported_dialect:{dialect}"
+                    )
+                if not read_only:
+                    raise BackendReadContractError("backend_read_connection_not_read_only")
+
+                inspector = inspect(connection)
+                live_views = set(inspector.get_view_names())
+                for view_name, expected_columns in BACKEND_READ_VIEW_COLUMNS.items():
+                    if view_name not in live_views:
+                        raise BackendReadContractError(
+                            f"backend_read_contract_view_missing:{view_name}"
+                        )
+                    actual_columns = tuple(
+                        str(column["name"])
+                        for column in inspector.get_columns(view_name)
+                    )
+                    if actual_columns != expected_columns:
+                        raise BackendReadContractError(
+                            "backend_read_contract_columns_mismatch:"
+                            f"{view_name}:expected={','.join(expected_columns)}:"
+                            f"actual={','.join(actual_columns)}"
+                        )
+                    connection.execute(text(f"SELECT * FROM {view_name} WHERE 1 = 0"))
+                    for column_name in BACKEND_READ_NON_NULL_INVARIANTS[view_name]:
+                        invalid = connection.execute(
+                            text(
+                                f"SELECT 1 FROM {view_name} "
+                                f"WHERE {column_name} IS NULL LIMIT 1"
+                            )
+                        ).scalar_one_or_none()
+                        if invalid is not None:
+                            raise BackendReadContractError(
+                                "backend_read_contract_null_invariant:"
+                                f"{view_name}:{column_name}"
+                            )
+        except BackendReadContractError:
+            raise
+        except Exception as exc:
+            raise BackendReadContractError(
+                f"backend_read_contract_probe_failed:{type(exc).__name__}"
+            ) from exc
+        return {
+            "ok": True,
+            "contract_version": BACKEND_READ_CONTRACT_VERSION,
+            "dialect": dialect,
+            "read_only": True,
+            "views": sorted(BACKEND_READ_VIEW_COLUMNS),
+        }
+
+    def validate_chat_message(self, request: ChatSyncRequest, *, history_limit: int = 20) -> dict[str, Any]:
         limit = self._limit(history_limit)
         with self.engine.connect() as connection:
+            resolved = _resolve_external_id(connection, "message", request.message_id)
+            if resolved is None:
+                raise BackendChatMessageNotFound("backend_chat_message_not_found")
+            message_id, legacy_message_id = resolved
             message = connection.execute(
                 text(
                     """
                     SELECT id, patient_id, conversation_id, role, content, created_at
-                    FROM chat_messages
+                    FROM ai_v12_chat_messages
                     WHERE id = :message_id
                       AND patient_id = :patient_id
                       AND conversation_id = :conversation_id
@@ -82,19 +158,22 @@ class BackendQueryTools:
             rows = connection.execute(
                 text(
                     """
-                    SELECT id, role, message_type, content, created_at
-                    FROM chat_messages
-                    WHERE patient_id = :patient_id
-                      AND conversation_id = :conversation_id
-                      AND id <= :message_id
-                    ORDER BY id DESC
+                    SELECT c.id, c.role, c.message_type, c.content, c.created_at
+                    FROM ai_v12_chat_messages c
+                    JOIN ai_v12_legacy_id_map legacy
+                      ON legacy.entity_type = 'message'
+                     AND legacy.public_id = c.id
+                    WHERE c.patient_id = :patient_id
+                      AND c.conversation_id = :conversation_id
+                      AND CAST(legacy.legacy_id AS INTEGER) <= :legacy_message_id
+                    ORDER BY CAST(legacy.legacy_id AS INTEGER) DESC
                     LIMIT :limit
                     """
                 ),
                 {
                     "patient_id": request.patient_id,
                     "conversation_id": request.conversation_id,
-                    "message_id": message_id,
+                    "legacy_message_id": int(legacy_message_id),
                     "limit": limit,
                 },
             ).mappings().all()
@@ -110,6 +189,46 @@ class BackendQueryTools:
                 }
                 for row in reversed(rows)
             ],
+        }
+
+    def validate_feedback_target(
+        self,
+        *,
+        message_id: str,
+        conversation_id: str,
+        patient_id: str,
+    ) -> dict[str, Any]:
+        """Resolve feedback only to an assistant message in the trusted chat scope."""
+
+        with self.engine.connect() as connection:
+            resolved = _resolve_external_id(connection, "message", message_id)
+            if resolved is None:
+                raise BackendChatMessageNotFound("backend_chat_message_not_found")
+            public_id, _legacy_id = resolved
+            row = connection.execute(
+                text(
+                    """
+                    SELECT id, conversation_id, patient_id, role
+                    FROM ai_v12_chat_messages
+                    WHERE id = :message_id
+                      AND patient_id = :patient_id
+                      AND conversation_id = :conversation_id
+                      AND role = 'assistant'
+                    """
+                ),
+                {
+                    "message_id": public_id,
+                    "patient_id": patient_id,
+                    "conversation_id": conversation_id,
+                },
+            ).mappings().first()
+        if row is None:
+            raise BackendChatMessageNotFound("backend_chat_message_not_found")
+        return {
+            "message_id": str(row["id"]),
+            "conversation_id": str(row["conversation_id"]),
+            "patient_id": str(row["patient_id"]),
+            "role": str(row["role"]),
         }
 
     def medication_dose_status(
@@ -146,7 +265,7 @@ class BackendQueryTools:
                     f"""
                     SELECT id, patient_id, medication_name, slot_label, scheduled_for,
                            status, taken_at, note, version
-                    FROM dose_events
+                    FROM ai_v12_dose_events
                     WHERE {' AND '.join(clauses)}
                     ORDER BY scheduled_for, id
                     LIMIT :limit
@@ -199,7 +318,7 @@ class BackendQueryTools:
                     f"""
                     SELECT m.id, m.patient_id, m.meal_type, m.meal_date, m.meal_time,
                            m.scenario_key, m.description, m.version
-                    FROM nutrition_meals m
+                    FROM ai_v12_nutrition_meals m
                     WHERE {' AND '.join(clauses)}
                     ORDER BY m.meal_date DESC, m.meal_time, m.id
                     LIMIT :limit
@@ -207,7 +326,7 @@ class BackendQueryTools:
                 ),
                 params,
             ).mappings().all()
-            meal_ids = [int(row["id"]) for row in meals]
+            meal_ids = [str(row["id"]) for row in meals]
             foods = []
             if meal_ids:
                 placeholders = ", ".join(f":meal_{index}" for index in range(len(meal_ids)))
@@ -217,16 +336,16 @@ class BackendQueryTools:
                         f"""
                         SELECT id, meal_id, food_ref_id, food_name, portion, calories,
                                protein, sodium, fat, carbohydrates, version
-                        FROM nutrition_foods
+                        FROM ai_v12_nutrition_foods
                         WHERE meal_id IN ({placeholders})
                         ORDER BY meal_id, id
                         """
                     ),
                     food_params,
                 ).mappings().all()
-        grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in foods:
-            grouped[int(row["meal_id"])].append(_food_view(row))
+            grouped[str(row["meal_id"])].append(_food_view(row))
         payload = [
             {
                 "id": row["id"],
@@ -237,7 +356,7 @@ class BackendQueryTools:
                 "scenario_key": row["scenario_key"] or "",
                 "description": row["description"] or "",
                 "version": row["version"] or 1,
-                "foods": grouped[int(row["id"])],
+                "foods": grouped[str(row["id"])],
             }
             for row in meals
         ]
@@ -254,7 +373,7 @@ class BackendQueryTools:
                     """
                     SELECT food_ref_id, food_name, category, serving_size, energy,
                            carbohydrate, protein, fat, sodium, source, manufacturer
-                    FROM nutrition_food_ref
+                    FROM ai_v12_nutrition_food_ref
                     WHERE LOWER(food_name) LIKE :query
                     ORDER BY CASE WHEN LOWER(food_name) = :exact THEN 0 ELSE 1 END,
                              food_name
@@ -312,9 +431,9 @@ class BackendQueryTools:
                     f"""
                     SELECT id, patient_id, phr_patient_key, medication_name, symptom_text,
                            suspected, severity, matched_effects_json, matched_items_json,
-                           evidence, recommendation, source_trace_id, source_event_type,
-                           related_dose_event_id, metadata_json, created_at
-                    FROM side_effect_records
+                           evidence, recommendation, source_event_type,
+                           related_dose_event_id, created_at
+                    FROM ai_v12_side_effect_records
                     WHERE {' AND '.join(clauses)}
                     ORDER BY created_at DESC, id DESC
                     LIMIT :limit
@@ -354,12 +473,11 @@ class BackendQueryTools:
             rows = connection.execute(
                 text(
                     """
-                    SELECT p.predicate, p.strength, p.safety_level, p.confidence,
-                           p.source, p.evidence_text, n.node_key, n.node_type, n.label
-                    FROM nutrition_patient_preference_triples p
-                    JOIN nutrition_ontology_nodes n ON n.id = p.object_node_id
-                    WHERE p.patient_id = :patient_id AND p.status = 'active'
-                    ORDER BY p.safety_level, p.predicate, n.label
+                    SELECT predicate, strength, safety_level, confidence,
+                           source, evidence_text, node_key, node_type, label
+                    FROM ai_v12_nutrition_preferences
+                    WHERE patient_id = :patient_id AND status = 'active'
+                    ORDER BY safety_level, predicate, label
                     LIMIT :limit
                     """
                 ),
@@ -388,8 +506,8 @@ class BackendQueryTools:
                            COALESCE(SUM(f.sodium), 0) AS sodium,
                            COALESCE(SUM(f.fat), 0) AS fat,
                            COALESCE(SUM(f.carbohydrates), 0) AS carbohydrates
-                    FROM nutrition_meals m
-                    LEFT JOIN nutrition_foods f ON f.meal_id = m.id
+                    FROM ai_v12_nutrition_meals m
+                    LEFT JOIN ai_v12_nutrition_foods f ON f.meal_id = m.id
                     WHERE m.patient_id = :patient_id AND m.meal_date = :meal_date
                     """
                 ),
@@ -420,7 +538,7 @@ class BackendQueryTools:
                     """
                     SELECT food_ref_id, food_name, category, serving_size, energy,
                            carbohydrate, protein, fat, sodium, source, manufacturer
-                    FROM nutrition_food_ref
+                    FROM ai_v12_nutrition_food_ref
                     ORDER BY food_name
                     LIMIT :limit
                     """
@@ -443,52 +561,54 @@ class BackendQueryTools:
         record_id: str | int,
         parent_record_id: str | int | None = None,
     ) -> int:
-        try:
-            numeric_record_id = int(record_id)
-        except (TypeError, ValueError) as exc:
-            raise BackendRecordNotFound(f"{resource_type}_not_found") from exc
         with self.engine.connect() as connection:
             if resource_type == "medication_dose_event":
+                resolved = _resolve_external_id(connection, "dose_event", record_id)
+                if resolved is None:
+                    raise BackendRecordNotFound(f"{resource_type}_not_found")
                 version = connection.execute(
                     text(
                         """
                         SELECT version
-                        FROM dose_events
+                        FROM ai_v12_dose_events
                         WHERE id = :record_id AND patient_id = :patient_id
                         """
                     ),
-                    {"record_id": numeric_record_id, "patient_id": patient_id},
+                    {"record_id": resolved[0], "patient_id": patient_id},
                 ).scalar_one_or_none()
             elif resource_type == "nutrition_meal":
+                resolved = _resolve_external_id(connection, "meal", record_id)
+                if resolved is None:
+                    raise BackendRecordNotFound(f"{resource_type}_not_found")
                 version = connection.execute(
                     text(
                         """
                         SELECT version
-                        FROM nutrition_meals
+                        FROM ai_v12_nutrition_meals
                         WHERE id = :record_id AND patient_id = :patient_id
                         """
                     ),
-                    {"record_id": numeric_record_id, "patient_id": patient_id},
+                    {"record_id": resolved[0], "patient_id": patient_id},
                 ).scalar_one_or_none()
             elif resource_type == "nutrition_food":
-                try:
-                    numeric_parent_id = int(parent_record_id)
-                except (TypeError, ValueError) as exc:
-                    raise BackendRecordNotFound("nutrition_food_not_found") from exc
+                resolved = _resolve_external_id(connection, "food", record_id)
+                resolved_parent = _resolve_external_id(connection, "meal", parent_record_id)
+                if resolved is None or resolved_parent is None:
+                    raise BackendRecordNotFound("nutrition_food_not_found")
                 version = connection.execute(
                     text(
                         """
                         SELECT f.version
-                        FROM nutrition_foods f
-                        JOIN nutrition_meals m ON m.id = f.meal_id
+                        FROM ai_v12_nutrition_foods f
+                        JOIN ai_v12_nutrition_meals m ON m.id = f.meal_id
                         WHERE f.id = :record_id
                           AND f.meal_id = :parent_record_id
                           AND m.patient_id = :patient_id
                         """
                     ),
                     {
-                        "record_id": numeric_record_id,
-                        "parent_record_id": numeric_parent_id,
+                        "record_id": resolved[0],
+                        "parent_record_id": resolved_parent[0],
                         "patient_id": patient_id,
                     },
                 ).scalar_one_or_none()
@@ -528,7 +648,7 @@ class BackendQueryTools:
                            interval_minutes, missed_dose_after_minutes,
                            primary_reminder_timing, primary_reminder_offset_minutes,
                            effective_start_date, effective_end_date, active, version
-                    FROM reminder_policies
+                    FROM ai_v12_reminder_policies
                     WHERE {' AND '.join(clauses)}
                     ORDER BY active DESC, effective_start_date DESC, id DESC
                     LIMIT :limit
@@ -594,6 +714,54 @@ class BackendQueryTools:
         return max(1, min(int(value), self.max_rows))
 
 
+def _resolve_external_id(
+    connection,
+    entity_type: str,
+    external_id: Any,
+) -> tuple[str, str] | None:
+    """Resolve public IDs first, with numeric-string lookup only for migration compatibility."""
+
+    value = str(external_id or "").strip()
+    if not value:
+        return None
+    row = connection.execute(
+        text(
+            """
+            SELECT public_id, legacy_id
+            FROM ai_v12_legacy_id_map
+            WHERE entity_type = :entity_type AND public_id = :external_id
+            """
+        ),
+        {"entity_type": entity_type, "external_id": value},
+    ).mappings().first()
+    if row is not None:
+        return str(row["public_id"]), str(row["legacy_id"])
+
+    legacy_id = _legacy_positive_id(value)
+    if legacy_id is None:
+        return None
+    row = connection.execute(
+        text(
+            """
+            SELECT public_id, legacy_id
+            FROM ai_v12_legacy_id_map
+            WHERE entity_type = :entity_type AND legacy_id = :legacy_id
+            """
+        ),
+        {"entity_type": entity_type, "legacy_id": str(legacy_id)},
+    ).mappings().first()
+    if row is None:
+        return None
+    return str(row["public_id"]), str(row["legacy_id"])
+
+
+def _legacy_positive_id(value: str) -> int | None:
+    if not value.isascii() or not value.isdigit():
+        return None
+    parsed = int(value)
+    return parsed if parsed > 0 else None
+
+
 def _read_only_engine(database_url: str) -> Engine:
     url = make_url(database_url)
     if url.drivername.startswith("sqlite"):
@@ -612,6 +780,9 @@ def _read_only_engine(database_url: str) -> Engine:
 
         return engine
 
+    if not url.drivername.startswith("postgresql"):
+        raise ValueError(f"backend_read_database_unsupported_driver:{url.drivername}")
+
     engine = create_engine(database_url, pool_pre_ping=True, future=True)
 
     @event.listens_for(engine, "connect")
@@ -619,6 +790,7 @@ def _read_only_engine(database_url: str) -> Engine:
         cursor = dbapi_connection.cursor()
         cursor.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
         cursor.close()
+        dbapi_connection.commit()
 
     return engine
 

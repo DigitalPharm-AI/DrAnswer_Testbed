@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from html import escape
 from types import SimpleNamespace
 
@@ -16,6 +16,8 @@ from system_app.models import (
     AgentRunTrace,
     ChatMessage,
     DoseEvent,
+    DoseSchedule,
+    MedicationPlan,
     MutationConfirmation,
     Notification,
     NutritionFood,
@@ -24,6 +26,7 @@ from system_app.models import (
 from system_app.services.clock_service import ensure_clock
 from system_app.services.dashboard_view import chat_message_view, sorted_chat_views
 from system_app.services.notification_service import create_notification
+from system_app.services.medication_plan_service import reset_simulation_state
 from system_app.services.patient_profile_service import ensure_base_data
 from system_app.services.timeline_service import add_chat_message
 
@@ -184,16 +187,31 @@ def test_timeline_status_text_uses_status_color_classes():
     client = TestClient(app)
 
     with SessionLocal() as session:
-        ensure_base_data(session)
+        reset_simulation_state(session)
         clock = ensure_clock(session)
         clock.current_time = datetime(2026, 4, 20, 12, 0)
-        session.query(DoseEvent).delete()
+        plan = MedicationPlan(
+            patient_id="demo-patient",
+            medication_name="색상 테스트약",
+            dosage="1정",
+            start_date=date(2026, 4, 20),
+            end_date=date(2026, 4, 20),
+        )
+        session.add(plan)
+        session.flush()
+        schedules = [
+            DoseSchedule(plan_id=plan.id, slot_label="아침 08:00", scheduled_time="08:00"),
+            DoseSchedule(plan_id=plan.id, slot_label="점심 13:00", scheduled_time="13:00"),
+            DoseSchedule(plan_id=plan.id, slot_label="야간 21:00", scheduled_time="21:00"),
+        ]
+        session.add_all(schedules)
+        session.flush()
         session.add_all(
             [
                 DoseEvent(
                     patient_id="demo-patient",
-                    plan_id=1,
-                    schedule_id=1,
+                    plan_id=plan.id,
+                    schedule_id=schedules[0].id,
                     medication_name="색상 테스트약",
                     slot_label="아침 08:00",
                     scheduled_for=datetime(2026, 4, 20, 8, 0),
@@ -201,8 +219,8 @@ def test_timeline_status_text_uses_status_color_classes():
                 ),
                 DoseEvent(
                     patient_id="demo-patient",
-                    plan_id=1,
-                    schedule_id=2,
+                    plan_id=plan.id,
+                    schedule_id=schedules[1].id,
                     medication_name="색상 테스트약",
                     slot_label="점심 13:00",
                     scheduled_for=datetime(2026, 4, 20, 13, 0),
@@ -210,8 +228,8 @@ def test_timeline_status_text_uses_status_color_classes():
                 ),
                 DoseEvent(
                     patient_id="demo-patient",
-                    plan_id=1,
-                    schedule_id=3,
+                    plan_id=plan.id,
+                    schedule_id=schedules[2].id,
                     medication_name="색상 테스트약",
                     slot_label="야간 21:00",
                     scheduled_for=datetime(2026, 4, 20, 21, 0),
@@ -230,22 +248,38 @@ def test_timeline_status_text_uses_status_color_classes():
     assert 'class="dose-status dose-status-missed">missed</span>' in response.text
     assert 'class="dose-status dose-status-taken-after">taken after</span>' in response.text
     assert "late_taken_after_miss" not in response.text
+    with SessionLocal() as session:
+        reset_simulation_state(session)
 
 
 def test_timeline_calendar_selects_date_and_shows_day_records():
     client = TestClient(app)
 
     with SessionLocal() as session:
-        ensure_base_data(session)
+        reset_simulation_state(session)
         clock = ensure_clock(session)
         clock.current_time = datetime(2026, 4, 20, 12, 0)
-        session.query(DoseEvent).delete()
+        plan = MedicationPlan(
+            patient_id="demo-patient",
+            medication_name="달력 테스트약",
+            dosage="1정",
+            start_date=date(2026, 4, 20),
+            end_date=date(2026, 4, 21),
+        )
+        session.add(plan)
+        session.flush()
+        schedules = [
+            DoseSchedule(plan_id=plan.id, slot_label="아침 08:00", scheduled_time="08:00"),
+            DoseSchedule(plan_id=plan.id, slot_label="점심 13:00", scheduled_time="13:00"),
+        ]
+        session.add_all(schedules)
+        session.flush()
         session.add_all(
             [
                 DoseEvent(
                     patient_id="demo-patient",
-                    plan_id=1,
-                    schedule_id=1,
+                    plan_id=plan.id,
+                    schedule_id=schedules[0].id,
                     medication_name="오늘약",
                     slot_label="아침 08:00",
                     scheduled_for=datetime(2026, 4, 20, 8, 0),
@@ -253,8 +287,8 @@ def test_timeline_calendar_selects_date_and_shows_day_records():
                 ),
                 DoseEvent(
                     patient_id="demo-patient",
-                    plan_id=1,
-                    schedule_id=2,
+                    plan_id=plan.id,
+                    schedule_id=schedules[1].id,
                     medication_name="내일약",
                     slot_label="점심 13:00",
                     scheduled_for=datetime(2026, 4, 21, 13, 0),
@@ -275,6 +309,8 @@ def test_timeline_calendar_selects_date_and_shows_day_records():
     assert "dose-calendar-grid" in response.text
     assert "is-selected" in response.text
     assert "has-missed" in response.text
+    with SessionLocal() as session:
+        reset_simulation_state(session)
 
 
 def test_chat_log_partial_uses_js_controlled_refresh_to_preserve_scroll():
@@ -1134,18 +1170,23 @@ def test_dashboard_polling_is_owned_by_active_tab_javascript():
 
 def test_htmx_lite_does_not_treat_polling_containers_as_click_triggers():
     script = open("system_app/static/htmx-lite.js", encoding="utf-8").read()
+    index_template = open("system_app/templates/index.html", encoding="utf-8").read()
 
     assert 'closest("[hx-get], button[hx-post]")' not in script
     assert "function clickTriggerFor" in script
     assert 'button[hx-get]' in script
     assert "submitterAction" in script
+    assert "inFlightSources" in script
+    assert 'dispatch("htmx:responseError"' in script
+    assert "if (!response.ok)" in script
+    assert "showFeedback(responseErrorMessage" in script
+    assert 'id="app-request-feedback"' in index_template
 
 
 def test_styles_make_top_time_value_larger_and_lock_submitted_replies():
     styles = open("system_app/static/styles.css", encoding="utf-8").read()
     agent_styles = open("system_app/static/agent_interactions.css", encoding="utf-8").read()
     script = open("system_app/static/notifications.js", encoding="utf-8").read()
-    policy_script = open("system_app/static/notifications/policy_confirmation.js", encoding="utf-8").read()
 
     assert ".top-time-value" in styles
     assert "font-size: 2.1rem" in styles
@@ -1183,7 +1224,6 @@ def test_styles_make_top_time_value_larger_and_lock_submitted_replies():
     assert "chatLogNeedsPending" in script
     assert "localChatPendingActive" in script
     assert "syncLocalPending" in script
-    assert "createPolicyConfirmationRenderer" in script
     assert "refreshChangedNotificationsLoop" in script
     assert "scheduleChangedNotificationsRefresh" in script
     assert "getPanelRefreshInterval" in script
@@ -1199,8 +1239,8 @@ def test_styles_make_top_time_value_larger_and_lock_submitted_replies():
     assert "return panelRefresher.refreshActiveTabPanels(getActiveTabName())" in script
     assert "return panelRefresher.refreshChangedNotifications(getActiveTabName())" in script
     assert "after_id=${state.lastSeenId}&_=${Date.now()}" in script
-    assert "policyChoicePayload" in policy_script
-    assert "createPolicyChangeTable" in policy_script
+    assert "const serverCursor = Number(payload.last_seen_id || 0)" in script
+    assert "state.lastSeenId = Math.max(state.lastSeenId, serverCursor)" in script
     assert "import { createPanelRefresher }" in script
     assert "installChatLogScrollPreserver(state)" in script
     assert "installAppTabs()" in script
@@ -1213,7 +1253,7 @@ def test_styles_make_top_time_value_larger_and_lock_submitted_replies():
     assert "state.chatScrollForceBottom = true" in script
     assert "hasNewChatPromptNotification" in script
     assert "refreshChatPanel();" in script
-    assert "await Promise.all([refreshChatPanel(), refreshChatHistoryPanel()])" in script
+    assert "await refreshChatPanel()" in script
     assert ".chat-page-shell" in styles
     assert "max-width: none" in styles
     assert ".chat-action-card" in agent_styles
@@ -1240,6 +1280,7 @@ def test_styles_make_top_time_value_larger_and_lock_submitted_replies():
     assert "await Promise.all([popupRefresh, refreshActiveTabPanels(activeTab)])" in panel_refresher
     assert 'replacePanel("/partials/chat", "#chat-panel")' in panel_refresher
     assert 'replacePanel("/partials/chat-log", "#chat-log-region")' in panel_refresher
+    assert "panel.dataset.timelineDate" in panel_refresher
     assert "return Promise.all" in panel_refresher
     assert 'headers: { "HX-Request": "true" }' in panel_refresher
     assert "function refreshChangedNotifications(activeTab)" in panel_refresher

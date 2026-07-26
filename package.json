@@ -1,0 +1,10 @@
+{
+  "name": "da-drug-testbed-browser-tests",
+  "private": true,
+  "scripts": {
+    "test:browser": "python tools/run_ci_browser_test.py"
+  },
+  "devDependencies": {
+    "playwright-core": "1.61.0"
+  }
+}

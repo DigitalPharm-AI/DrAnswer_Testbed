@@ -1,0 +1,677 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "닥터앤서 AI Server v1.2 채팅 및 피드백 연동 API",
+    "version": "1.2",
+    "description": "Backend Server가 저장된 사용자 message_id와 채팅 컨텍스트를 전달하고 AI Server가 검증된 응답을 동기로 반환하며, 검증된 AI 답변에 대한 암호화 피드백을 비동기로 접수하는 API 계약이다."
+  },
+  "paths": {
+    "/agent/sync/chat": {
+      "post": {
+        "summary": "Sync Chat",
+        "operationId": "sync_chat_agent_sync_chat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatSyncRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSyncResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request schema or required field validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer authentication failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The Backend chat message could not be verified.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency or conversation lock conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected AI Server processing error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Backend read database is unavailable or incompatible.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "AI Server processing timed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "AgentSyncBearer": []
+          }
+        ]
+      }
+    },
+    "/agent/async/chat_feedback": {
+      "post": {
+        "summary": "Chat Feedback",
+        "operationId": "chat_feedback_agent_async_chat_feedback_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatFeedbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatFeedbackAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request schema or required field validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer authentication failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The verified AI answer message was not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request_id was reused with another body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Feedback could not be accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Backend read database is unavailable or incompatible.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "AgentSyncBearer": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ChatContractError": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Message"
+          },
+          "retryable": {
+            "type": "boolean",
+            "title": "Retryable"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "retryable"
+        ],
+        "title": "ChatContractError"
+      },
+      "ChatErrorResponse": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ChatContractError"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "title": "ChatErrorResponse"
+      },
+      "ChatFeedbackAccepted": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "accepted",
+            "title": "Status",
+            "default": "accepted"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ChatFeedbackAccepted"
+      },
+      "ChatFeedbackRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Request Id"
+          },
+          "message_id": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Message Id"
+          },
+          "conversation_id": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Conversation Id"
+          },
+          "patient_id": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Patient Id"
+          },
+          "feedback": {
+            "type": "boolean",
+            "title": "Feedback"
+          },
+          "feedback_text": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feedback Text"
+          },
+          "feedback_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Feedback At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "message_id",
+          "conversation_id",
+          "patient_id",
+          "feedback",
+          "feedback_text",
+          "feedback_at"
+        ],
+        "title": "ChatFeedbackRequest"
+      },
+      "ChatInput": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "number",
+              "dropdown"
+            ],
+            "title": "Type"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Label"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "options": {
+            "$ref": "#/components/schemas/ChatInputOptions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "label",
+          "options"
+        ],
+        "title": "ChatInput"
+      },
+      "ChatInputOptions": {
+        "properties": {
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "lower": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lower"
+          },
+          "upper": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upper"
+          },
+          "selections": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selections"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ChatInputOptions"
+      },
+      "ChatMessageContent": {
+        "properties": {
+          "message_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Title"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "tables": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatTable"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tables"
+          },
+          "selections": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selections"
+          },
+          "inputs": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatInput"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inputs"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "message_title",
+          "text",
+          "tables",
+          "selections",
+          "inputs"
+        ],
+        "title": "ChatMessageContent"
+      },
+      "ChatSyncRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Request Id"
+          },
+          "message_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Message Id",
+            "description": "Backend user chat_messages.public_id (opaque string)."
+          },
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Conversation Id"
+          },
+          "patient_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Patient Id"
+          },
+          "requested_return_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "selection_box",
+                  "input_box"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested Return Type"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Message"
+          },
+          "message_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Message At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "message_id",
+          "conversation_id",
+          "patient_id",
+          "requested_return_type",
+          "message",
+          "message_at"
+        ],
+        "title": "ChatSyncRequest"
+      },
+      "ChatSyncResponse": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Request Id"
+          },
+          "message_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Message Id",
+            "description": "Echo of the Backend user chat_messages.public_id."
+          },
+          "message_type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "selection_box",
+              "input_box"
+            ],
+            "title": "Message Type"
+          },
+          "message": {
+            "$ref": "#/components/schemas/ChatMessageContent"
+          },
+          "message_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Message At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "message_id",
+          "message_type",
+          "message",
+          "message_at"
+        ],
+        "title": "ChatSyncResponse"
+      },
+      "ChatTable": {
+        "properties": {
+          "table_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Table Title"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ChatTableRow"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Rows"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "rows"
+        ],
+        "title": "ChatTable"
+      },
+      "ChatTableRow": {
+        "properties": {
+          "column": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Column"
+          },
+          "value": {
+            "type": "string",
+            "title": "Value"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "column",
+          "value"
+        ],
+        "title": "ChatTableRow"
+      }
+    },
+    "securitySchemes": {
+      "AgentSyncBearer": {
+        "type": "http",
+        "description": "Backend Server가 AI Server v1.2 동기 채팅 API를 호출할 때 사용하는 Bearer token",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "x-data-boundary": {
+    "message_id": "Backend DB에 먼저 저장된 user chat_messages.public_id (opaque string)",
+    "backend_read": "AI Server의 고정 파라미터 쿼리 Tool만 read-only DB 계정으로 수행",
+    "backend_write": "AI Server Tool이 Backend v1.2 write API를 동기로 호출",
+    "agent_state": "trace, tool execution, idempotency state는 AI 내부 DB에만 저장",
+    "feedback": "AI 답변 message_id와 환자·대화를 Backend read view로 검증하고 자유문은 AI DB에 AES-256-GCM ciphertext로만 저장",
+    "llm_direct_access": false
+  }
+}

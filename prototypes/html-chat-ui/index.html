@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>닥터앤서 AI 복약 케어 · HTML 프로토타입</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./app.js" defer></script>
+</head>
+<body data-active-tab="home">
+  <div
+    id="prototype-toast"
+    class="prototype-toast"
+    role="status"
+    aria-live="polite"
+    aria-atomic="true"
+    hidden></div>
+
+  <header class="top-time-bar">
+    <div class="top-time-inner">
+      <div class="top-time-copy">
+        <div class="top-time-controls" aria-label="시뮬레이션 제어">
+          <button class="control-button is-active" type="button" data-simulation-action="start">시작</button>
+          <button class="control-button ghost" type="button" data-simulation-action="pause">정지</button>
+          <span class="status-pill">실행 중</span>
+        </div>
+        <time class="top-time-value" datetime="2026-07-26T09:30:00+09:00">2026-07-26 09:30</time>
+        <span class="speed-label">배속 60분/초</span>
+        <div class="top-time-meta">
+          <span class="prototype-label">HTML PROTOTYPE</span>
+          <span class="connection-state"><span aria-hidden="true"></span> AI Server 연결됨</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="page-shell">
+    <header class="hero">
+      <div class="hero-main">
+        <p class="eyebrow">DRANSWER MEDICATION CARE</p>
+        <h1>닥터앤서 AI 복약 케어 테스트</h1>
+      </div>
+    </header>
+
+    <div class="app-navigation">
+      <nav class="app-tabs" aria-label="주요 화면">
+        <button
+          class="app-tab is-active"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="home-page"
+          data-tab-target="home-page">HOME</button>
+        <button
+          class="app-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="chat-page"
+          data-tab-target="chat-page">Chat</button>
+      </nav>
+    </div>
+
+    <main>
+      <section
+        id="home-page"
+        class="page-tab-panel is-active"
+        role="tabpanel"
+        aria-label="홈 화면">
+        <div class="app-layout">
+          <aside class="sidebar-stack">
+            <section class="panel medication-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-kicker">MEDICATION</p>
+                  <h2>오늘 복약 등록</h2>
+                </div>
+              </div>
+
+              <div class="medication-list" aria-label="오늘 등록된 복약">
+                <article class="medication-item is-complete">
+                  <div>
+                    <strong>메트포르민 500mg</strong>
+                  </div>
+                  <div class="medication-label-column">
+                    <span class="medication-category-badge diabetes">당뇨약</span>
+                    <span class="item-state">복용</span>
+                  </div>
+                </article>
+                <article class="medication-item">
+                  <div>
+                    <strong>암로디핀 5mg</strong>
+                  </div>
+                  <div class="medication-label-column">
+                    <span class="medication-category-badge hypertension">고혈압약</span>
+                    <span class="item-state">예정</span>
+                  </div>
+                </article>
+                <article class="medication-item">
+                  <div>
+                    <strong>수니티닙 50mg</strong>
+                  </div>
+                  <div class="medication-label-column">
+                    <span class="medication-category-badge kidney-cancer">신장암 치료약</span>
+                    <span class="item-state">예정</span>
+                  </div>
+                </article>
+                <article class="medication-item">
+                  <div>
+                    <strong>레트로졸 2.5mg</strong>
+                  </div>
+                  <div class="medication-label-column">
+                    <span class="medication-category-badge breast-cancer">유방암 치료약</span>
+                    <span class="item-state">예정</span>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section class="panel simulation-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-kicker">TESTBED</p>
+                  <h2>시뮬레이션 시간</h2>
+                </div>
+                <span class="badge success">실행 중</span>
+              </div>
+              <div class="simulation-clock">
+                <span>현재 시각</span>
+                <strong>09:30</strong>
+                <small>실행 중에는 1초마다 60분씩 진행합니다.</small>
+              </div>
+              <div class="button-grid">
+                <button type="button" data-advance-minutes="30">30분 진행</button>
+                <button type="button" data-advance-minutes="180">3시간 진행</button>
+              </div>
+            </section>
+          </aside>
+
+          <section class="content-shell">
+            <div class="main-column">
+              <section class="panel timeline-panel">
+                <div class="panel-header">
+                  <div>
+                    <p class="panel-kicker">TODAY</p>
+                    <h2>복약 타임라인</h2>
+                    <p class="panel-subtitle">2026년 7월 26일 일요일</p>
+                  </div>
+                  <button class="compact-button ghost" type="button" data-demo-message="날짜 선택기는 프로토타입에서 생략했습니다.">
+                    날짜 선택
+                  </button>
+                </div>
+
+                <div class="timeline-scroll" tabindex="0" aria-label="오늘 복약 일정, 4개 이후 스크롤">
+                  <ol class="timeline">
+                    <li class="timeline-item status-taken">
+                      <div class="timeline-marker" aria-hidden="true"></div>
+                      <time datetime="2026-07-26T08:00:00+09:00">08:00</time>
+                      <div class="timeline-content">
+                        <strong>아침 복약 완료</strong>
+                        <p>메트포르민 500mg · 당뇨약</p>
+                      </div>
+                      <span class="tiny-badge success">복용</span>
+                    </li>
+                    <li class="timeline-item status-upcoming">
+                      <div class="timeline-marker" aria-hidden="true"></div>
+                      <time datetime="2026-07-26T09:00:00+09:00">09:00</time>
+                      <div class="timeline-content">
+                        <strong>아침 복약</strong>
+                        <p>암로디핀 5mg · 고혈압약</p>
+                      </div>
+                      <button class="compact-button" type="button" data-demo-message="아침 복약을 완료로 기록했습니다.">복용 기록</button>
+                    </li>
+                    <li class="timeline-item status-upcoming">
+                      <div class="timeline-marker" aria-hidden="true"></div>
+                      <time datetime="2026-07-26T13:00:00+09:00">13:00</time>
+                      <div class="timeline-content">
+                        <strong>점심 복약</strong>
+                        <p>수니티닙 50mg · 신장암 치료약</p>
+                      </div>
+                      <span class="tiny-badge">예정</span>
+                    </li>
+                    <li class="timeline-item status-upcoming">
+                      <div class="timeline-marker" aria-hidden="true"></div>
+                      <time datetime="2026-07-26T18:00:00+09:00">18:00</time>
+                      <div class="timeline-content">
+                        <strong>저녁 복약</strong>
+                        <p>레트로졸 2.5mg · 유방암 치료약</p>
+                      </div>
+                      <span class="tiny-badge">예정</span>
+                    </li>
+                    <li class="timeline-item status-upcoming">
+                      <div class="timeline-marker" aria-hidden="true"></div>
+                      <time datetime="2026-07-26T18:30:00+09:00">18:30</time>
+                      <div class="timeline-content">
+                        <strong>오늘 복약 확인</strong>
+                        <p>등록된 복약 일정의 완료 여부를 확인합니다.</p>
+                      </div>
+                      <span class="tiny-badge">확인</span>
+                    </li>
+                  </ol>
+                </div>
+              </section>
+
+              <section class="panel nutrition-panel">
+                <div class="panel-header">
+                  <div>
+                    <p class="panel-kicker">NUTRITION</p>
+                    <h2>오늘 영양 상태</h2>
+                    <p class="panel-subtitle">식사 1건 기록</p>
+                  </div>
+                  <span class="badge success">정상</span>
+                </div>
+                <div class="nutrition-grid">
+                  <article class="nutrition-card">
+                    <div><strong>칼로리</strong><span>48%</span></div>
+                    <p><b>1,040</b> / 2,168 kcal</p>
+                    <div class="metric-bar"><span style="width:48%"></span></div>
+                  </article>
+                  <article class="nutrition-card">
+                    <div><strong>단백질</strong><span>42%</span></div>
+                    <p><b>21.4</b> / 50.9 g</p>
+                    <div class="metric-bar"><span style="width:42%"></span></div>
+                  </article>
+                  <article class="nutrition-card">
+                    <div><strong>나트륨</strong><span>37%</span></div>
+                    <p><b>740</b> / 2,000 mg</p>
+                    <div class="metric-bar"><span style="width:37%"></span></div>
+                  </article>
+                  <article class="nutrition-card">
+                    <div><strong>지방</strong><span>36%</span></div>
+                    <p><b>21.8</b> / 60.2 g</p>
+                    <div class="metric-bar"><span style="width:36%"></span></div>
+                  </article>
+                </div>
+                <div class="meal-summary">
+                  <span class="meal-icon" aria-hidden="true">점심</span>
+                  <div>
+                    <strong>현미밥 · 된장국 · 시금치나물</strong>
+                    <p>12:12 기록 · 620 kcal</p>
+                  </div>
+                  <button class="text-button" type="button" data-open-chat-message="오늘 점심 영양 상태를 설명해줘">AI에게 질문</button>
+                </div>
+              </section>
+            </div>
+
+            <aside class="monitor-column">
+              <section class="panel policy-panel">
+                <div class="panel-header">
+                  <div>
+                    <p class="panel-kicker">POLICY</p>
+                    <h2>활성 알림 정책</h2>
+                  </div>
+                  <span class="badge neutral">2개 정책</span>
+                </div>
+                <article class="policy-card">
+                  <div class="policy-card-head">
+                    <strong>복약 예정 알림</strong>
+                    <label class="switch">
+                      <input type="checkbox" checked aria-label="복약 예정 알림 켜기">
+                      <span></span>
+                    </label>
+                  </div>
+                  <p>복약 시간 30분 전에 알려드려요.</p>
+                  <div class="policy-meta">
+                    <span>매일</span><span>30분 전</span><span>앱 알림</span>
+                  </div>
+                </article>
+                <article class="policy-card">
+                  <div class="policy-card-head">
+                    <strong>미복용 확인 대화</strong>
+                    <label class="switch">
+                      <input type="checkbox" checked aria-label="미복용 확인 대화 켜기">
+                      <span></span>
+                    </label>
+                  </div>
+                  <p>복약 기록이 없으면 AI가 이유를 확인해요.</p>
+                  <div class="policy-meta">
+                    <span>90분 후</span><span>AI 대화</span>
+                  </div>
+                </article>
+              </section>
+
+              <section class="panel notification-panel">
+                <div class="panel-header">
+                  <div>
+                    <p class="panel-kicker orange">NOTIFICATION</p>
+                    <h2>알림 센터</h2>
+                  </div>
+                  <span class="badge notify">2건</span>
+                </div>
+                <div class="notification-list">
+                  <article class="notification is-new">
+                    <div class="notification-icon" aria-hidden="true">!</div>
+                    <div>
+                      <div class="notification-title">
+                        <strong>점심 복약 예정</strong>
+                        <time datetime="2026-07-26T12:30:00+09:00">12:30</time>
+                      </div>
+                      <p>메트포르민 500mg 복약 시간이 30분 남았습니다.</p>
+                      <button class="text-button" type="button" data-open-chat-message="점심 약은 식사 후 언제 먹는 게 좋아?">AI에게 질문</button>
+                    </div>
+                  </article>
+                  <article class="notification">
+                    <div class="notification-icon is-soft" aria-hidden="true">✓</div>
+                    <div>
+                      <div class="notification-title">
+                        <strong>아침 복약 기록</strong>
+                        <time datetime="2026-07-26T08:03:00+09:00">08:03</time>
+                      </div>
+                      <p>아침 복약이 정상적으로 기록되었습니다.</p>
+                    </div>
+                  </article>
+                </div>
+                <button class="wide-button notify-outline" type="button" data-demo-message="모든 알림을 확인 처리했습니다.">
+                  모두 확인
+                </button>
+              </section>
+            </aside>
+          </section>
+        </div>
+      </section>
+
+      <section
+        id="chat-page"
+        class="page-tab-panel"
+        role="tabpanel"
+        aria-label="AI 채팅 화면"
+        hidden>
+        <section class="panel chat-panel">
+          <div class="panel-header chat-panel-header">
+            <div>
+              <p class="panel-kicker">AI CHAT</p>
+              <h2>에이전트와의 대화</h2>
+            </div>
+          </div>
+
+          <div class="chat-layout">
+            <div class="conversation-shell">
+              <div
+                id="chat-log"
+                class="chat-log"
+                role="log"
+                aria-live="polite"
+                aria-label="대화 내용">
+                <div class="date-divider" data-conversation-date="2026-07-25">
+                  <time datetime="2026-07-25">2026년 7월 25일 토요일</time>
+                </div>
+
+                <article class="chat-message user">
+                  <div class="message-column">
+                    <div class="message-meta user-meta">
+                      <span>오후 6:42</span>
+                      <strong>나</strong>
+                    </div>
+                    <div class="message-bubble">
+                      <p>저녁에 레트로졸을 복용했어. 복용 완료로 기록해줘.</p>
+                    </div>
+                  </div>
+                </article>
+
+                <article
+                  class="chat-message assistant"
+                  data-message-id="assistant_msg_001"
+                  data-message-type="selection_box">
+                  <div class="avatar ai-avatar" aria-hidden="true">AI</div>
+                  <div class="message-column">
+                    <div class="message-meta">
+                      <strong>닥터앤서 AI</strong>
+                      <span>오후 6:42</span>
+                    </div>
+                    <div class="message-bubble">
+                      <div class="contract-message">
+                        <h3 class="contract-message-title">복약 기록 변경</h3>
+                        <div class="contract-message-text">
+                          <p>아래 복약 일정을 완료 상태로 기록할까요?</p>
+                        </div>
+                        <div class="contract-message-tables">
+                          <section class="contract-table">
+                            <h4>변경 대상</h4>
+                            <dl>
+                              <div><dt>약품</dt><dd>레트로졸 2.5mg</dd></div>
+                              <div><dt>복약 시각</dt><dd>18:00</dd></div>
+                              <div><dt>변경 상태</dt><dd>예정 → 복용 완료</dd></div>
+                            </dl>
+                          </section>
+                        </div>
+                        <div class="contract-message-selections result-selection">
+                          <div class="selection-buttons">
+                            <button class="is-selected" type="button" data-selection-value="변경 적용" disabled>변경 적용</button>
+                            <button type="button" data-selection-value="취소" disabled>취소</button>
+                          </div>
+                          <p class="selection-result">변경 적용으로 응답했습니다.</p>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="message-feedback" aria-label="AI 답변 평가">
+                      <button class="reaction-button" type="button" data-rating="like" aria-pressed="false">
+                        <span aria-hidden="true">👍</span><span>좋아요</span>
+                      </button>
+                      <button class="reaction-button" type="button" data-rating="dislike" aria-pressed="false">
+                        <span aria-hidden="true">👎</span><span>싫어요</span>
+                      </button>
+                      <button class="feedback-link" type="button" data-feedback-toggle>의견 남기기</button>
+                      <span class="feedback-status" aria-live="polite"></span>
+                    </div>
+                    <form class="inline-feedback-form" hidden>
+                      <label>
+                        <span>이 답변에 대한 의견을 알려주세요 <small>선택 입력</small></span>
+                        <textarea maxlength="4000" rows="3" placeholder="답변에서 좋았던 점이나 개선이 필요한 내용을 적어주세요."></textarea>
+                      </label>
+                      <div class="feedback-form-footer">
+                        <span class="character-count">0 / 4,000</span>
+                        <div>
+                          <button class="compact-button ghost" type="button" data-feedback-cancel>취소</button>
+                          <button class="compact-button" type="submit">의견 보내기</button>
+                        </div>
+                      </div>
+                    </form>
+                  </div>
+                </article>
+
+                <article class="chat-message user">
+                  <div class="message-column">
+                    <div class="message-meta user-meta">
+                      <span>오후 6:43</span>
+                      <strong>나</strong>
+                    </div>
+                    <div class="message-bubble">
+                      <p>변경 적용</p>
+                    </div>
+                  </div>
+                </article>
+
+                <article
+                  class="chat-message assistant"
+                  data-message-id="assistant_msg_002"
+                  data-message-type="text">
+                  <div class="avatar ai-avatar" aria-hidden="true">AI</div>
+                  <div class="message-column">
+                    <div class="message-meta">
+                      <strong>닥터앤서 AI</strong>
+                      <span>오후 6:43</span>
+                    </div>
+                    <div class="message-bubble">
+                      <div class="contract-message">
+                        <h3 class="contract-message-title">복약 기록 완료</h3>
+                        <div class="contract-message-text">
+                          <p>레트로졸 복약 상태를 완료로 기록했습니다.</p>
+                        </div>
+                        <div class="contract-message-tables">
+                          <section class="contract-table">
+                            <h4>처리 결과</h4>
+                            <dl>
+                              <div><dt>약품</dt><dd>레트로졸 2.5mg</dd></div>
+                              <div><dt>복약 시각</dt><dd>18:00</dd></div>
+                              <div><dt>상태</dt><dd>복용 완료</dd></div>
+                            </dl>
+                          </section>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="message-feedback" aria-label="AI 답변 평가">
+                      <button class="reaction-button is-selected" type="button" data-rating="like" aria-pressed="true">
+                        <span aria-hidden="true">👍</span><span>좋아요</span>
+                      </button>
+                      <button class="reaction-button" type="button" data-rating="dislike" aria-pressed="false">
+                        <span aria-hidden="true">👎</span><span>싫어요</span>
+                      </button>
+                      <button class="feedback-link" type="button" data-feedback-toggle>의견 남기기</button>
+                      <span class="feedback-status">평가 전송됨</span>
+                    </div>
+                    <form class="inline-feedback-form" hidden>
+                      <label>
+                        <span>이 답변에 대한 의견을 알려주세요 <small>선택 입력</small></span>
+                        <textarea maxlength="4000" rows="3" placeholder="답변에서 좋았던 점이나 개선이 필요한 내용을 적어주세요."></textarea>
+                      </label>
+                      <div class="feedback-form-footer">
+                        <span class="character-count">0 / 4,000</span>
+                        <div>
+                          <button class="compact-button ghost" type="button" data-feedback-cancel>취소</button>
+                          <button class="compact-button" type="submit">의견 보내기</button>
+                        </div>
+                      </div>
+                    </form>
+                  </div>
+                </article>
+
+                <div class="date-divider" data-conversation-date="2026-07-26">
+                  <time datetime="2026-07-26">2026년 7월 26일 일요일</time>
+                </div>
+
+                <article class="chat-message user">
+                  <div class="message-column">
+                    <div class="message-meta user-meta">
+                      <span>오전 9:25</span>
+                      <strong>나</strong>
+                    </div>
+                    <div class="message-bubble">
+                      <p>아침 복약 알림을 20분 전에 받도록 바꾸고 싶어.</p>
+                    </div>
+                  </div>
+                </article>
+
+                <article
+                  class="chat-message assistant"
+                  data-message-id="assistant_msg_003"
+                  data-message-type="input_box">
+                  <div class="avatar ai-avatar" aria-hidden="true">AI</div>
+                  <div class="message-column">
+                    <div class="message-meta">
+                      <strong>닥터앤서 AI</strong>
+                      <span>오전 9:25</span>
+                    </div>
+                    <div class="message-bubble">
+                      <div class="contract-message">
+                        <h3 class="contract-message-title">복약 알림 정책 변경</h3>
+                        <div class="contract-message-text">
+                          <p>변경할 복약 시점과 알림 시간을 확인해 주세요.</p>
+                        </div>
+                        <div class="contract-message-tables">
+                          <section class="contract-table">
+                            <h4>현재 알림 정책</h4>
+                            <dl>
+                              <div><dt>복약 시점</dt><dd>아침</dd></div>
+                              <div><dt>알림 시간</dt><dd>복약 30분 전</dd></div>
+                            </dl>
+                          </section>
+                        </div>
+                        <form class="contract-message-inputs result-input-form">
+                          <div class="result-input-grid">
+                            <label>
+                              <span>복약 시점</span>
+                              <select name="복약 시점" required>
+                                <option selected>아침</option>
+                                <option>점심</option>
+                                <option>저녁</option>
+                              </select>
+                            </label>
+                            <label>
+                              <span>알림 시간</span>
+                              <span class="input-with-unit">
+                                <input name="알림 시간" type="number" min="0" max="180" value="20" required>
+                                <span>분 전</span>
+                              </span>
+                            </label>
+                          </div>
+                          <div class="result-submit-row">
+                            <button class="compact-button" type="submit">입력값 보내기</button>
+                            <span class="input-result-status" role="status"></span>
+                          </div>
+                        </form>
+                      </div>
+                    </div>
+                    <div class="message-feedback" aria-label="AI 답변 평가">
+                      <button class="reaction-button" type="button" data-rating="like" aria-pressed="false">
+                        <span aria-hidden="true">👍</span><span>좋아요</span>
+                      </button>
+                      <button class="reaction-button" type="button" data-rating="dislike" aria-pressed="false">
+                        <span aria-hidden="true">👎</span><span>싫어요</span>
+                      </button>
+                      <button class="feedback-link" type="button" data-feedback-toggle>의견 남기기</button>
+                      <span class="feedback-status" aria-live="polite"></span>
+                    </div>
+                    <form class="inline-feedback-form" hidden>
+                      <label>
+                        <span>이 답변에 대한 의견을 알려주세요 <small>선택 입력</small></span>
+                        <textarea maxlength="4000" rows="3" placeholder="답변에서 좋았던 점이나 개선이 필요한 내용을 적어주세요."></textarea>
+                      </label>
+                      <div class="feedback-form-footer">
+                        <span class="character-count">0 / 4,000</span>
+                        <div>
+                          <button class="compact-button ghost" type="button" data-feedback-cancel>취소</button>
+                          <button class="compact-button" type="submit">의견 보내기</button>
+                        </div>
+                      </div>
+                    </form>
+                  </div>
+                </article>
+              </div>
+
+              <div class="quick-prompts" aria-label="빠른 질문">
+                <span>빠른 질문</span>
+                <button type="button" data-quick-prompt="오늘 남은 복약 일정을 알려줘">오늘 남은 복약</button>
+                <button type="button" data-quick-prompt="메스꺼움과 약의 관련성을 설명해줘">부작용 문의</button>
+                <button type="button" data-quick-prompt="오늘 영양 상태를 요약해줘">영양 요약</button>
+              </div>
+
+              <form id="chat-form" class="chat-composer">
+                <label class="visually-hidden" for="chat-message-input">AI 에이전트에게 질문하기</label>
+                <textarea
+                  id="chat-message-input"
+                  rows="1"
+                  maxlength="2000"
+                  placeholder="복약, 증상, 식사 기록에 대해 질문해 주세요."
+                  required></textarea>
+                <button type="submit" aria-label="메시지 보내기">
+                  <span>보내기</span>
+                  <span aria-hidden="true">→</span>
+                </button>
+              </form>
+            </div>
+
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

@@ -5,9 +5,10 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from shared.json_utils import dump_json, parse_json_object
 from shared.settings import get_settings
 from shared.time_utils import utc_now
-from system_app.models import DoseEvent, MissedDoseFlag
+from system_app.models import DoseEvent, MissedDoseFlag, Notification
 
 settings = get_settings()
 
@@ -86,5 +87,22 @@ def _clear_flag(session: Session, flag: MissedDoseFlag, cleared_at: datetime, re
     flag.cleared_at = cleared_at
     flag.clear_reason = reason
     flag.updated_at = utc_now()
+    if flag.related_dose_event_id is not None:
+        prompts = session.scalars(
+            select(Notification).where(
+                Notification.notification_type == "conversation_alert",
+                Notification.related_dose_event_id == flag.related_dose_event_id,
+                Notification.acknowledged.is_(False),
+            )
+        ).all()
+        for prompt in prompts:
+            metadata = parse_json_object(prompt.metadata_json)
+            if metadata.get("category") != "missed_dose":
+                continue
+            metadata["status"] = "superseded"
+            metadata["superseded_reason"] = reason
+            metadata["resolved_at"] = cleared_at.isoformat()
+            prompt.metadata_json = dump_json(metadata)
+            prompt.acknowledged = True
     session.flush()
     return flag

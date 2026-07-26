@@ -66,6 +66,10 @@ class AgentTraceStore:
                     expires_at=expires_at,
                 )
                 session.add(trace)
+                # AgentRunStep references trace_id. Without an ORM relationship,
+                # SQLAlchemy may otherwise flush the step before its new parent
+                # when SQLite/PostgreSQL foreign keys are enforced.
+                session.flush()
             else:
                 trace.status = "PROCESSING"
                 trace.updated_at = now

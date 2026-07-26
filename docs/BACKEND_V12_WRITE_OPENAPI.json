@@ -80,6 +80,26 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Backend write dependency is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordChangeResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Backend write processing timed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordChangeResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -156,6 +176,26 @@
           },
           "500": {
             "description": "Unexpected Backend processing error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationPolicyChangeResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Backend write dependency is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationPolicyChangeResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Backend write processing timed out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -265,7 +305,8 @@
           "confirmation_message_id": {
             "type": "string",
             "minLength": 1,
-            "title": "Confirmation Message Id"
+            "title": "Confirmation Message Id",
+            "description": "Confirmed user chat_messages.public_id (opaque string)."
           },
           "patient_id": {
             "type": "string",
@@ -715,7 +756,8 @@
           "confirmation_message_id": {
             "type": "string",
             "minLength": 1,
-            "title": "Confirmation Message Id"
+            "title": "Confirmation Message Id",
+            "description": "Confirmed user chat_messages.public_id (opaque string)."
           },
           "patient_id": {
             "type": "string",
@@ -749,7 +791,8 @@
                 "type": "null"
               }
             ],
-            "title": "Record Id"
+            "title": "Record Id",
+            "description": "Target resource public opaque ID."
           },
           "parent_record_id": {
             "anyOf": [
@@ -760,7 +803,8 @@
                 "type": "null"
               }
             ],
-            "title": "Parent Record Id"
+            "title": "Parent Record Id",
+            "description": "Parent resource public opaque ID when required."
           },
           "expected_version": {
             "anyOf": [
@@ -880,7 +924,8 @@
           "record_id": {
             "type": "string",
             "minLength": 1,
-            "title": "Record Id"
+            "title": "Record Id",
+            "description": "Target resource public opaque ID."
           },
           "parent_record_id": {
             "anyOf": [
@@ -891,7 +936,8 @@
                 "type": "null"
               }
             ],
-            "title": "Parent Record Id"
+            "title": "Parent Record Id",
+            "description": "Parent resource public opaque ID when required."
           },
           "version": {
             "anyOf": [

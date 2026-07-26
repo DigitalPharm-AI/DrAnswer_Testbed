@@ -12,8 +12,8 @@ import httpx
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
-from agent_app.tools.catalog import ToolCatalog
-from agent_app.tools.names import (
+from shared.tool_catalog import ToolCatalog
+from shared.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
@@ -30,7 +30,7 @@ from agent_app.tools.names import (
     UPSERT_NUTRITION_PREFERENCE_FACT,
     canonical_tool_name,
 )
-from agent_app.tools.permissions import requires_human_handoff
+from shared.tool_permissions import requires_human_handoff
 from shared.json_utils import parse_json_object
 from shared.eval_cases import (
     DEFAULT_EVAL_BACKLOG_PATH,
@@ -1077,14 +1077,14 @@ def _tool_catalog_item(tool: dict[str, Any]) -> dict[str, Any]:
     domain = _tool_domain(name)
     side_effect = _tool_side_effect(name)
     risk = _tool_risk(name, side_effect)
-    freshness = _tool_freshness_probe(name, "agent_app/tools/catalog.py")
+    freshness = _tool_freshness_probe(name, "shared/tool_catalog.py")
     handoff_required = requires_human_handoff(name)
     return {
         "name": name,
         "title": tool.get("title") or name,
         "domain": domain,
         "owner": _tool_owner(domain),
-        "source": "agent_app/tools/catalog.py",
+        "source": "shared/tool_catalog.py",
         "freshness": freshness["label"],
         "freshness_status": freshness["status"],
         "freshness_checked_at": freshness["checked_at"],

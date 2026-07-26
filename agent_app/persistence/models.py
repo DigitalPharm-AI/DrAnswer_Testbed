@@ -202,6 +202,51 @@ class AgentToolExecution(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
 
 
+class AgentBackendWriteRequest(Base):
+    """Restart-safe state for one idempotent AI -> Backend write request."""
+
+    __tablename__ = "agent_backend_write_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "request_id",
+            name="uq_agent_backend_write_requests_request",
+        ),
+        UniqueConstraint(
+            "source_chat_request_id",
+            "tool_name",
+            "argument_hash",
+            "trusted_context_hash",
+            name="uq_agent_backend_write_requests_logical_call",
+        ),
+        Index(
+            "ix_agent_backend_write_requests_source_status",
+            "source_chat_request_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(160), index=True)
+    source_chat_request_id: Mapped[str] = mapped_column(String(160), index=True)
+    conversation_id_hash: Mapped[str] = mapped_column(String(64), default="")
+    trusted_context_hash: Mapped[str] = mapped_column(String(64))
+    tool_call_id: Mapped[str] = mapped_column(String(180))
+    tool_name: Mapped[str] = mapped_column(String(160), index=True)
+    argument_hash: Mapped[str] = mapped_column(String(64))
+    expected_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), index=True, default="PREPARED")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    response_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_json: Mapped[str] = mapped_column(Text, default="")
+    response_hash: Mapped[str] = mapped_column(String(64), default="")
+    error_code: Mapped[str] = mapped_column(String(80), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
 class AgentPendingAction(Base):
     __tablename__ = "agent_pending_actions"
     __table_args__ = (
@@ -259,17 +304,28 @@ class AgentFeedbackLink(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     api_path: Mapped[str] = mapped_column(String(160))
     request_id: Mapped[str] = mapped_column(String(160), index=True)
+    request_hash: Mapped[str] = mapped_column(String(64), default="")
     message_id: Mapped[str] = mapped_column(String(160), index=True)
     conversation_id: Mapped[str] = mapped_column(String(160), index=True)
     patient_id_hash: Mapped[str] = mapped_column(String(64), index=True)
     trace_id: Mapped[str] = mapped_column(String(160), default="", index=True)
-    feedback: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    feedback: Mapped[bool] = mapped_column(Boolean)
     feedback_text_ciphertext: Mapped[str] = mapped_column(Text, default="")
     feedback_text_hash: Mapped[str] = mapped_column(String(64), default="")
     encryption_key_id: Mapped[str] = mapped_column(String(120), default="")
     status: Mapped[str] = mapped_column(String(32), index=True, default="ACCEPTED")
     error_code: Mapped[str] = mapped_column(String(80), default="")
+    response_status: Mapped[int] = mapped_column(Integer, default=202)
+    response_json: Mapped[str] = mapped_column(Text, default='{"status":"accepted"}')
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
     feedback_at: Mapped[datetime] = mapped_column(DateTime)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+        index=True,
+    )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

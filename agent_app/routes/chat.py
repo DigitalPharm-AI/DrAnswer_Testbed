@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from agent_app import trace_logging
 from agent_app.errors import AgentExecutionError
 from agent_app.integration.chat_contracts import (
+    ChatErrorResponse,
     ChatSyncRequest,
     ChatSyncResponse,
     agent_chat_payload,
@@ -34,6 +35,15 @@ from shared.settings import get_settings
 
 router = APIRouter()
 SYNC_CHAT_PATH = "/agent/sync/chat"
+SYNC_CHAT_RESPONSES = {
+    400: {"model": ChatErrorResponse, "description": "Request schema or required field validation failed."},
+    401: {"model": ChatErrorResponse, "description": "Bearer authentication failed."},
+    404: {"model": ChatErrorResponse, "description": "The Backend chat message could not be verified."},
+    409: {"model": ChatErrorResponse, "description": "Idempotency or conversation lock conflict."},
+    500: {"model": ChatErrorResponse, "description": "Unexpected AI Server processing error."},
+    503: {"model": ChatErrorResponse, "description": "Backend read database is unavailable or incompatible."},
+    504: {"model": ChatErrorResponse, "description": "AI Server processing timed out."},
+}
 
 _orchestrator_getter: Callable[[], AgentLangGraphNativeOrchestrator] | None = None
 _sync_session_factory_getter: Callable[[], sessionmaker[Session]] | None = None
@@ -88,6 +98,7 @@ def _backend_query_tools() -> BackendQueryTools | None:
 @router.post(
     SYNC_CHAT_PATH,
     response_model=ChatSyncResponse,
+    responses=SYNC_CHAT_RESPONSES,
     dependencies=[Depends(require_agent_sync_bearer_token)],
 )
 async def sync_chat(payload: ChatSyncRequest) -> JSONResponse:
@@ -123,39 +134,54 @@ async def sync_chat(payload: ChatSyncRequest) -> JSONResponse:
     internal_trace_id = str(uuid4())
     backend_context: dict[str, Any] = {}
     backend_queries = _backend_query_tools()
-    if backend_queries is not None:
-        try:
-            backend_context = await asyncio.to_thread(
-                backend_queries.validate_chat_message,
-                payload,
-            )
-        except BackendChatMessageNotFound:
-            return _final_chat_error(
-                gate,
-                trace_store,
-                payload,
-                code="BACKEND_MESSAGE_NOT_FOUND",
-                message="The Backend chat message could not be verified.",
-                trace_id=internal_trace_id,
-                status_code=404,
-                retryable=False,
-            )
-        except Exception as exc:
-            trace_logging.log_info(
-                "agent_backend_read_failed",
-                request_id=payload.request_id,
-                error=safe_exception_summary(exc, limit=300),
-            )
-            return _final_chat_error(
-                gate,
-                trace_store,
-                payload,
-                code="BACKEND_DB_UNAVAILABLE",
-                message="The Backend read database is temporarily unavailable.",
-                trace_id=internal_trace_id,
-                status_code=503,
-                retryable=True,
-            )
+    if backend_queries is None:
+        trace_logging.log_info(
+            "agent_backend_read_unavailable",
+            request_id=payload.request_id,
+            reason="backend_query_tools_not_configured",
+        )
+        return _final_chat_error(
+            gate,
+            trace_store,
+            payload,
+            code="BACKEND_DB_UNAVAILABLE",
+            message="The Backend read database is temporarily unavailable.",
+            trace_id=internal_trace_id,
+            status_code=503,
+            retryable=True,
+        )
+    try:
+        backend_context = await asyncio.to_thread(
+            backend_queries.validate_chat_message,
+            payload,
+        )
+    except BackendChatMessageNotFound:
+        return _final_chat_error(
+            gate,
+            trace_store,
+            payload,
+            code="BACKEND_MESSAGE_NOT_FOUND",
+            message="The Backend chat message could not be verified.",
+            trace_id=internal_trace_id,
+            status_code=404,
+            retryable=False,
+        )
+    except Exception as exc:
+        trace_logging.log_info(
+            "agent_backend_read_failed",
+            request_id=payload.request_id,
+            error=safe_exception_summary(exc, limit=300),
+        )
+        return _final_chat_error(
+            gate,
+            trace_store,
+            payload,
+            code="BACKEND_DB_UNAVAILABLE",
+            message="The Backend read database is temporarily unavailable.",
+            trace_id=internal_trace_id,
+            status_code=503,
+            retryable=True,
+        )
     try:
         gate.bind_trace(payload, internal_trace_id)
         trace_store.start_chat(

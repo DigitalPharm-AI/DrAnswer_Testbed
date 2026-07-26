@@ -73,21 +73,25 @@ class BackendV12Client:
         )
 
     async def change_record(self, request: RecordChangeRequest) -> RecordChangeResponse:
-        return await self._post(
+        response = await self._post(
             self.record_change_path,
             request.model_dump(mode="json"),
             RecordChangeResponse,
         )
+        self._validate_record_correlation(request, response)
+        return response
 
     async def change_notification_policy(
         self,
         request: NotificationPolicyChangeRequest,
     ) -> NotificationPolicyChangeResponse:
-        return await self._post(
+        response = await self._post(
             self.notification_policy_change_path,
             request.model_dump(mode="json"),
             NotificationPolicyChangeResponse,
         )
+        self._validate_policy_correlation(request, response)
+        return response
 
     async def _post(self, path: str, body: dict, response_model: type[ResponseModel]) -> ResponseModel:
         if not self.base_url:
@@ -123,6 +127,15 @@ class BackendV12Client:
                 if response.status_code in self.RETRYABLE_HTTP_STATUSES and attempt < self.max_retries:
                     await self.sleep(self._retry_delay(attempt))
                     continue
+                if (
+                    response.status_code == 409
+                    and attempt < self.max_retries
+                    and self._is_request_in_progress(response)
+                ):
+                    await self.sleep(
+                        self._retry_after_or_delay(response, attempt)
+                    )
+                    continue
 
                 return self._parse_response(response, response_model)
 
@@ -154,9 +167,115 @@ class BackendV12Client:
             return 0.0
         return self.retry_delays_seconds[min(attempt, len(self.retry_delays_seconds) - 1)]
 
+    def _retry_after_or_delay(
+        self,
+        response: httpx.Response,
+        attempt: int,
+    ) -> float:
+        raw = str(response.headers.get("Retry-After") or "").strip()
+        try:
+            parsed = float(raw)
+        except ValueError:
+            return self._retry_delay(attempt)
+        return max(0.0, min(parsed, 30.0))
+
+    @staticmethod
+    def _is_request_in_progress(response: httpx.Response) -> bool:
+        try:
+            payload = response.json()
+        except ValueError:
+            return False
+        error = (
+            payload.get("error")
+            if isinstance(payload, dict)
+            and isinstance(payload.get("error"), dict)
+            else {}
+        )
+        return (
+            error.get("code") == "REQUEST_IN_PROGRESS"
+            and error.get("retryable") is True
+        )
+
+    @staticmethod
+    def _validate_record_correlation(
+        request: RecordChangeRequest,
+        response: RecordChangeResponse,
+    ) -> None:
+        if response.request_id != request.request_id:
+            raise BackendV12ResponseError(
+                "backend_response_request_id_mismatch"
+            )
+        if not response.success or response.result is None:
+            return
+        result = response.result
+        if (
+            result.resource_type != request.resource_type
+            or result.operation != request.operation
+        ):
+            raise BackendV12ResponseError(
+                "backend_response_record_operation_mismatch"
+            )
+        if request.record_id is not None:
+            _validate_external_id_correlation(
+                request.record_id,
+                result.record_id,
+                "backend_response_record_id_mismatch",
+            )
+        _validate_external_id_correlation(
+            request.parent_record_id,
+            result.parent_record_id,
+            "backend_response_parent_record_id_mismatch",
+        )
+
+    @staticmethod
+    def _validate_policy_correlation(
+        request: NotificationPolicyChangeRequest,
+        response: NotificationPolicyChangeResponse,
+    ) -> None:
+        if response.request_id != request.request_id:
+            raise BackendV12ResponseError(
+                "backend_response_request_id_mismatch"
+            )
+        if not response.success or response.result is None:
+            return
+        result = response.result
+        if (
+            result.policy_id != request.policy_id
+            or result.decision != request.payload.decision
+        ):
+            raise BackendV12ResponseError(
+                "backend_response_policy_target_mismatch"
+            )
+
     @staticmethod
     def _normalized_path(value: str) -> str:
         path = value.strip()
         if not path:
             return ""
         return path if path.startswith("/") else f"/{path}"
+
+
+def _validate_external_id_correlation(
+    requested_id: str | None,
+    response_id: str | None,
+    error_code: str,
+) -> None:
+    if requested_id is None:
+        if response_id is not None:
+            raise BackendV12ResponseError(error_code)
+        return
+    if _legacy_numeric_id(requested_id):
+        if response_id is None or _legacy_numeric_id(response_id):
+            raise BackendV12ResponseError(error_code)
+        return
+    if response_id != requested_id:
+        raise BackendV12ResponseError(error_code)
+
+
+def _legacy_numeric_id(value: str) -> bool:
+    normalized = str(value or "").strip()
+    return (
+        normalized.isascii()
+        and normalized.isdigit()
+        and int(normalized) > 0
+    )
