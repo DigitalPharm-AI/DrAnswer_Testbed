@@ -1,0 +1,1027 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>닥터앤서 홈 시작 안내 시안</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --panel: #f8f9fa;
+        --white: #ffffff;
+        --ink: #1f2328;
+        --muted: #6b7280;
+        --line: #d2d7de;
+        --line-strong: #b9c0c9;
+        --accent: #5f6670;
+        --accent-dark: #444b55;
+        --accent-soft: #eaedf1;
+        --navy: #315f8c;
+        --navy-dark: #193f66;
+        --navy-soft: #e7eff8;
+        --navy-line: #abc0d7;
+        --notify-soft: #fbecef;
+        --notify-line: #ecc0cb;
+        --notify-ink: #8d4055;
+        --error: #c94f58;
+        --error-soft: #fbe9ea;
+        --shadow: 0 12px 32px rgba(31, 35, 40, 0.08);
+        --shadow-soft: 0 8px 22px rgba(31, 35, 40, 0.06);
+        font-family:
+          "Segoe UI",
+          "Noto Sans KR",
+          "Apple SD Gothic Neo",
+          "Malgun Gothic",
+          sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-width: 320px;
+        min-height: 100vh;
+        margin: 0;
+        color: var(--ink);
+        background:
+          radial-gradient(
+            circle at top right,
+            rgba(95, 102, 112, 0.12),
+            transparent 32%
+          ),
+          linear-gradient(180deg, #f2f4f7 0%, #e9ecf0 100%);
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      button {
+        border: 0;
+        cursor: pointer;
+      }
+
+      button:focus-visible,
+      input:focus-visible {
+        outline: 3px solid rgba(49, 95, 140, 0.28);
+        outline-offset: 2px;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.45;
+      }
+
+      .top-time-bar {
+        position: relative;
+        z-index: 2;
+        width: 100%;
+        padding: 14px 0;
+      }
+
+      .top-time-inner,
+      .page-shell {
+        width: min(100% - 38px, 1480px);
+        margin: 0 auto;
+      }
+
+      .top-time-copy {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 68px;
+        padding: 12px 18px;
+        border: 1px solid rgba(210, 215, 222, 0.84);
+        border-radius: 22px;
+        background: rgba(248, 249, 250, 0.94);
+        box-shadow: var(--shadow-soft);
+      }
+
+      .top-controls {
+        display: flex;
+        gap: 7px;
+      }
+
+      .control-button {
+        min-height: 42px;
+        padding: 9px 15px;
+        border: 1px solid var(--accent);
+        border-radius: 8px;
+        color: #fff;
+        background: var(--accent);
+        font-weight: 800;
+      }
+
+      .control-button.ghost {
+        border-color: transparent;
+        color: var(--accent);
+        background: var(--accent-soft);
+      }
+
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        min-height: 34px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        color: var(--navy-dark);
+        background: var(--navy-soft);
+        font-size: 0.76rem;
+        font-weight: 800;
+      }
+
+      .top-time-value {
+        margin-left: 8px;
+        font-size: 1.8rem;
+        font-weight: 800;
+        line-height: 1;
+      }
+
+      .speed-label {
+        color: var(--muted);
+        font-size: 0.86rem;
+      }
+
+      .service-states {
+        display: flex;
+        gap: 8px;
+        margin-left: auto;
+      }
+
+      .service-state {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-height: 31px;
+        padding: 5px 10px;
+        border: 1px solid var(--navy-line);
+        border-radius: 999px;
+        color: var(--navy-dark);
+        background: var(--navy-soft);
+        font-size: 0.75rem;
+        font-weight: 800;
+      }
+
+      .service-state::before {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--navy);
+        box-shadow: 0 0 0 4px rgba(49, 95, 140, 0.12);
+        content: "";
+      }
+
+      .page-shell {
+        padding: 0 0 40px;
+      }
+
+      .hero {
+        margin-bottom: 16px;
+        padding: 28px 30px;
+        border: 1px solid rgba(210, 215, 222, 0.84);
+        border-radius: 28px;
+        background: rgba(248, 249, 250, 0.86);
+        box-shadow: var(--shadow);
+      }
+
+      .eyebrow,
+      .panel-kicker {
+        margin: 0 0 7px;
+        color: var(--muted);
+        font-size: 0.75rem;
+        font-weight: 800;
+        letter-spacing: 0.09em;
+      }
+
+      .hero h1 {
+        margin: 0;
+        font-size: clamp(2rem, 3vw, 3rem);
+        letter-spacing: -0.04em;
+      }
+
+      /* Navigation and the proposed horizontal start guide */
+      .app-navigation {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 12px;
+        align-items: stretch;
+        margin-bottom: 18px;
+      }
+
+      .app-tabs {
+        display: inline-flex;
+        align-items: stretch;
+        gap: 6px;
+        padding: 4px;
+        border: 1px solid rgba(210, 215, 222, 0.84);
+        border-radius: 11px;
+        background: rgba(248, 249, 250, 0.92);
+        box-shadow: var(--shadow-soft);
+      }
+
+      .app-tab {
+        min-width: 96px;
+        min-height: 56px;
+        padding: 10px 18px;
+        border-radius: 7px;
+        color: var(--accent);
+        background: transparent;
+        font-weight: 800;
+      }
+
+      .app-tab.is-active {
+        color: #fff;
+        background: var(--accent);
+      }
+
+      .start-guide {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
+        gap: 12px;
+        align-items: center;
+        min-width: 0;
+        padding: 9px 13px;
+        border: 1px solid var(--navy-line);
+        border-radius: 11px;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: var(--shadow-soft);
+      }
+
+      .start-guide-label {
+        padding: 6px 9px;
+        border: 1px solid #cfd3d7;
+        border-radius: 8px;
+        color: #24282d;
+        background: #e5e7ea;
+        font-size: 0.69rem;
+        font-weight: 900;
+        white-space: nowrap;
+      }
+
+      .start-guide-step {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 9px;
+        align-items: center;
+        min-width: 0;
+      }
+
+      .start-guide-number {
+        color: var(--ink);
+        font-size: 0.82rem;
+        font-weight: 900;
+      }
+
+      .start-guide-step strong,
+      .start-guide-step small {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .start-guide-step strong {
+        font-size: 0.76rem;
+      }
+
+      .start-guide-step small {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 0.67rem;
+      }
+
+      .start-guide-arrow {
+        color: #8a96a2;
+        font-size: 1rem;
+        font-weight: 900;
+      }
+
+      .home-layout {
+        display: grid;
+        grid-template-columns: minmax(310px, 370px) minmax(0, 1fr);
+        gap: 20px;
+        align-items: start;
+      }
+
+      .sidebar,
+      .main-column {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        gap: 20px;
+      }
+
+      .panel {
+        min-width: 0;
+        padding: 20px;
+        border: 1px solid rgba(210, 215, 222, 0.86);
+        border-radius: 24px;
+        background: rgba(248, 249, 250, 0.92);
+        box-shadow: var(--shadow);
+      }
+
+      .panel-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      .panel-header h2 {
+        margin: 0;
+        font-size: 1.3rem;
+        letter-spacing: -0.03em;
+      }
+
+      .badge {
+        padding: 5px 9px;
+        border-radius: 999px;
+        color: var(--muted);
+        background: var(--accent-soft);
+        font-size: 0.7rem;
+        font-weight: 800;
+      }
+
+      .medication-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .medication-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 13px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.72);
+      }
+
+      .medication-item strong {
+        font-size: 0.86rem;
+      }
+
+      .medication-category {
+        color: var(--muted);
+        font-size: 0.7rem;
+      }
+
+      .empty-state {
+        margin: 0;
+        padding: 22px 14px;
+        border: 1px dashed var(--line);
+        border-radius: 12px;
+        color: var(--muted);
+        background: #f8fafc;
+        text-align: center;
+        font-size: 0.8rem;
+      }
+
+      .simulation-clock {
+        display: flex;
+        flex-direction: column;
+        margin-bottom: 13px;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--accent-soft);
+      }
+
+      .simulation-clock span,
+      .simulation-clock small {
+        color: var(--muted);
+      }
+
+      .simulation-clock strong {
+        margin: 3px 0;
+        font-size: 2rem;
+      }
+
+      .button-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+
+      .button-grid button,
+      .wide-button {
+        min-height: 42px;
+        padding: 10px 15px;
+        border: 1px solid var(--accent);
+        border-radius: 8px;
+        color: #fff;
+        background: var(--accent);
+        font-weight: 800;
+      }
+
+      .wide-button {
+        width: 100%;
+      }
+
+      .wide-button.secondary {
+        color: var(--accent);
+        background: #fff;
+      }
+
+      .current-schedule {
+        margin: 10px 0 0;
+        color: var(--muted);
+        font-size: 0.72rem;
+        text-align: center;
+      }
+
+      .timeline {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .timeline::before {
+        position: absolute;
+        top: 14px;
+        bottom: 14px;
+        left: 8px;
+        width: 2px;
+        background: var(--line);
+        content: "";
+      }
+
+      .timeline-item {
+        position: relative;
+        display: grid;
+        grid-template-columns: 18px 58px minmax(0, 1fr) auto;
+        gap: 11px;
+        align-items: center;
+        min-height: 72px;
+        padding: 12px 0;
+        border-bottom: 1px solid rgba(210, 215, 222, 0.7);
+      }
+
+      .timeline-marker {
+        z-index: 1;
+        width: 17px;
+        height: 17px;
+        border: 4px solid var(--panel);
+        border-radius: 999px;
+        background: var(--accent);
+        box-shadow: 0 0 0 2px var(--line-strong);
+      }
+
+      .timeline-item time {
+        color: var(--muted);
+        font-size: 0.82rem;
+        font-weight: 800;
+      }
+
+      .timeline-content strong {
+        font-size: 0.92rem;
+      }
+
+      .timeline-content p {
+        margin: 3px 0 0;
+        color: var(--muted);
+        font-size: 0.76rem;
+      }
+
+      .timeline-state {
+        padding: 5px 8px;
+        border-radius: 999px;
+        color: var(--navy-dark);
+        background: var(--navy-soft);
+        font-size: 0.68rem;
+        font-weight: 800;
+      }
+
+      .info-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .info-card {
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.74);
+      }
+
+      .info-card span {
+        color: var(--muted);
+        font-size: 0.7rem;
+      }
+
+      .info-card strong {
+        display: block;
+        margin-top: 5px;
+        font-size: 1.05rem;
+      }
+
+      dialog {
+        width: min(520px, calc(100vw - 24px));
+        padding: 0;
+        border: 0;
+        border-radius: 20px;
+        box-shadow: 0 24px 70px rgba(31, 35, 40, 0.25);
+      }
+
+      dialog::backdrop {
+        background: rgba(31, 35, 40, 0.4);
+        backdrop-filter: blur(3px);
+      }
+
+      .dialog-content {
+        padding: 22px;
+      }
+
+      .dialog-content h2 {
+        margin: 0 0 5px;
+      }
+
+      .dialog-content > p {
+        margin: 0 0 16px;
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+
+      .scenario-options {
+        display: grid;
+        gap: 8px;
+      }
+
+      .scenario-option {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: #f8fafc;
+        cursor: pointer;
+      }
+
+      .scenario-option:has(input:checked) {
+        border-color: var(--navy);
+        background: var(--navy-soft);
+      }
+
+      .scenario-option strong,
+      .scenario-option small {
+        display: block;
+      }
+
+      .scenario-option small {
+        margin-top: 2px;
+        color: var(--muted);
+      }
+
+      .dialog-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 18px;
+      }
+
+      .dialog-actions button {
+        min-height: 40px;
+        padding: 8px 13px;
+        border-radius: 8px;
+        color: #fff;
+        background: var(--accent);
+        font-weight: 800;
+      }
+
+      .dialog-actions .ghost {
+        color: var(--accent);
+        background: var(--accent-soft);
+      }
+
+      .prototype-toast {
+        position: fixed;
+        right: 22px;
+        bottom: 22px;
+        z-index: 5;
+        padding: 11px 14px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        color: #4c5661;
+        background: #fff;
+        box-shadow: var(--shadow-soft);
+        font-size: 0.76rem;
+        font-weight: 750;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(8px);
+        transition:
+          opacity 150ms ease,
+          transform 150ms ease;
+      }
+
+      .prototype-toast.is-visible {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      @media (max-width: 980px) {
+        .app-navigation {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .app-tabs {
+          justify-self: start;
+        }
+
+        .home-layout {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .sidebar {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 720px) {
+        .top-time-inner,
+        .page-shell {
+          width: min(100% - 20px, 1480px);
+        }
+
+        .top-time-copy {
+          flex-wrap: wrap;
+          border-radius: 16px;
+        }
+
+        .service-states {
+          width: 100%;
+          margin-left: 0;
+          padding-top: 8px;
+          border-top: 1px solid var(--line);
+        }
+
+        .hero {
+          padding: 22px 20px;
+          border-radius: 20px;
+        }
+
+        .app-tabs {
+          width: 100%;
+        }
+
+        .app-tab {
+          flex: 1;
+        }
+
+        .start-guide {
+          grid-template-columns: auto minmax(0, 1fr);
+        }
+
+        .start-guide-label {
+          grid-column: 1 / -1;
+          justify-self: start;
+        }
+
+        .start-guide-arrow {
+          display: none;
+        }
+
+        .start-guide-step {
+          grid-column: 1 / -1;
+        }
+
+        .sidebar {
+          display: flex;
+        }
+
+        .panel {
+          padding: 16px;
+          border-radius: 18px;
+        }
+
+        .timeline-item {
+          grid-template-columns: 18px 48px minmax(0, 1fr);
+        }
+
+        .timeline-state {
+          grid-column: 3;
+          justify-self: start;
+        }
+
+        .info-grid {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="top-time-bar">
+      <div class="top-time-inner">
+        <div class="top-time-copy">
+          <div class="top-controls">
+            <button class="control-button" id="start-button" type="button" disabled>
+              시작
+            </button>
+            <button class="control-button ghost" id="pause-button" type="button">
+              정지
+            </button>
+          </div>
+          <span class="status-pill" id="runtime-status">일정 설정 필요</span>
+          <time class="top-time-value" datetime="2026-04-20T09:30:00+09:00">
+            09:30
+          </time>
+          <span class="speed-label">배속 60분/초</span>
+          <div class="service-states" aria-label="서버 상태">
+            <span class="service-state">Backend 정상</span>
+            <span class="service-state">AI Server 정상</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div class="page-shell">
+      <header class="hero">
+        <p class="eyebrow">DRANSWER MEDICATION CARE</p>
+        <h1>닥터앤서 AI 복약 케어 테스트</h1>
+      </header>
+
+      <div class="app-navigation">
+        <nav class="app-tabs" aria-label="주요 화면">
+          <button class="app-tab is-active" type="button">HOME</button>
+          <button class="app-tab" type="button">Chat</button>
+        </nav>
+
+        <section class="start-guide" aria-label="테스트 시작 방법">
+          <span class="start-guide-label">시작 방법</span>
+          <div class="start-guide-step" id="guide-step-schedule">
+            <span class="start-guide-number">1.</span>
+            <span>
+              <strong>테스트 복약 일정 설정</strong>
+              <small>왼쪽 아래의 ‘테스트 복약 일정 설정’ 버튼에서 사용할 일정을 선택하세요.</small>
+            </span>
+          </div>
+          <span class="start-guide-arrow" aria-hidden="true">→</span>
+          <div class="start-guide-step" id="guide-step-start">
+            <span class="start-guide-number">2.</span>
+            <span>
+              <strong>왼쪽 위 시작 버튼 선택</strong>
+              <small>왼쪽 위의 ‘시작’ 버튼을 누르면 1초마다 60분씩 진행됩니다.</small>
+            </span>
+          </div>
+        </section>
+      </div>
+
+      <main class="home-layout">
+        <aside class="sidebar">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">MEDICATION</p>
+                <h2>오늘 복약 일정</h2>
+              </div>
+            </div>
+            <div class="medication-list" id="medication-list">
+              <p class="empty-state">오늘 등록된 복약 일정이 없습니다.</p>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">TESTBED</p>
+                <h2>시뮬레이션 시간</h2>
+              </div>
+              <span class="badge" id="panel-status">일시 정지</span>
+            </div>
+            <div class="simulation-clock">
+              <span>현재 시각</span>
+              <strong>09:30</strong>
+              <small>실행 중에는 1초마다 60분씩 진행합니다.</small>
+            </div>
+            <div class="button-grid">
+              <button type="button" disabled>30분 진행</button>
+              <button type="button" disabled>3시간 진행</button>
+            </div>
+            <button class="wide-button secondary" id="schedule-button" type="button">
+              테스트 복약 일정 설정
+            </button>
+            <p class="current-schedule">
+              현재 적용: <strong id="current-schedule">설정 전</strong>
+            </p>
+          </section>
+        </aside>
+
+        <div class="main-column">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">TODAY</p>
+                <h2>복약 타임라인</h2>
+              </div>
+              <span class="badge">2026년 4월 20일</span>
+            </div>
+            <ol class="timeline" id="timeline">
+              <li class="empty-state">복약 일정을 설정하면 타임라인이 표시됩니다.</li>
+            </ol>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">STATUS</p>
+                <h2>오늘 상태</h2>
+              </div>
+            </div>
+            <div class="info-grid">
+              <article class="info-card">
+                <span>등록된 복약</span>
+                <strong id="medication-count">0건</strong>
+              </article>
+              <article class="info-card">
+                <span>복용 완료</span>
+                <strong>0건</strong>
+              </article>
+              <article class="info-card">
+                <span>새 알림</span>
+                <strong>0건</strong>
+              </article>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <dialog id="schedule-dialog">
+      <form class="dialog-content" method="dialog" id="schedule-form">
+        <h2>테스트 복약 일정 설정</h2>
+        <p>테스트에 사용할 복약 일정 예시를 선택하세요.</p>
+        <div class="scenario-options">
+          <label class="scenario-option">
+            <input type="radio" name="scenario" value="복합 복약" checked />
+            <span>
+              <strong>복합 복약</strong>
+              <small>당뇨약·고혈압약·신장암 치료약·유방암 치료약</small>
+            </span>
+          </label>
+          <label class="scenario-option">
+            <input type="radio" name="scenario" value="당뇨·고혈압 복약" />
+            <span>
+              <strong>당뇨·고혈압 복약</strong>
+              <small>메트포르민 500mg·암로디핀 5mg</small>
+            </span>
+          </label>
+        </div>
+        <div class="dialog-actions">
+          <button class="ghost" value="cancel" type="button" id="cancel-dialog">
+            취소
+          </button>
+          <button value="default" type="submit">일정 적용</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="prototype-toast" id="prototype-toast" role="status"></div>
+
+    <script>
+      const medicationScenarios = {
+        "복합 복약": [
+          ["08:00", "아침 복약", "메트포르민 500mg", "당뇨약"],
+          ["09:00", "아침 복약", "암로디핀 5mg", "고혈압약"],
+          ["13:00", "점심 복약", "수니티닙 50mg", "신장암 치료약"],
+          ["18:00", "저녁 복약", "레트로졸 2.5mg", "유방암 치료약"],
+        ],
+        "당뇨·고혈압 복약": [
+          ["08:00", "아침 복약", "메트포르민 500mg", "당뇨약"],
+          ["09:00", "아침 복약", "암로디핀 5mg", "고혈압약"],
+        ],
+      };
+
+      const state = {
+        scenario: null,
+        running: false,
+      };
+
+      const dialog = document.querySelector("#schedule-dialog");
+      const form = document.querySelector("#schedule-form");
+      const startButton = document.querySelector("#start-button");
+      const runtimeStatus = document.querySelector("#runtime-status");
+      const panelStatus = document.querySelector("#panel-status");
+      const guideSchedule = document.querySelector("#guide-step-schedule");
+      const guideStart = document.querySelector("#guide-step-start");
+      const medicationList = document.querySelector("#medication-list");
+      const timeline = document.querySelector("#timeline");
+      const currentSchedule = document.querySelector("#current-schedule");
+      const medicationCount = document.querySelector("#medication-count");
+      const toast = document.querySelector("#prototype-toast");
+      let toastTimer = null;
+
+      function showToast(message) {
+        toast.textContent = message;
+        toast.classList.add("is-visible");
+        window.clearTimeout(toastTimer);
+        toastTimer = window.setTimeout(() => {
+          toast.classList.remove("is-visible");
+        }, 2200);
+      }
+
+      function renderScenario() {
+        const medications = state.scenario
+          ? medicationScenarios[state.scenario]
+          : [];
+
+        startButton.disabled = !state.scenario;
+        currentSchedule.textContent = state.scenario ?? "설정 전";
+        medicationCount.textContent = `${medications.length}건`;
+        guideSchedule.classList.toggle("is-complete", Boolean(state.scenario));
+        guideStart.classList.toggle("is-complete", state.running);
+        runtimeStatus.textContent = state.running
+          ? "실행 중"
+          : state.scenario
+            ? "시작 준비"
+            : "일정 설정 필요";
+        panelStatus.textContent = state.running ? "실행 중" : "일시 정지";
+
+        medicationList.replaceChildren();
+        timeline.replaceChildren();
+
+        if (!medications.length) {
+          const medicationEmpty = document.createElement("p");
+          medicationEmpty.className = "empty-state";
+          medicationEmpty.textContent = "오늘 등록된 복약 일정이 없습니다.";
+          medicationList.append(medicationEmpty);
+
+          const timelineEmpty = document.createElement("li");
+          timelineEmpty.className = "empty-state";
+          timelineEmpty.textContent =
+            "복약 일정을 설정하면 타임라인이 표시됩니다.";
+          timeline.append(timelineEmpty);
+          return;
+        }
+
+        medications.forEach(([time, slot, name, category]) => {
+          const item = document.createElement("article");
+          item.className = "medication-item";
+          item.innerHTML = `<strong>${name}</strong><span class="medication-category">${category}</span>`;
+          medicationList.append(item);
+
+          const timelineItem = document.createElement("li");
+          timelineItem.className = "timeline-item";
+          timelineItem.innerHTML = `
+            <span class="timeline-marker" aria-hidden="true"></span>
+            <time>${time}</time>
+            <div class="timeline-content">
+              <strong>${slot}</strong>
+              <p>${name} · ${category}</p>
+            </div>
+            <span class="timeline-state">예정</span>
+          `;
+          timeline.append(timelineItem);
+        });
+      }
+
+      document.querySelector("#schedule-button").addEventListener("click", () => {
+        dialog.showModal();
+      });
+
+      document.querySelector("#cancel-dialog").addEventListener("click", () => {
+        dialog.close();
+      });
+
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const formData = new FormData(form);
+        state.scenario = String(formData.get("scenario") || "복합 복약");
+        state.running = false;
+        dialog.close();
+        renderScenario();
+        showToast("테스트 복약 일정이 적용되었습니다. 상단 시작 버튼을 눌러주세요.");
+      });
+
+      startButton.addEventListener("click", () => {
+        if (!state.scenario) {
+          return;
+        }
+        state.running = true;
+        renderScenario();
+        showToast("시뮬레이션을 시작했습니다.");
+      });
+
+      document.querySelector("#pause-button").addEventListener("click", () => {
+        state.running = false;
+        renderScenario();
+        if (state.scenario) {
+          showToast("시뮬레이션을 일시 정지했습니다.");
+        }
+      });
+
+      renderScenario();
+    </script>
+  </body>
+</html>

@@ -47,6 +47,243 @@ interface ChatPageProps {
   ) => void;
 }
 
+interface TestScenario {
+  category: string;
+  title: string;
+  modes: string[];
+  description: string;
+  example: string;
+  flow: string[];
+  expected: string;
+}
+
+const TEST_SCENARIOS: TestScenario[] = [
+  {
+    category: "READ",
+    title: "복약 현황 조회",
+    modes: ["READ"],
+    description:
+      "오늘 복약 Snapshot 또는 복약 상태 조회가 실제 Backend 데이터를 읽고 text 응답으로 정리하는지 확인합니다.",
+    example: "오늘 먹을 약과 복용 상태를 알려줘",
+    flow: ["사용자 발화", "복약 상태 조회", "text 응답"],
+    expected:
+      "Backend의 오늘 복약 상태와 화면에 표시되는 약 이름·상태가 일치해야 합니다.",
+  },
+  {
+    category: "WRITE",
+    title: "복약 기록",
+    modes: ["APPROVAL", "WRITE"],
+    description:
+      "복용 완료 발화가 바로 저장되지 않고, 사용자 승인 카드 이후 동기 쓰기로 기록되는지 확인합니다.",
+    example: "방금 암로디핀 5mg 먹었어",
+    flow: [
+      "사용자 발화",
+      "대상 복약 확인",
+      "기록 승인",
+      "Backend 동기 저장",
+      "text 결과",
+    ],
+    expected:
+      "승인 전에는 DB가 변경되지 않고, ‘기록’ 선택 후 해당 복약 건만 taken으로 변경되어야 합니다.",
+  },
+  {
+    category: "MULTI WRITE",
+    title: "여러 음식 기록",
+    modes: ["MULTI", "APPROVAL", "WRITE"],
+    description:
+      "음식 목록을 한 번에 검색하고 각 음식 후보를 1/N 방식으로 순차 선택한 뒤, 한 번의 승인으로 전체 식사를 기록하는지 확인합니다.",
+    example: "아침에 토스트랑 우유 먹었는데 기록해줘",
+    flow: [
+      "음식 목록 검색",
+      "후보 선택 1/2",
+      "후보 선택 2/2",
+      "식사 기록 승인",
+      "Backend 동기 저장",
+    ],
+    expected:
+      "검색은 한 번만 실행되고, 모든 음식 선택이 끝난 후 전체 음식이 한 식사로 저장되어야 합니다.",
+  },
+  {
+    category: "SURVEY + WRITE",
+    title: "부작용 평가",
+    modes: ["SURVEY", "APPROVAL", "WRITE"],
+    description:
+      "증상 인식 후 PRO-CTCAE 원문 문항을 끝까지 순차 제시하고, 완료된 응답을 포함한 승인 카드 뒤에만 부작용 평가를 저장하는지 확인합니다.",
+    example: "어제 약을 먹고 속이 메스꺼웠어",
+    flow: [
+      "증상 평가",
+      "설문 1/2",
+      "설문 2/2",
+      "부작용 기록 승인",
+      "Backend 동기 저장",
+    ],
+    expected:
+      "모든 필수 문항에 답하기 전에는 기록 승인으로 넘어가지 않고, Excel 원문 문항·응답이 그대로 보존되어야 합니다.",
+  },
+  {
+    category: "POLICY WRITE",
+    title: "알림 정책 변경",
+    modes: ["HIGH RISK", "APPROVAL", "WRITE"],
+    description:
+      "공개 policy_id를 조회한 뒤 변경안을 제안하고, 사용자가 승인해야만 Backend 정책 변경 API를 호출하는지 확인합니다.",
+    example: "미복용 알림을 복약 예정 120분 후로 바꿔줘",
+    flow: [
+      "현재 정책 조회",
+      "변경안 생성",
+      "정책 승인",
+      "Backend 동기 반영",
+      "변경 결과 조회",
+    ],
+    expected:
+      "승인 전 정책은 유지되고, 승인 후 같은 policy_id의 version이 증가하며 변경값이 다시 조회되어야 합니다.",
+  },
+];
+
+function TestScenarioGuide({
+  disabled,
+  onFillExample,
+}: {
+  disabled: boolean;
+  onFillExample: (example: string) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [completed, setCompleted] = useState<Set<number>>(
+    () => new Set(),
+  );
+  const current = TEST_SCENARIOS[activeIndex];
+  const currentCompleted = completed.has(activeIndex);
+  const progress = (completed.size / TEST_SCENARIOS.length) * 100;
+
+  function toggleComplete() {
+    setCompleted((previous) => {
+      const next = new Set(previous);
+      if (next.has(activeIndex)) {
+        next.delete(activeIndex);
+      } else {
+        next.add(activeIndex);
+      }
+      return next;
+    });
+  }
+
+  return (
+    <details
+      className="test-scenario-guide"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary>
+        <span className="test-scenario-heading">
+          <strong>테스트 시나리오</strong>
+        </span>
+        <span
+          className="test-scenario-progress"
+          aria-label={`${TEST_SCENARIOS.length}개 중 ${completed.size}개 완료`}
+        >
+          <span>
+            <b>{completed.size}</b>/{TEST_SCENARIOS.length} 완료
+          </span>
+          <span className="test-scenario-progress-track" aria-hidden="true">
+            <span style={{ width: `${progress}%` }} />
+          </span>
+        </span>
+        <span className="test-scenario-chevron" aria-hidden="true" />
+      </summary>
+
+      <div className="test-scenario-body">
+        <nav
+          className="test-scenario-tabs"
+          aria-label="테스트 시나리오 항목"
+        >
+          {TEST_SCENARIOS.map((scenario, index) => (
+            <button
+              className={`test-scenario-tab${
+                index === activeIndex ? " is-active" : ""
+              }${completed.has(index) ? " is-complete" : ""}`}
+              type="button"
+              key={scenario.title}
+              aria-current={index === activeIndex ? "true" : undefined}
+              onClick={() => setActiveIndex(index)}
+            >
+              <small>{scenario.category}</small>
+              <strong>{scenario.title}</strong>
+            </button>
+          ))}
+        </nav>
+
+        <div className="test-scenario-detail">
+          <section className="test-scenario-brief">
+            <div className="test-scenario-brief-head">
+              <h3>{current.title}</h3>
+              <div
+                className="test-scenario-mode-badges"
+                aria-label="테스트 유형"
+              >
+                {current.modes.map((mode) => (
+                  <span key={mode}>{mode}</span>
+                ))}
+              </div>
+            </div>
+            <p className="test-scenario-description">
+              {current.description}
+            </p>
+            <div className="test-scenario-example">
+              <span>예시 발화</span>
+              <b>{current.example}</b>
+            </div>
+            <div
+              className="test-scenario-flow"
+              aria-label="예상 처리 순서"
+            >
+              {current.flow.map((step, index) => (
+                <span className="test-scenario-flow-fragment" key={step}>
+                  <span className="test-scenario-flow-step">{step}</span>
+                  {index < current.flow.length - 1 ? (
+                    <span
+                      className="test-scenario-flow-arrow"
+                      aria-hidden="true"
+                    >
+                      →
+                    </span>
+                  ) : null}
+                </span>
+              ))}
+            </div>
+          </section>
+
+          <aside className="test-scenario-criteria">
+            <p>
+              <strong>통과 기준</strong>
+              <span>{current.expected}</span>
+            </p>
+          </aside>
+        </div>
+
+        <div className="test-scenario-actions">
+          <button
+            className="compact-button ghost"
+            type="button"
+            disabled={disabled}
+            onClick={() => onFillExample(current.example)}
+          >
+            예시 문장 입력
+          </button>
+          <button
+            className={`compact-button${
+              currentCompleted ? " is-complete" : ""
+            }`}
+            type="button"
+            onClick={toggleComplete}
+          >
+            {currentCompleted ? "완료 표시 취소" : "완료로 표시"}
+          </button>
+        </div>
+      </div>
+    </details>
+  );
+}
+
 function isPendingStructured(
   message: ClientChatHistoryMessage,
 ): boolean {
@@ -1007,6 +1244,14 @@ export default function ChatPage({
           <h2>에이전트와의 대화</h2>
         </div>
       </div>
+
+      <TestScenarioGuide
+        disabled={Boolean(pendingStructured) || chatSending}
+        onFillExample={(example) => {
+          onDraftChange(example);
+          requestAnimationFrame(() => inputRef.current?.focus());
+        }}
+      />
 
       <div className="chat-layout">
         <div className="conversation-shell">

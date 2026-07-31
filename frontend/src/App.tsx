@@ -1452,6 +1452,40 @@ export default function App() {
               Chat
             </button>
           </nav>
+          {activeTab === "home" ? (
+            <section
+              className="home-start-guide"
+              aria-label="테스트 시작 방법"
+            >
+              <span className="home-start-guide-label">시작 방법</span>
+              <div className="home-start-guide-step">
+                <span className="home-start-guide-number">1.</span>
+                <span>
+                  <strong>테스트 복약 일정 설정</strong>
+                  <small>
+                    왼쪽 아래의 ‘테스트 복약 일정 설정’ 버튼에서 사용할
+                    일정을 선택하세요.
+                  </small>
+                </span>
+              </div>
+              <span
+                className="home-start-guide-arrow"
+                aria-hidden="true"
+              >
+                →
+              </span>
+              <div className="home-start-guide-step">
+                <span className="home-start-guide-number">2.</span>
+                <span>
+                  <strong>왼쪽 위 시작 버튼 선택</strong>
+                  <small>
+                    왼쪽 위의 ‘시작’ 버튼을 누르면 1초마다 60분씩
+                    진행됩니다.
+                  </small>
+                </span>
+              </div>
+            </section>
+          ) : null}
         </div>
 
         <main>

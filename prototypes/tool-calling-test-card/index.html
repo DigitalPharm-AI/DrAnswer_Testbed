@@ -1,0 +1,1095 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>닥터앤서 테스트 시나리오 카드 시안</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --page: #eef1f4;
+        --panel: #f8f9fa;
+        --white: #ffffff;
+        --ink: #20262d;
+        --muted: #6b7580;
+        --line: #d6dce3;
+        --line-strong: #bbc5cf;
+        --navy: #263f62;
+        --navy-strong: #193452;
+        --navy-soft: #eaf1f8;
+        --navy-pale: #f4f7fb;
+        --ai-soft: #f3f7fb;
+        --ai-line: #cfdae7;
+        --user-soft: #e8edf2;
+        --pink-soft: #fff4f6;
+        --pink-line: #f1cad2;
+        --pink-ink: #9e4054;
+        --success-soft: #edf5f1;
+        --success-line: #c7ded2;
+        --success-ink: #336750;
+        --shadow: 0 18px 48px rgba(32, 43, 54, 0.12);
+        --shadow-soft: 0 8px 24px rgba(32, 43, 54, 0.08);
+        font-family:
+          Pretendard,
+          "Noto Sans KR",
+          "Apple SD Gothic Neo",
+          "Malgun Gothic",
+          sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-width: 320px;
+        min-height: 100vh;
+        margin: 0;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 12% 0%, rgba(38, 63, 98, 0.08), transparent 34%),
+          var(--page);
+      }
+
+      button,
+      textarea {
+        font: inherit;
+      }
+
+      button {
+        border: 0;
+        cursor: pointer;
+      }
+
+      button:focus-visible,
+      textarea:focus-visible,
+      summary:focus-visible {
+        outline: 3px solid rgba(38, 63, 98, 0.25);
+        outline-offset: 2px;
+      }
+
+      .prototype-shell {
+        width: min(100% - 34px, 1180px);
+        margin: 24px auto 48px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        min-height: 72px;
+        margin-bottom: 18px;
+        padding: 14px 18px;
+        border: 1px solid rgba(214, 220, 227, 0.9);
+        border-radius: 20px;
+        background: rgba(255, 255, 255, 0.9);
+        box-shadow: var(--shadow-soft);
+      }
+
+      .topbar-copy {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+      }
+
+      .topbar-copy strong {
+        font-size: 1rem;
+      }
+
+      .topbar-copy span {
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+
+      .service-states {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .service-state {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-height: 31px;
+        padding: 5px 10px;
+        border: 1px solid #bcd0e5;
+        border-radius: 999px;
+        color: var(--navy-strong);
+        background: var(--navy-soft);
+        font-size: 0.75rem;
+        font-weight: 800;
+      }
+
+      .service-state::before {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: #416f9e;
+        box-shadow: 0 0 0 4px rgba(65, 111, 158, 0.12);
+        content: "";
+      }
+
+      .panel {
+        padding: 22px;
+        border: 1px solid rgba(214, 220, 227, 0.9);
+        border-radius: 24px;
+        background: rgba(248, 249, 250, 0.95);
+        box-shadow: var(--shadow);
+      }
+
+      .panel-header {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 14px;
+        margin-bottom: 16px;
+      }
+
+      .panel-kicker {
+        margin: 0 0 7px;
+        color: var(--navy);
+        font-size: 0.72rem;
+        font-weight: 900;
+        letter-spacing: 0.12em;
+      }
+
+      .panel-header h1 {
+        margin: 0;
+        font-size: 1.55rem;
+        letter-spacing: -0.035em;
+      }
+
+      .prototype-note {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.74rem;
+      }
+
+      /* Test scenario guide */
+      .test-guide {
+        overflow: hidden;
+        margin-bottom: 14px;
+        border: 1px solid #bdcad9;
+        border-radius: 17px;
+        background: var(--white);
+        box-shadow: 0 7px 18px rgba(38, 63, 98, 0.07);
+      }
+
+      .test-guide > summary {
+        display: flex;
+        align-items: center;
+        gap: 13px;
+        min-height: 64px;
+        padding: 12px 15px;
+        cursor: pointer;
+        list-style: none;
+        user-select: none;
+      }
+
+      .test-guide > summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .guide-heading {
+        min-width: 0;
+        flex: 1;
+      }
+
+      .guide-heading strong {
+        display: block;
+        font-size: 0.9rem;
+      }
+
+      .guide-progress {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 0 0 auto;
+      }
+
+      .progress-copy {
+        color: var(--navy-strong);
+        font-size: 0.72rem;
+        font-weight: 850;
+      }
+
+      .progress-track {
+        overflow: hidden;
+        width: 76px;
+        height: 7px;
+        border-radius: 999px;
+        background: #e1e7ed;
+      }
+
+      .progress-track span {
+        display: block;
+        width: 0%;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--navy);
+        transition: width 180ms ease;
+      }
+
+      .summary-chevron {
+        position: relative;
+        width: 22px;
+        height: 22px;
+        flex: 0 0 auto;
+        border-radius: 999px;
+        background: var(--navy-soft);
+      }
+
+      .summary-chevron::before {
+        position: absolute;
+        top: 7px;
+        left: 7px;
+        width: 6px;
+        height: 6px;
+        border-right: 2px solid var(--navy);
+        border-bottom: 2px solid var(--navy);
+        transform: rotate(45deg);
+        transition: transform 160ms ease;
+        content: "";
+      }
+
+      .test-guide[open] .summary-chevron::before {
+        top: 9px;
+        transform: rotate(225deg);
+      }
+
+      .guide-body {
+        padding: 0 15px 15px;
+        border-top: 1px solid #e5e9ee;
+      }
+
+      .test-tabs {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 7px;
+        padding: 12px 0;
+      }
+
+      .test-tab {
+        position: relative;
+        min-width: 0;
+        min-height: 58px;
+        padding: 9px 10px;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        color: #4d5966;
+        background: #f8fafc;
+        text-align: left;
+        transition:
+          border-color 140ms ease,
+          background 140ms ease,
+          transform 140ms ease;
+      }
+
+      .test-tab:hover {
+        border-color: #9bb0c7;
+        transform: translateY(-1px);
+      }
+
+      .test-tab.is-active {
+        border-color: var(--navy);
+        color: var(--navy-strong);
+        background: var(--navy-soft);
+        box-shadow: inset 0 0 0 1px rgba(38, 63, 98, 0.08);
+      }
+
+      .test-tab.is-complete::after {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        display: grid;
+        width: 17px;
+        height: 17px;
+        place-items: center;
+        border-radius: 999px;
+        color: #fff;
+        background: var(--navy);
+        font-size: 0.64rem;
+        content: "✓";
+      }
+
+      .test-tab small,
+      .test-tab strong {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .test-tab small {
+        margin-bottom: 4px;
+        color: #7c8792;
+        font-size: 0.62rem;
+        font-weight: 850;
+        letter-spacing: 0.05em;
+      }
+
+      .test-tab strong {
+        padding-right: 13px;
+        font-size: 0.77rem;
+      }
+
+      .test-detail {
+        display: grid;
+        grid-template-columns: minmax(0, 1.3fr) minmax(290px, 0.7fr);
+        gap: 10px;
+      }
+
+      .test-brief,
+      .test-criteria {
+        padding: 13px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--navy-pale);
+      }
+
+      .brief-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+
+      .brief-head h2 {
+        margin: 0;
+        font-size: 0.88rem;
+      }
+
+      .mode-badges {
+        display: flex;
+        flex: 0 0 auto;
+        gap: 5px;
+      }
+
+      .mode-badge {
+        padding: 4px 7px;
+        border-radius: 999px;
+        color: #24282d;
+        background: #e5e7ea;
+        box-shadow: inset 0 0 0 1px #cfd3d7;
+        font-size: 0.61rem;
+        font-weight: 900;
+      }
+
+      .mode-badge.write {
+        color: #24282d;
+        background: #e5e7ea;
+        box-shadow: inset 0 0 0 1px #cfd3d7;
+      }
+
+      .test-description {
+        margin: 0 0 10px;
+        color: var(--muted);
+        font-size: 0.73rem;
+        line-height: 1.55;
+      }
+
+      .example-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+        padding: 9px 10px;
+        border-radius: 9px;
+        color: #3f4b58;
+        background: #fff;
+        font-size: 0.73rem;
+      }
+
+      .example-row span {
+        color: var(--navy);
+        font-size: 0.65rem;
+        font-weight: 900;
+        white-space: nowrap;
+      }
+
+      .flow-line {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        align-items: center;
+      }
+
+      .flow-step {
+        padding: 5px 7px;
+        border: 1px solid #cfdae5;
+        border-radius: 7px;
+        color: var(--navy-strong);
+        background: #fff;
+        font-size: 0.64rem;
+        font-weight: 800;
+      }
+
+      .flow-arrow {
+        color: #8a96a2;
+        font-size: 0.68rem;
+      }
+
+      .expected-result {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.69rem;
+        line-height: 1.45;
+      }
+
+      .expected-result strong {
+        color: var(--ink);
+      }
+
+      .guide-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 7px;
+        margin-top: 10px;
+      }
+
+      .compact-button {
+        min-height: 33px;
+        padding: 6px 10px;
+        border: 1px solid var(--navy);
+        border-radius: 8px;
+        color: #fff;
+        background: var(--navy);
+        font-size: 0.69rem;
+        font-weight: 850;
+      }
+
+      .compact-button.ghost {
+        color: var(--navy);
+        background: #fff;
+      }
+
+      .compact-button.is-complete {
+        border-color: var(--success-line);
+        color: var(--success-ink);
+        background: var(--success-soft);
+      }
+
+      /* Existing chat-shaped context */
+      .chat-log {
+        overflow-y: auto;
+        height: min(510px, calc(100vh - 420px));
+        min-height: 390px;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background:
+          linear-gradient(rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0.68)),
+          repeating-linear-gradient(
+            0deg,
+            transparent,
+            transparent 63px,
+            rgba(95, 102, 112, 0.028) 64px
+          );
+      }
+
+      .date-divider {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 0 0 22px;
+        padding: 8px 0;
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 800;
+      }
+
+      .date-divider::before,
+      .date-divider::after {
+        height: 1px;
+        flex: 1;
+        background: var(--line);
+        content: "";
+      }
+
+      .date-divider time {
+        padding: 4px 9px;
+        border-radius: 999px;
+        background: var(--navy-soft);
+      }
+
+      .chat-message {
+        display: flex;
+        gap: 10px;
+        max-width: 78%;
+        margin-bottom: 24px;
+      }
+
+      .chat-message.user {
+        justify-content: flex-end;
+        margin-left: auto;
+      }
+
+      .avatar {
+        display: grid;
+        width: 38px;
+        height: 38px;
+        flex: 0 0 auto;
+        place-items: center;
+        border-radius: 12px;
+        color: var(--navy-strong);
+        background: var(--navy-soft);
+        box-shadow: inset 0 0 0 1px #c5d5e5;
+        font-size: 0.72rem;
+        font-weight: 900;
+      }
+
+      .message-column {
+        min-width: 0;
+      }
+
+      .message-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 3px 6px;
+        color: var(--muted);
+        font-size: 0.7rem;
+      }
+
+      .message-meta strong {
+        color: var(--navy-strong);
+        font-size: 0.78rem;
+      }
+
+      .user .message-meta {
+        justify-content: flex-end;
+      }
+
+      .message-bubble {
+        padding: 14px 15px;
+        border: 1px solid var(--ai-line);
+        border-radius: 5px 17px 17px;
+        background: var(--ai-soft);
+        box-shadow: 0 5px 14px rgba(31, 35, 40, 0.04);
+        font-size: 0.84rem;
+        line-height: 1.6;
+      }
+
+      .user .message-bubble {
+        border-color: #c7cdd4;
+        border-radius: 17px 5px 17px 17px;
+        background: var(--user-soft);
+      }
+
+      .message-bubble p {
+        margin: 0;
+      }
+
+      .selection-card {
+        margin-top: 11px;
+        padding: 11px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+      }
+
+      .selection-card strong {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 0.74rem;
+      }
+
+      .selection-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .selection-buttons button {
+        min-height: 34px;
+        padding: 6px 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        color: var(--navy);
+        background: var(--navy-soft);
+        font-size: 0.7rem;
+        font-weight: 800;
+      }
+
+      .chat-composer {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 9px;
+        align-items: end;
+        padding-top: 10px;
+        border-top: 1px solid var(--line);
+      }
+
+      .chat-composer textarea {
+        width: 100%;
+        min-height: 54px;
+        max-height: 130px;
+        resize: vertical;
+        padding: 14px;
+        border: 1px solid var(--line-strong);
+        border-radius: 12px;
+        color: var(--ink);
+        background: #fff;
+      }
+
+      .chat-composer button {
+        height: 54px;
+        padding: 0 18px;
+        border-radius: 10px;
+        color: #fff;
+        background: var(--navy);
+        font-weight: 850;
+      }
+
+      .prototype-toast {
+        position: fixed;
+        right: 22px;
+        bottom: 22px;
+        z-index: 5;
+        padding: 11px 14px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        color: #4c5661;
+        background: #fff;
+        box-shadow: var(--shadow-soft);
+        font-size: 0.76rem;
+        font-weight: 750;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(8px);
+        transition:
+          opacity 150ms ease,
+          transform 150ms ease;
+      }
+
+      .prototype-toast.is-visible {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      @media (max-width: 880px) {
+        .test-tabs {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .test-detail {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .chat-message {
+          max-width: 92%;
+        }
+
+        .chat-log {
+          height: 480px;
+        }
+      }
+
+      @media (max-width: 620px) {
+        .prototype-shell {
+          width: min(100% - 18px, 1180px);
+          margin-top: 10px;
+        }
+
+        .topbar,
+        .panel {
+          border-radius: 16px;
+        }
+
+        .topbar,
+        .panel-header {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .panel {
+          padding: 14px;
+        }
+
+        .test-tabs {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .guide-progress {
+          display: none;
+        }
+
+        .chat-log {
+          min-height: 380px;
+          padding: 13px;
+        }
+
+        .chat-message {
+          max-width: 100%;
+        }
+
+        .chat-composer {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .chat-composer button {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="prototype-shell">
+      <header class="topbar">
+        <div class="topbar-copy">
+          <strong>닥터앤서 AI 복약 케어 테스트</strong>
+          <span>2026-04-20 09:30</span>
+        </div>
+        <div class="service-states" aria-label="서비스 연결 상태">
+          <span class="service-state">Backend 정상</span>
+          <span class="service-state">AI Server 정상</span>
+        </div>
+      </header>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <p class="panel-kicker">AI CHAT</p>
+            <h1>에이전트와의 대화</h1>
+          </div>
+          <p class="prototype-note">테스트 시나리오 카드 배치 시안</p>
+        </div>
+
+        <details class="test-guide" open>
+          <summary>
+            <span class="guide-heading">
+              <strong>테스트 시나리오</strong>
+            </span>
+            <span class="guide-progress" aria-label="테스트 진행률">
+              <span class="progress-copy"><b id="completed-count">0</b>/5 완료</span>
+              <span class="progress-track" aria-hidden="true">
+                <span id="progress-bar"></span>
+              </span>
+            </span>
+            <span class="summary-chevron" aria-hidden="true"></span>
+          </summary>
+
+          <div class="guide-body">
+            <nav class="test-tabs" aria-label="테스트 시나리오 항목">
+              <button class="test-tab is-active" type="button" data-test-index="0">
+                <small>READ</small>
+                <strong>복약 현황 조회</strong>
+              </button>
+              <button class="test-tab" type="button" data-test-index="1">
+                <small>WRITE</small>
+                <strong>복약 기록</strong>
+              </button>
+              <button class="test-tab" type="button" data-test-index="2">
+                <small>MULTI WRITE</small>
+                <strong>여러 음식 기록</strong>
+              </button>
+              <button class="test-tab" type="button" data-test-index="3">
+                <small>SURVEY + WRITE</small>
+                <strong>부작용 평가</strong>
+              </button>
+              <button class="test-tab" type="button" data-test-index="4">
+                <small>POLICY WRITE</small>
+                <strong>알림 정책 변경</strong>
+              </button>
+            </nav>
+
+            <div class="test-detail">
+              <section class="test-brief">
+                <div class="brief-head">
+                  <h2 id="test-title">복약 현황 조회</h2>
+                  <div class="mode-badges" id="mode-badges">
+                    <span class="mode-badge">READ</span>
+                  </div>
+                </div>
+                <p class="test-description" id="test-description">
+                  오늘 복약 Snapshot 또는 복약 상태 조회 Tool이 실제 Backend 데이터를 읽고
+                  text 응답으로 정리하는지 확인합니다.
+                </p>
+                <div class="example-row">
+                  <span>예시 발화</span>
+                  <b id="test-example">오늘 먹을 약과 복용 상태를 알려줘</b>
+                </div>
+                <div class="flow-line" id="flow-line" aria-label="예상 처리 순서">
+                  <span class="flow-step">사용자 발화</span>
+                  <span class="flow-arrow">→</span>
+                  <span class="flow-step">복약 상태 조회</span>
+                  <span class="flow-arrow">→</span>
+                  <span class="flow-step">text 응답</span>
+                </div>
+              </section>
+
+              <aside class="test-criteria">
+                <p class="expected-result" id="expected-result">
+                  <strong>통과 기준</strong><br />
+                  Backend의 오늘 복약 상태와 화면에 표시되는 약 이름·상태가 일치해야 합니다.
+                </p>
+              </aside>
+            </div>
+
+            <div class="guide-actions">
+              <button class="compact-button ghost" id="fill-example" type="button">
+                예시 문장 입력
+              </button>
+              <button class="compact-button" id="toggle-complete" type="button">
+                완료로 표시
+              </button>
+            </div>
+          </div>
+        </details>
+
+        <div class="chat-log" role="log" aria-label="대화 내용 예시">
+          <div class="date-divider">
+            <time datetime="2026-04-20">2026년 4월 20일 월요일</time>
+          </div>
+
+          <article class="chat-message assistant">
+            <div class="avatar" aria-hidden="true">AI</div>
+            <div class="message-column">
+              <div class="message-meta">
+                <strong>닥터앤서 AI</strong>
+                <span>오전 9:30</span>
+              </div>
+              <div class="message-bubble">
+                <p>오늘 아침 루틴을 지키는 데 어려운 점이 있으셨나요?</p>
+              </div>
+            </div>
+          </article>
+
+          <article class="chat-message user">
+            <div class="message-column">
+              <div class="message-meta">
+                <span>오전 9:31</span>
+                <strong>나</strong>
+              </div>
+              <div class="message-bubble">
+                <p>아침에 토스트랑 우유 먹었는데 기록해줘</p>
+              </div>
+            </div>
+          </article>
+
+          <article class="chat-message assistant">
+            <div class="avatar" aria-hidden="true">AI</div>
+            <div class="message-column">
+              <div class="message-meta">
+                <strong>닥터앤서 AI</strong>
+                <span>오전 9:31</span>
+              </div>
+              <div class="message-bubble">
+                <p>먼저 드신 토스트와 가장 가까운 항목을 선택해 주세요.</p>
+                <div class="selection-card">
+                  <strong>항목 선택 (1/2)</strong>
+                  <div class="selection-buttons">
+                    <button type="button">토스트(식빵)</button>
+                    <button type="button">마늘토스트</button>
+                    <button type="button">오믈렛토스트</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <form class="chat-composer" id="prototype-composer">
+          <textarea
+            id="chat-input"
+            rows="2"
+            placeholder="AI 에이전트에게 질문해 주세요."
+            aria-label="메시지 입력"
+          ></textarea>
+          <button type="submit">보내기</button>
+        </form>
+      </section>
+    </main>
+
+    <div class="prototype-toast" id="prototype-toast" role="status">
+      HTML 배치 시안에서는 실제 요청을 전송하지 않습니다.
+    </div>
+
+    <script>
+      const tests = [
+        {
+          title: "복약 현황 조회",
+          modes: ["READ"],
+          description:
+            "오늘 복약 Snapshot 또는 복약 상태 조회 Tool이 실제 Backend 데이터를 읽고 text 응답으로 정리하는지 확인합니다.",
+          example: "오늘 먹을 약과 복용 상태를 알려줘",
+          flow: ["사용자 발화", "복약 상태 조회", "text 응답"],
+          expected:
+            "Backend의 오늘 복약 상태와 화면에 표시되는 약 이름·상태가 일치해야 합니다.",
+        },
+        {
+          title: "복약 기록",
+          modes: ["APPROVAL", "WRITE"],
+          description:
+            "복용 완료 발화가 바로 저장되지 않고, 사용자 승인 카드 이후 동기 쓰기 Tool로 기록되는지 확인합니다.",
+          example: "방금 암로디핀 5mg 먹었어",
+          flow: [
+            "사용자 발화",
+            "대상 복약 확인",
+            "기록 승인",
+            "Backend 동기 저장",
+            "text 결과",
+          ],
+          expected:
+            "승인 전에는 DB가 변경되지 않고, ‘기록’ 선택 후 해당 dose_event만 taken으로 변경되어야 합니다.",
+        },
+        {
+          title: "여러 음식 기록",
+          modes: ["MULTI", "APPROVAL", "WRITE"],
+          description:
+            "음식 목록을 한 번에 검색하고 각 음식 후보를 1/N 방식으로 순차 선택한 뒤, 한 번의 승인으로 전체 식사를 기록하는지 확인합니다.",
+          example: "아침에 토스트랑 우유 먹었는데 기록해줘",
+          flow: [
+            "음식 목록 검색",
+            "후보 선택 1/2",
+            "후보 선택 2/2",
+            "식사 기록 승인",
+            "Backend 동기 저장",
+          ],
+          expected:
+            "검색 Tool은 한 번만 호출되고, 모든 음식 선택이 끝난 후 foods 배열 전체가 한 식사로 저장되어야 합니다.",
+        },
+        {
+          title: "부작용 평가",
+          modes: ["SURVEY", "APPROVAL", "WRITE"],
+          description:
+            "증상 인식 후 PRO-CTCAE 원문 문항을 끝까지 순차 제시하고, 완료된 응답을 포함한 승인 카드 뒤에만 부작용 평가를 저장하는지 확인합니다.",
+          example: "어제 약을 먹고 속이 메스꺼웠어",
+          flow: [
+            "증상 평가",
+            "설문 1/2",
+            "설문 2/2",
+            "부작용 기록 승인",
+            "Backend 동기 저장",
+          ],
+          expected:
+            "모든 필수 문항에 답하기 전에는 기록 승인으로 넘어가지 않고, Excel 원문 문항·응답이 그대로 보존되어야 합니다.",
+        },
+        {
+          title: "알림 정책 변경",
+          modes: ["HIGH RISK", "APPROVAL", "WRITE"],
+          description:
+            "공개 policy_id를 조회한 뒤 변경안을 제안하고, 사용자가 승인해야만 Backend 정책 변경 API를 호출하는지 확인합니다.",
+          example: "미복용 알림을 복약 예정 120분 후로 바꿔줘",
+          flow: [
+            "현재 정책 조회",
+            "변경안 생성",
+            "정책 승인",
+            "Backend 동기 반영",
+            "변경 결과 조회",
+          ],
+          expected:
+            "승인 전 정책은 유지되고, 승인 후 같은 policy_id의 version이 증가하며 변경값이 다시 조회되어야 합니다.",
+        },
+      ];
+
+      const state = {
+        activeIndex: 0,
+        completed: new Set(),
+      };
+
+      const tabs = [...document.querySelectorAll(".test-tab")];
+      const title = document.querySelector("#test-title");
+      const description = document.querySelector("#test-description");
+      const example = document.querySelector("#test-example");
+      const badges = document.querySelector("#mode-badges");
+      const flowLine = document.querySelector("#flow-line");
+      const expected = document.querySelector("#expected-result");
+      const completedCount = document.querySelector("#completed-count");
+      const progressBar = document.querySelector("#progress-bar");
+      const completeButton = document.querySelector("#toggle-complete");
+      const chatInput = document.querySelector("#chat-input");
+      const toast = document.querySelector("#prototype-toast");
+      let toastTimer = null;
+
+      function showToast(message) {
+        toast.textContent = message;
+        toast.classList.add("is-visible");
+        window.clearTimeout(toastTimer);
+        toastTimer = window.setTimeout(() => {
+          toast.classList.remove("is-visible");
+        }, 2200);
+      }
+
+      function renderFlow(steps) {
+        flowLine.replaceChildren();
+        steps.forEach((step, index) => {
+          const item = document.createElement("span");
+          item.className = "flow-step";
+          item.textContent = step;
+          flowLine.append(item);
+          if (index < steps.length - 1) {
+            const arrow = document.createElement("span");
+            arrow.className = "flow-arrow";
+            arrow.textContent = "→";
+            flowLine.append(arrow);
+          }
+        });
+      }
+
+      function render() {
+        const current = tests[state.activeIndex];
+        title.textContent = current.title;
+        description.textContent = current.description;
+        example.textContent = current.example;
+
+        badges.replaceChildren();
+        current.modes.forEach((mode) => {
+          const badge = document.createElement("span");
+          badge.className = `mode-badge${
+            ["WRITE", "HIGH RISK"].includes(mode) ? " write" : ""
+          }`;
+          badge.textContent = mode;
+          badges.append(badge);
+        });
+
+        renderFlow(current.flow);
+        expected.innerHTML = `<strong>통과 기준</strong><br />${current.expected}`;
+
+        tabs.forEach((tab, index) => {
+          tab.classList.toggle("is-active", index === state.activeIndex);
+          tab.classList.toggle("is-complete", state.completed.has(index));
+          tab.setAttribute("aria-current", index === state.activeIndex ? "true" : "false");
+        });
+
+        const isComplete = state.completed.has(state.activeIndex);
+        completeButton.textContent = isComplete ? "완료 표시 취소" : "완료로 표시";
+        completeButton.classList.toggle("is-complete", isComplete);
+        completedCount.textContent = String(state.completed.size);
+        progressBar.style.width = `${(state.completed.size / tests.length) * 100}%`;
+      }
+
+      tabs.forEach((tab, index) => {
+        tab.addEventListener("click", () => {
+          state.activeIndex = index;
+          render();
+        });
+      });
+
+      document.querySelector("#fill-example").addEventListener("click", () => {
+        chatInput.value = tests[state.activeIndex].example;
+        chatInput.focus();
+        showToast("선택한 테스트 예시 문장을 입력했습니다.");
+      });
+
+      completeButton.addEventListener("click", () => {
+        if (state.completed.has(state.activeIndex)) {
+          state.completed.delete(state.activeIndex);
+        } else {
+          state.completed.add(state.activeIndex);
+        }
+        render();
+      });
+
+      document.querySelector("#prototype-composer").addEventListener("submit", (event) => {
+        event.preventDefault();
+        showToast("HTML 배치 시안에서는 실제 요청을 전송하지 않습니다.");
+      });
+
+      render();
+    </script>
+  </body>
+</html>
