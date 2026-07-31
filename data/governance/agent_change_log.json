@@ -10,5 +10,17 @@
     "approval_status": "recorded",
     "created_at": "2026-06-20T06:38:44.766409+00:00",
     "source": "LOGS"
+  },
+  {
+    "id": "chg-missed-dose-llm-v1",
+    "change_type": "prompt",
+    "target": "MissedDoseAgent:missed_dose_generation_v1",
+    "summary": "Backend-owned missed-dose policy with one Tool-free LLM message generation and no stock-message fallback",
+    "owner": "Agent/Backend",
+    "rollback": "Disable missed-dose AI delivery or restore the previous approved LLM prompt; do not enable a synthetic production response",
+    "evidence": "24 focused missed-dose/fail-closed tests and PROD-EVAL-031..033",
+    "approval_status": "recorded",
+    "created_at": "2026-07-29T00:00:00+09:00",
+    "source": "Codex"
   }
 ]

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent_app.tools.side_effects import side_effect_pro_ctcae_summary
-from agent_app.tools.names import (
+from shared.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
@@ -28,14 +28,35 @@ from shared.redaction import redact_for_logging, redacted_clinical_text_label
 from shared.schemas import ToolCallResult
 
 
+def public_tool_calls(
+    tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Remove one-time capabilities from response and trace projections."""
+
+    public_calls: list[dict[str, Any]] = []
+    for call in tool_calls:
+        public_call = dict(call)
+        arguments = call.get("arguments")
+        if isinstance(arguments, dict) and "approval_key" in arguments:
+            public_call["arguments"] = {
+                key: value
+                for key, value in arguments.items()
+                if key != "approval_key"
+            }
+            public_call["arguments"]["approval_key_present"] = True
+        public_calls.append(public_call)
+    return public_calls
+
+
 def tool_calls_payload(tool_calls: list[dict[str, Any]], results: list[ToolCallResult]) -> dict[str, Any]:
+    public_calls = public_tool_calls(tool_calls)
     payload: dict[str, Any] = {
-        "tool_calls": tool_calls,
+        "tool_calls": public_calls,
         "tool_results": [_safe_tool_result_payload(result) for result in results],
         "tools_executed": any(result.status != "skipped" for result in results),
     }
-    if tool_calls:
-        payload["tool_call"] = tool_calls[0]
+    if public_calls:
+        payload["tool_call"] = public_calls[0]
     tool_argument_queues = _tool_argument_queues(tool_calls)
     for result in results:
         call_arguments = _next_tool_arguments(tool_argument_queues, result.tool_name)
@@ -137,9 +158,9 @@ def tool_result_summary(results: list[ToolCallResult], fallback: str) -> str:
         return "PRO-CTCAE 문항을 불러오지 못했습니다. 증상이 심하거나 지속되면 의료진 또는 약사에게 확인하세요."
     if last.tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT:
         if last.status == "success" and last.response.get("suspected"):
-            return "PHR 주의사항 조회 결과 복용 중인 품목과 관련 가능성이 확인되었습니다."
+            return "현재 복약정보와 의약품 부작용 기준정보에서 관련 가능성이 확인되었습니다."
         if last.status == "success":
-            return "현재 PHR 기준으로 직접 일치하는 대표 부작용은 확인되지 않았습니다."
+            return "현재 복약정보와 기준정보에서 직접 일치하는 대표 부작용은 확인되지 않았습니다."
         return "부작용 정보를 조회하지 못했습니다. 증상이 심하거나 지속되면 의료진 또는 약사에게 확인하세요."
     if last.tool_name == GET_SIDE_EFFECT_HISTORY:
         if last.status != "success":

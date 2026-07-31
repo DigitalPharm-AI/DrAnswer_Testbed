@@ -11,9 +11,8 @@ from sqlalchemy.orm import Session
 from agent_app.jobs.tasks import reset_running_async_tasks
 from agent_app.jobs.worker import async_task_worker
 from agent_app.persistence.db import engine
-from agent_app.persistence.migrations import run_migrations
-from agent_app.persistence.models import Base
-from agent_app.runtime import create_orchestrator
+from agent_app.persistence.schema import verify_agent_schema_current
+from agent_app.runtime import create_runtime_components
 from shared.settings import get_settings
 
 logger = logging.getLogger("agent_app.worker")
@@ -31,9 +30,11 @@ def main() -> None:
 
 def _run_worker() -> None:
     settings = get_settings()
-    settings.require_internal_api_token_in_production()
-    Base.metadata.create_all(bind=engine)
-    run_migrations(engine)
+    settings.require_internal_api_token()
+    settings.require_backend_read_database_url()
+    settings.require_agent_postgresql()
+    settings.require_backend_read_postgresql()
+    verify_agent_schema_current(engine)
     with Session(engine) as session:
         restored = reset_running_async_tasks(session)
         session.commit()
@@ -50,8 +51,13 @@ def _run_worker() -> None:
         if hasattr(signal, signal_name):
             signal.signal(getattr(signal, signal_name), request_stop)
 
+    runtime_components = create_runtime_components()
     logger.info("agent_async_worker_starting")
-    async_task_worker(stop_event, create_orchestrator())
+    async_task_worker(
+        stop_event,
+        runtime_components.orchestrator,
+        runtime_components.tool_server.backend_queries,
+    )
     logger.info("agent_async_worker_stopped")
 
 

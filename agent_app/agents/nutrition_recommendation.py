@@ -5,8 +5,8 @@ from typing import Any
 from agent_app.agents.tool_chat import ToolChatAgentGraph
 from agent_app.llm.prompts import nutrition_recommendation_agent_prompt
 from agent_app.providers.base import BaseLLMProvider
-from agent_app.tools.names import SOURCE_NUTRITION_RECOMMENDATION_AGENT
-from agent_app.tools.permissions import NUTRITION_RECOMMENDATION_TOOLS
+from shared.tool_names import SOURCE_NUTRITION_RECOMMENDATION_AGENT
+from shared.tool_permissions import NUTRITION_RECOMMENDATION_TOOLS
 from agent_app.tools.runtime import ToolRuntime
 from shared.schemas import AgentResponse
 
@@ -26,5 +26,9 @@ class NutritionRecommendationAgent:
             source_event_type=SOURCE_NUTRITION_RECOMMENDATION_AGENT,
         )
 
-    async def run(self, trace_id: str, request_payload: dict[str, Any], *, forced_tool_calls: list[dict[str, Any]] | None = None) -> AgentResponse:
-        return await self.graph_runner.invoke(trace_id, request_payload, forced_tool_calls=forced_tool_calls)
+    async def run(
+        self,
+        trace_id: str,
+        request_payload: dict[str, Any],
+    ) -> AgentResponse:
+        return await self.graph_runner.invoke(trace_id, request_payload)

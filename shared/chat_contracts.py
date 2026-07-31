@@ -7,10 +7,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from shared.contract_boundary import remove_retired_conversation_fields
+from shared.public_ids import PatientId, RequestId, UserMessageId
 from shared.schemas import AgentResponse
 
-RequestedReturnType = Literal["selection_box", "input_box"]
+RequestedReturnType = Literal["text", "selection_box", "input_box"]
 ChatMessageType = Literal["text", "selection_box", "input_box"]
+ChatStreamStatus = Literal["streaming", "completed", "error"]
 INPUT_BOX_MESSAGE_MAX_BYTES = 32_768
 INPUT_BOX_MESSAGE_MAX_FIELDS = 100
 
@@ -26,14 +29,12 @@ class StrictChatContractModel(BaseModel):
 
 
 class ChatSyncRequest(StrictChatContractModel):
-    request_id: str = Field(min_length=1)
-    message_id: str = Field(
-        min_length=1,
+    request_id: RequestId
+    message_id: UserMessageId = Field(
         description="Backend user chat_messages.public_id (opaque string).",
     )
-    conversation_id: str = Field(min_length=1)
-    patient_id: str = Field(min_length=1)
-    requested_return_type: RequestedReturnType | None
+    patient_id: PatientId
+    requested_return_type: RequestedReturnType
     message: str = Field(min_length=1)
     message_at: datetime
 
@@ -125,9 +126,8 @@ class ChatMessageContent(StrictChatContractModel):
 
 
 class ChatSyncResponse(StrictChatContractModel):
-    request_id: str = Field(min_length=1)
-    message_id: str = Field(
-        min_length=1,
+    request_id: RequestId
+    message_id: UserMessageId = Field(
         description="Echo of the Backend user chat_messages.public_id.",
     )
     message_type: ChatMessageType
@@ -175,11 +175,67 @@ class ChatContractError(StrictChatContractModel):
     code: str = Field(min_length=1)
     message: str = Field(min_length=1)
     retryable: bool
-    details: dict[str, Any] | None = None
+    details: dict[str, Any] | None
 
 
 class ChatErrorResponse(StrictChatContractModel):
+    request_id: RequestId | None
     error: ChatContractError
+
+
+class ChatStreamEvent(StrictChatContractModel):
+    request_id: RequestId
+    message_id: UserMessageId
+    sequence: int = Field(ge=0)
+    status: ChatStreamStatus
+    message_type: ChatMessageType | None
+    delta: str | None
+    message: ChatMessageContent | None
+    error: ChatContractError | None
+    event_at: datetime
+
+    @field_validator("event_at")
+    @classmethod
+    def validate_event_at(cls, value: datetime) -> datetime:
+        return _validate_aware_datetime(value)
+
+    @model_validator(mode="after")
+    def validate_status_payload(self) -> ChatStreamEvent:
+        if self.status == "streaming":
+            if self.message_type != "text":
+                raise ValueError("streaming_event_requires_text_message_type")
+            if self.delta is None or not self.delta:
+                raise ValueError("streaming_event_requires_delta")
+            if self.message is not None or self.error is not None:
+                raise ValueError("streaming_event_forbids_message_and_error")
+            return self
+
+        if self.status == "completed":
+            if self.message_type is None or self.message is None:
+                raise ValueError(
+                    "completed_event_requires_message_type_and_message"
+                )
+            if self.delta is not None or self.error is not None:
+                raise ValueError("completed_event_forbids_delta_and_error")
+            ChatSyncResponse(
+                request_id=self.request_id,
+                message_id=self.message_id,
+                message_type=self.message_type,
+                message=self.message,
+                message_at=self.event_at,
+            )
+            return self
+
+        if (
+            self.message_type is not None
+            or self.delta is not None
+            or self.message is not None
+            or self.error is None
+        ):
+            raise ValueError(
+                "error_event_requires_only_error_payload"
+            )
+        return self
 
 
 def agent_chat_payload(
@@ -187,12 +243,16 @@ def agent_chat_payload(
     *,
     backend_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    backend_context = (
+        remove_retired_conversation_fields(backend_context)
+        if backend_context is not None
+        else None
+    )
     context = {
         "request_metadata": {
-            "contract_version": "v1.2",
+            "contract_version": "v1.3",
             "request_id": request.request_id,
             "message_id": request.message_id,
-            "conversation_id": request.conversation_id,
             "patient_id": request.patient_id,
             "requested_return_type": request.requested_return_type,
             "message_at": request.message_at.isoformat(),
@@ -200,15 +260,85 @@ def agent_chat_payload(
     }
     if backend_context:
         context["backend_read_context"] = backend_context
+        recent_chat = backend_context.get("recent_chat")
+        if isinstance(recent_chat, list):
+            context["recent_chat"] = recent_chat
+            context["recent_chat_complete"] = (
+                backend_context.get("recent_chat_complete") is True
+            )
+            context["recent_chat_limit"] = backend_context.get(
+                "recent_chat_limit"
+            )
+        structured_response_context = backend_context.get(
+            "structured_response_context"
+        )
+        if isinstance(structured_response_context, dict):
+            context["structured_response_context"] = (
+                structured_response_context
+            )
+        patient_snapshot = backend_context.get("patient_context_snapshot")
+        if isinstance(patient_snapshot, dict):
+            context["trusted_patient_context"] = patient_snapshot
+            context["patient_context_snapshot"] = llm_safe_patient_snapshot(
+                patient_snapshot
+            )
+        missed_dose_reply = backend_context.get("missed_dose_reply")
+        if isinstance(missed_dose_reply, dict):
+            context["missed_dose_reply"] = missed_dose_reply
     return {
         "patient_id": request.patient_id,
-        "phr_patient_key": None,
         "event_type": "multiturn_chat",
         "message": request.message,
         "current_time": request.message_at,
         "context": context,
         "callback_context": None,
     }
+
+
+def llm_safe_patient_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    safe = {
+        "as_of": snapshot.get("as_of"),
+        "date": snapshot.get("date"),
+        "read_contract_version": snapshot.get("read_contract_version"),
+        "context_mode": snapshot.get("context_mode"),
+        "availability": snapshot.get("availability"),
+        "profile": snapshot.get("profile"),
+        "active_conditions": snapshot.get("active_conditions"),
+        "active_treatments": snapshot.get("active_treatments"),
+        "active_medication_schedules": snapshot.get(
+            "active_medication_schedules"
+        ),
+        "today_medication": snapshot.get("today_medication"),
+        "today_meals": snapshot.get("today_meals"),
+        "active_notification_policies": snapshot.get(
+            "active_notification_policies"
+        ),
+    }
+    return _remove_tool_managed_fields(
+        remove_retired_conversation_fields(safe)
+    )
+
+
+def _remove_tool_managed_fields(value: Any) -> Any:
+    hidden_fields = {
+        "conversation_id",
+        "conversationId",
+        "patient_id",
+        "dose_event_id",
+        "policy_id",
+        "record_id",
+        "parent_record_id",
+        "version",
+    }
+    if isinstance(value, dict):
+        return {
+            key: _remove_tool_managed_fields(item)
+            for key, item in value.items()
+            if key not in hidden_fields
+        }
+    if isinstance(value, list):
+        return [_remove_tool_managed_fields(item) for item in value]
+    return value
 
 
 def chat_sync_response(request: ChatSyncRequest, response: AgentResponse) -> ChatSyncResponse:
@@ -222,19 +352,41 @@ def chat_sync_response(request: ChatSyncRequest, response: AgentResponse) -> Cha
     )
 
 
+def has_structured_ui_response(response: AgentResponse) -> bool:
+    """Return whether the completed Agent response already owns a UI card."""
+
+    structured = response.structured_payload
+    candidate = _contract_message_candidate(structured)
+    if candidate is not None:
+        declared_type, raw_message = candidate
+        return (
+            declared_type in {"selection_box", "input_box"}
+            or raw_message.get("selections") is not None
+            or raw_message.get("inputs") is not None
+        )
+    if isinstance(structured.get("mutation_confirmation"), dict):
+        return True
+    questionnaire = structured.get("ae_pro_ctcae")
+    if isinstance(questionnaire, dict) and _first_question(questionnaire) is not None:
+        return True
+    return bool(_candidate_selections(structured))
+
+
 def chat_error(
     code: str,
     message: str,
     *,
+    request_id: str | None = None,
     retryable: bool,
     details: dict[str, Any] | None = None,
 ) -> ChatErrorResponse:
     return ChatErrorResponse(
+        request_id=request_id,
         error=ChatContractError(
             code=code,
             message=message,
             retryable=retryable,
-            details=details,
+            details=remove_retired_conversation_fields(details),
         )
     )
 
@@ -253,7 +405,7 @@ def _external_message(response: AgentResponse) -> tuple[ChatMessageType, ChatMes
             ChatMessageContent(
                 message_title=_optional_text(display.get("title")),
                 text=response.human_summary or _optional_text(display.get("question")),
-                tables=None,
+                tables=_confirmation_tables(display),
                 selections=_confirmation_selections(display),
                 inputs=None,
             ),
@@ -262,18 +414,35 @@ def _external_message(response: AgentResponse) -> tuple[ChatMessageType, ChatMes
     questionnaire = structured.get("ae_pro_ctcae")
     if isinstance(questionnaire, dict):
         question = _first_question(questionnaire)
-        if question is not None:
-            symptom_name = _optional_text(question.get("korean_symptom_name"))
-            return (
-                "selection_box",
-                ChatMessageContent(
-                    message_title=f"{symptom_name} 관련 자가 보고 설문" if symptom_name else "자가 보고 설문",
-                    text=_optional_text(question.get("question")) or response.human_summary,
-                    tables=None,
-                    selections=[str(value) for value in question["response_options"]],
-                    inputs=None,
-                ),
-            )
+        if question is None:
+            raise ValueError("ae_pro_ctcae_question_invalid")
+        symptom_name = (
+            _optional_text(question.get("korean_symptom_name"))
+            or _optional_text(questionnaire.get("matched_korean_symptom_name"))
+            or _optional_text(questionnaire.get("input_symptom"))
+        )
+        if symptom_name is None:
+            raise ValueError("ae_pro_ctcae_symptom_name_missing")
+        question_text = _optional_text(question.get("question"))
+        if question_text is None:
+            raise ValueError("ae_pro_ctcae_question_text_missing")
+        symptom_subject = (
+            symptom_name if symptom_name.endswith("증상") else f"{symptom_name} 증상"
+        )
+        guidance = (
+            f"{symptom_subject}이 약물과 관련이 있을 수 있습니다. "
+            "아래의 질문에 답변해 주시면 증상을 더 정확하게 평가할 수 있습니다."
+        )
+        return (
+            "selection_box",
+            ChatMessageContent(
+                message_title=f"{symptom_name} 관련 자가 보고 설문",
+                text=f"{guidance}\n\n{question_text}",
+                tables=None,
+                selections=[str(value) for value in question["response_options"]],
+                inputs=None,
+            ),
+        )
 
     selections = _candidate_selections(structured)
     if selections:
@@ -327,26 +496,6 @@ def parse_input_box_message(message: str) -> dict[str, str | int | float | bool 
         if isinstance(value, float) and not math.isfinite(value):
             raise ValueError("input_box_message_numbers_must_be_finite")
     return parsed
-
-
-def input_box_message(
-    labels: list[str],
-    values: list[str],
-) -> str:
-    if not labels or len(labels) != len(values):
-        raise ValueError("input_box_values_invalid")
-    normalized_labels = [label.strip() for label in labels]
-    if any(not label for label in normalized_labels):
-        raise ValueError("input_box_labels_must_not_be_blank")
-    if len(set(normalized_labels)) != len(normalized_labels):
-        raise ValueError("input_box_labels_must_be_unique")
-    encoded = json.dumps(
-        dict(zip(normalized_labels, values, strict=True)),
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    parse_input_box_message(encoded)
-    return encoded
 
 
 def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -445,7 +594,28 @@ def _confirmation_selections(display: dict[str, Any]) -> list[str]:
                     values.append(label)
         if values:
             return values
-    return ["변경 적용", "취소"]
+    return [
+        _optional_text(display.get("action_label")) or "변경 적용",
+        "취소",
+    ]
+
+
+def _confirmation_tables(
+    display: dict[str, Any],
+) -> list[ChatTable] | None:
+    raw_tables = display.get("tables")
+    if raw_tables is None:
+        return None
+    if not isinstance(raw_tables, list):
+        raise ValueError("mutation_confirmation_tables_invalid")
+    tables = [
+        ChatTable.model_validate(table)
+        for table in raw_tables
+        if isinstance(table, dict)
+    ]
+    if len(tables) != len(raw_tables):
+        raise ValueError("mutation_confirmation_tables_invalid")
+    return tables or None
 
 
 def _first_question(questionnaire: dict[str, Any]) -> dict[str, Any] | None:

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 
 from agent_app.security import require_internal_api_token
 from agent_app.tools.mcp_server import AgentMcpToolServer
+from shared.tool_names import SOURCE_MCP
 
 router = APIRouter()
 
@@ -30,10 +31,9 @@ async def agent_mcp(payload: dict[str, Any]) -> dict[str, Any]:
     params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
     meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
     context_payload = meta.get("payload") if isinstance(meta.get("payload"), dict) else {}
-    source_event_type = meta.get("source_event_type") or params.get("source_event_type") or "mcp"
     return await _mcp_server().handle_json_rpc(
         payload,
         trace_id=str(meta.get("trace_id") or f"mcp:{uuid.uuid4().hex}"),
-        source_event_type=str(source_event_type),
+        source_event_type=SOURCE_MCP,
         payload=context_payload,
     )

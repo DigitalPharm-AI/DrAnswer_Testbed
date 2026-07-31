@@ -12,14 +12,16 @@ from agent_app.llm.messages import (
     build_chat_messages,
     langchain_tools_from_catalog,
     model_output_from_ai_message,
+    model_output_with_tool_calls,
     tool_calls_from_ai_message,
     tool_messages_from_results,
 )
 from agent_app.errors import AgentExecutionError
-from agent_app.llm.generation import agent_error
+from agent_app.llm.generation import PROMPT_VERSION_ID, agent_error
+from agent_app.observability.model_calls import traced_model_ainvoke
 from agent_app.llm.validation import validate_llm_output
 from agent_app.providers.base import BaseLLMProvider
-from agent_app.tools.catalog import ToolCatalog
+from shared.tool_catalog import ToolCatalog
 from agent_app.tools.policy import normalize_policy_tool_calls
 from agent_app.tools.runtime import ToolRuntime
 from shared.redaction import safe_exception_summary
@@ -109,7 +111,7 @@ class SingleRoundToolAgentGraph:
 
     async def _decision_llm(self, state: SingleRoundAgentGraphState) -> dict[str, Any]:
         request_payload = state["request_payload"]
-        catalog_tools = ToolCatalog.tools_for(*self.tool_names)
+        catalog_tools = ToolCatalog.model_tools_for(*self.tool_names)
         messages = build_chat_messages(
             self.prompt,
             {
@@ -120,13 +122,18 @@ class SingleRoundToolAgentGraph:
             },
         )
         bound_model = self.provider.chat_model().bind_tools(langchain_tools_from_catalog(catalog_tools))
-        ai_message = await bound_model.ainvoke(messages)
+        ai_message = await traced_model_ainvoke(
+            bound_model,
+            messages,
+            name=f"{self.agent_name}.decision",
+            prompt_version_id=PROMPT_VERSION_ID,
+        )
         model_output = model_output_from_ai_message(ai_message)
         tool_calls = normalize_policy_tool_calls(
             tool_calls_from_ai_message(ai_message),
             source_event_type=self.source_event_type,
         )
-        validation_output = _model_output_with_tool_calls(model_output, tool_calls)
+        validation_output = model_output_with_tool_calls(model_output, tool_calls)
         self._validate_output(
             state["trace_id"],
             validation_output,
@@ -136,7 +143,7 @@ class SingleRoundToolAgentGraph:
         if tool_calls:
             ai_message = ai_message_from_tool_calls(
                 tool_calls,
-                content=str(ai_message.content or ""),
+                content=ai_message.content,
                 model_output=validation_output,
             )
         return {
@@ -171,7 +178,7 @@ class SingleRoundToolAgentGraph:
             raise RuntimeError("single_round_tool_execution_result_count_mismatch")
         executed_ai_message = ai_message_from_tool_calls(
             executed_calls,
-            content=str(ai_message.content or ""),
+            content=ai_message.content,
             model_output=model_output,
         )
         tool_messages = tool_messages_from_results(executed_ai_message, executed_calls, results)
@@ -186,7 +193,12 @@ class SingleRoundToolAgentGraph:
     async def _final_llm(self, state: SingleRoundAgentGraphState) -> dict[str, Any]:
         messages = state["messages"]
         final_messages = [SystemMessage(content=self.final_prompt), *messages[1:]]
-        final_ai_message = await self.provider.chat_model().ainvoke(final_messages)
+        final_ai_message = await traced_model_ainvoke(
+            self.provider.chat_model(),
+            final_messages,
+            name=f"{self.agent_name}.final",
+            prompt_version_id=PROMPT_VERSION_ID,
+        )
         if tool_calls_from_ai_message(final_ai_message):
             raise RuntimeError("single_round_finalizer_returned_tool_calls")
         final_model_output = model_output_from_ai_message(final_ai_message)
@@ -233,17 +245,6 @@ class SingleRoundToolAgentGraph:
             ) from exc
     def _response_node(self, state: SingleRoundAgentGraphState) -> dict[str, AgentResponse]:
         return {"response": self.response_builder(state)}
-
-
-def _model_output_with_tool_calls(
-    model_output: dict[str, Any],
-    tool_calls: list[dict[str, Any]],
-) -> dict[str, Any]:
-    merged = dict(model_output)
-    if tool_calls:
-        merged.pop("tool_call", None)
-        merged["tool_calls"] = tool_calls
-    return merged
 
 
 def single_round_message_flow(tool_result_count: int) -> list[str]:

@@ -1,0 +1,194 @@
+{
+  "contract": "Backend DB read contract",
+  "contract_version": "1.3",
+  "object_prefix": "ai_v13_",
+  "access": {
+    "allowed_operations": [
+      "SELECT"
+    ],
+    "forbidden_operations": [
+      "INSERT",
+      "UPDATE",
+      "DELETE",
+      "DDL"
+    ],
+    "grant_policy": "Grant the AI DB role SELECT on the listed views only. Do not grant access to Backend base tables.",
+    "session_requirement": "Every AI DB session must enforce transaction read-only mode."
+  },
+  "data_handling": {
+    "query_shape": "Fixed parameterized queries owned by AI Server tools; caller-supplied SQL is prohibited.",
+    "patient_scope": "patient_id is injected from trusted chat context and must be present in every patient-scoped predicate.",
+    "ai_server_persistence": "Query rows and raw patient content must not be persisted in the AI internal trace/tool-state database.",
+    "identifier_contract": "message, dose_event, meal, and food IDs are opaque public strings. Backend numeric primary keys are never accepted or returned as those entity IDs.",
+    "public_id_format": "Every active v1.3 public ID uses its entity prefix followed by exactly 16 lowercase hexadecimal characters."
+  },
+  "readiness_gates": [
+    "all views exist",
+    "view columns exactly match this contract",
+    "patient-scope identifiers, public IDs, and version fields contain no NULL values",
+    "a zero-row SELECT succeeds for every view",
+    "the DB session reports read-only mode"
+  ],
+  "views": {
+    "ai_v13_chat_messages": {
+      "patient_scoped": true,
+      "columns": [
+        "id",
+        "patient_id",
+        "role",
+        "content",
+        "created_at",
+        "message_type",
+        "message_payload_json",
+        "reply_to_message_id",
+        "metadata_json"
+      ]
+    },
+    "ai_v13_patient_profiles": {
+      "patient_scoped": true,
+      "columns": [
+        "patient_id",
+        "age",
+        "gender",
+        "height",
+        "weight",
+        "disease",
+        "activity_level",
+        "egfr",
+        "ckd_stage",
+        "ckd_risk",
+        "updated_at"
+      ]
+    },
+    "ai_v13_active_medication_schedules": {
+      "patient_scoped": true,
+      "columns": [
+        "patient_id",
+        "medication_name",
+        "dosage",
+        "instructions",
+        "treatment_area",
+        "start_date",
+        "end_date",
+        "slot_label",
+        "scheduled_time",
+        "source_type",
+        "source_key"
+      ]
+    },
+    "ai_v13_dose_events": {
+      "patient_scoped": true,
+      "columns": [
+        "id",
+        "patient_id",
+        "medication_name",
+        "slot_label",
+        "scheduled_for",
+        "status",
+        "taken_at",
+        "note",
+        "version",
+        "missed_dose_request_id",
+        "adherence_pattern_context_json",
+        "tone_policy_context_json"
+      ]
+    },
+    "ai_v13_nutrition_meals": {
+      "patient_scoped": true,
+      "columns": [
+        "id",
+        "patient_id",
+        "meal_type",
+        "meal_date",
+        "meal_time",
+        "scenario_key",
+        "description",
+        "version"
+      ]
+    },
+    "ai_v13_nutrition_foods": {
+      "patient_scoped": "through ai_v13_nutrition_meals.meal_id",
+      "columns": [
+        "id",
+        "meal_id",
+        "food_ref_id",
+        "food_name",
+        "portion",
+        "calories",
+        "protein",
+        "sodium",
+        "fat",
+        "carbohydrates",
+        "version"
+      ]
+    },
+    "ai_v13_nutrition_food_ref": {
+      "patient_scoped": false,
+      "columns": [
+        "food_ref_id",
+        "food_name",
+        "category",
+        "serving_size",
+        "energy",
+        "carbohydrate",
+        "protein",
+        "fat",
+        "sodium",
+        "source",
+        "manufacturer"
+      ]
+    },
+    "ai_v13_side_effect_records": {
+      "patient_scoped": true,
+      "columns": [
+        "id",
+        "patient_id",
+        "medication_name",
+        "symptom_text",
+        "symptom_onset_text",
+        "suspected",
+        "severity_result_json",
+        "matched_effects_json",
+        "matched_items_json",
+        "related_dose_event_id",
+        "version",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    "ai_v13_nutrition_preferences": {
+      "patient_scoped": true,
+      "columns": [
+        "patient_id",
+        "status",
+        "predicate",
+        "strength",
+        "safety_level",
+        "confidence",
+        "source",
+        "evidence_text",
+        "node_key",
+        "node_type",
+        "label"
+      ]
+    },
+    "ai_v13_reminder_policies": {
+      "patient_scoped": true,
+      "columns": [
+        "id",
+        "patient_id",
+        "policy_key",
+        "slot_label",
+        "extra_reminders",
+        "interval_minutes",
+        "missed_dose_after_minutes",
+        "primary_reminder_timing",
+        "primary_reminder_offset_minutes",
+        "effective_start_date",
+        "effective_end_date",
+        "active",
+        "version"
+      ]
+    }
+  }
+}

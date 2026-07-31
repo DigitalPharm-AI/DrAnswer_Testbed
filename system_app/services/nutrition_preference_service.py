@@ -237,7 +237,6 @@ def record_preference_fact(
     safety_level: str | None = None,
     source: str = "agent_tool",
     evidence_text: str = "",
-    source_trace_id: str = "",
 ) -> dict[str, Any]:
     if predicate not in PREFERENCE_PREDICATES:
         raise ValueError(f"unsupported_preference_predicate:{predicate}")
@@ -264,7 +263,6 @@ def record_preference_fact(
             confidence=_clamp_float(confidence),
             source=source,
             evidence_text=evidence_text,
-            source_trace_id=source_trace_id,
             status="active",
             created_at=now,
             updated_at=now,
@@ -277,7 +275,6 @@ def record_preference_fact(
         fact.confidence = _clamp_float(confidence)
         fact.source = source or fact.source
         fact.evidence_text = evidence_text or fact.evidence_text
-        fact.source_trace_id = source_trace_id or fact.source_trace_id
         fact.status = "active"
         fact.updated_at = now
         session.flush()
@@ -367,7 +364,6 @@ def preference_fact_view(fact: NutritionPatientPreferenceTriple, node: Nutrition
         "confidence": fact.confidence,
         "source": fact.source,
         "evidence_text": fact.evidence_text,
-        "source_trace_id": fact.source_trace_id,
         "status": fact.status,
         "updated_at": fact.updated_at.isoformat() if fact.updated_at else "",
     }

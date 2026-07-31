@@ -14,6 +14,7 @@ SECRET_KEY_MARKERS = (
     "token",
     "api_key",
     "access_key",
+    "approval_key",
 )
 
 SAFE_TOKEN_METRIC_KEYS = {
@@ -28,7 +29,6 @@ SAFE_TOKEN_METRIC_KEYS = {
 
 HASHED_IDENTIFIER_KEYS = {
     "patient_id",
-    "phr_patient_key",
     "medical_record_number",
     "mrn",
     "resident_registration_number",

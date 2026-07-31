@@ -1,0 +1,1207 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "닥터앤서 Backend v1.3 AI 쓰기 연동 API",
+    "version": "1.3",
+    "description": "AI Server가 사용자 확인을 마친 업무 데이터 변경을 Backend Server에 동기로 요청하는 v1.3 계약이다. 공개 식별자는 종류별 prefix와 16자리 lowercase hex 접미사를 사용한다."
+  },
+  "paths": {
+    "/agent/sync/record-change": {
+      "post": {
+        "summary": "Backend Record Change",
+        "operationId": "backend_record_change_agent_sync_record_change_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordChangeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request schema validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer authentication failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The target record was not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency, confirmation reference, or version conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Business validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Backend processing error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BackendApiBearer": []
+          }
+        ]
+      }
+    },
+    "/agent/sync/notification-policy-change": {
+      "post": {
+        "summary": "Backend Policy Change",
+        "operationId": "backend_policy_change_agent_sync_notification_policy_change_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationPolicyChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationPolicyChangeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request schema validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer authentication failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The public policy_id was not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency, confirmation reference, or version conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Date or policy boundary business validation failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected Backend processing error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BackendApiBearer": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CommonErrorResponse": {
+        "properties": {
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^req_[0-9a-f]{16}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "error": {
+            "$ref": "#/components/schemas/ContractError"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "error"
+        ],
+        "title": "CommonErrorResponse"
+      },
+      "ContractError": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Message"
+          },
+          "retryable": {
+            "type": "boolean",
+            "title": "Retryable"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "retryable",
+          "details"
+        ],
+        "title": "ContractError"
+      },
+      "MedicationDoseEventMutationPayload": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "taken",
+            "title": "Status"
+          },
+          "taken_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Taken At"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "MedicationDoseEventMutationPayload"
+      },
+      "MedicationSideEffectMutationPayload": {
+        "properties": {
+          "medication_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Medication Name"
+          },
+          "symptom_text": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Symptom Text"
+          },
+          "symptom_onset_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Symptom Onset Text"
+          },
+          "suspected": {
+            "type": "boolean",
+            "title": "Suspected"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/ProCtcaeSeverityResult"
+          },
+          "matched_effects": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Effects"
+          },
+          "matched_items": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Items"
+          },
+          "related_dose_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^dose_[0-9a-f]{16}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Related Dose Event Id",
+            "description": "Related medication dose-event public opaque ID."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "symptom_text",
+          "suspected",
+          "severity"
+        ],
+        "title": "MedicationSideEffectMutationPayload"
+      },
+      "NotificationPolicyChangeRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Request Id"
+          },
+          "source_chat_request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Source Chat Request Id"
+          },
+          "confirmation_message_id": {
+            "type": "string",
+            "pattern": "^user_msg_[0-9a-f]{16}$",
+            "title": "Confirmation Message Id",
+            "description": "Confirmed user chat_messages.public_id (opaque string)."
+          },
+          "patient_id": {
+            "type": "string",
+            "pattern": "^patient_[0-9a-f]{16}$",
+            "title": "Patient Id"
+          },
+          "policy_id": {
+            "type": "string",
+            "pattern": "^npol_[0-9a-f]{16}$",
+            "title": "Policy Id"
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Version"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/NotificationPolicyDecisionPayload"
+          },
+          "requested_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Requested At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "source_chat_request_id",
+          "confirmation_message_id",
+          "patient_id",
+          "policy_id",
+          "expected_version",
+          "payload",
+          "requested_at"
+        ],
+        "title": "NotificationPolicyChangeRequest"
+      },
+      "NotificationPolicyChangeResponse": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Request Id"
+          },
+          "result": {
+            "$ref": "#/components/schemas/NotificationPolicyChangeResult"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Processed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "result",
+          "processed_at"
+        ],
+        "title": "NotificationPolicyChangeResponse"
+      },
+      "NotificationPolicyChangeResult": {
+        "properties": {
+          "policy_id": {
+            "type": "string",
+            "pattern": "^npol_[0-9a-f]{16}$",
+            "title": "Policy Id"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "apply",
+              "keep"
+            ],
+            "title": "Decision"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "policy_id",
+          "decision",
+          "version"
+        ],
+        "title": "NotificationPolicyChangeResult"
+      },
+      "NotificationPolicyChanges": {
+        "properties": {
+          "extra_reminders": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 5.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extra Reminders"
+          },
+          "interval_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 60.0,
+                "minimum": 5.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Minutes"
+          },
+          "missed_dose_after_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 240.0,
+                "minimum": 15.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Missed Dose After Minutes"
+          },
+          "primary_reminder_timing": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "before",
+                  "at",
+                  "after"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Reminder Timing"
+          },
+          "primary_reminder_offset_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 120.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Reminder Offset Minutes"
+          },
+          "effective_start_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Start Date"
+          },
+          "effective_end_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective End Date"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "NotificationPolicyChanges"
+      },
+      "NotificationPolicyDecisionPayload": {
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "apply",
+              "keep"
+            ],
+            "title": "Decision"
+          },
+          "changes": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NotificationPolicyChanges"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "decision",
+          "reason"
+        ],
+        "title": "NotificationPolicyDecisionPayload"
+      },
+      "NutritionFoodItem": {
+        "properties": {
+          "food_ref_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Food Ref Id"
+          },
+          "food_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Food Name"
+          },
+          "portion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portion"
+          },
+          "nutrients": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NutritionNutrients"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "food_name"
+        ],
+        "title": "NutritionFoodItem"
+      },
+      "NutritionFoodMutationPayload": {
+        "properties": {
+          "food_ref_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Food Ref Id"
+          },
+          "food_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Food Name"
+          },
+          "portion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Portion"
+          },
+          "nutrients": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NutritionNutrients"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "NutritionFoodMutationPayload"
+      },
+      "NutritionMealMutationPayload": {
+        "properties": {
+          "meal_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "breakfast",
+                  "lunch",
+                  "dinner",
+                  "snack"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meal Type"
+          },
+          "meal_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meal Date"
+          },
+          "meal_time": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meal Time",
+            "description": "24-hour HH:mm."
+          },
+          "scenario_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario Key"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "foods": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/NutritionFoodItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Foods"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "NutritionMealMutationPayload"
+      },
+      "NutritionNutrients": {
+        "properties": {
+          "calories": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calories"
+          },
+          "protein": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protein"
+          },
+          "sodium": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sodium"
+          },
+          "fat": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fat"
+          },
+          "carbohydrates": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carbohydrates"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "NutritionNutrients"
+      },
+      "ProCtcaeQuestion": {
+        "properties": {
+          "item_code": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Item Code"
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Question"
+          },
+          "response_type": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Response Type"
+          },
+          "response_options": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Response Options"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "item_code",
+          "question",
+          "response_type",
+          "response_options"
+        ],
+        "title": "ProCtcaeQuestion"
+      },
+      "ProCtcaeResponse": {
+        "properties": {
+          "item_code": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Item Code"
+          },
+          "response_index": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Response Index"
+          },
+          "response_text": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Response Text"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "item_code",
+          "response_index",
+          "response_text"
+        ],
+        "title": "ProCtcaeResponse"
+      },
+      "ProCtcaeSeverityResult": {
+        "properties": {
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/ProCtcaeQuestion"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Questions"
+          },
+          "responses": {
+            "items": {
+              "$ref": "#/components/schemas/ProCtcaeResponse"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Responses"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "questions",
+          "responses"
+        ],
+        "title": "ProCtcaeSeverityResult"
+      },
+      "RecordChangeRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Request Id"
+          },
+          "source_chat_request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Source Chat Request Id"
+          },
+          "confirmation_message_id": {
+            "type": "string",
+            "pattern": "^user_msg_[0-9a-f]{16}$",
+            "title": "Confirmation Message Id",
+            "description": "Confirmed user chat_messages.public_id (opaque string)."
+          },
+          "patient_id": {
+            "type": "string",
+            "pattern": "^patient_[0-9a-f]{16}$",
+            "title": "Patient Id"
+          },
+          "resource_type": {
+            "type": "string",
+            "enum": [
+              "nutrition_meal",
+              "nutrition_food",
+              "medication_dose_event",
+              "medication_side_effect"
+            ],
+            "title": "Resource Type"
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "create",
+              "update",
+              "delete"
+            ],
+            "title": "Operation"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id",
+            "description": "Target resource public opaque ID."
+          },
+          "parent_record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Record Id",
+            "description": "Parent resource public opaque ID when required."
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NutritionMealMutationPayload"
+              },
+              {
+                "$ref": "#/components/schemas/NutritionFoodMutationPayload"
+              },
+              {
+                "$ref": "#/components/schemas/MedicationDoseEventMutationPayload"
+              },
+              {
+                "$ref": "#/components/schemas/MedicationSideEffectMutationPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload"
+          },
+          "requested_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Requested At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "source_chat_request_id",
+          "confirmation_message_id",
+          "patient_id",
+          "resource_type",
+          "operation",
+          "record_id",
+          "parent_record_id",
+          "expected_version",
+          "payload",
+          "requested_at"
+        ],
+        "title": "RecordChangeRequest"
+      },
+      "RecordChangeResponse": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Request Id"
+          },
+          "result": {
+            "$ref": "#/components/schemas/RecordChangeResult"
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Processed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "result",
+          "processed_at"
+        ],
+        "title": "RecordChangeResponse"
+      },
+      "RecordChangeResult": {
+        "properties": {
+          "resource_type": {
+            "type": "string",
+            "enum": [
+              "nutrition_meal",
+              "nutrition_food",
+              "medication_dose_event",
+              "medication_side_effect"
+            ],
+            "title": "Resource Type"
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "create",
+              "update",
+              "delete"
+            ],
+            "title": "Operation"
+          },
+          "record_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Record Id",
+            "description": "Target resource public opaque ID."
+          },
+          "parent_record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Record Id",
+            "description": "Parent resource public opaque ID when required."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "resource_type",
+          "operation",
+          "record_id",
+          "version"
+        ],
+        "title": "RecordChangeResult"
+      }
+    },
+    "securitySchemes": {
+      "BackendApiBearer": {
+        "type": "http",
+        "description": "AI Server가 Backend v1.3 쓰기 API를 호출할 때 사용하는 Bearer token",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "x-ai-server-tool-boundary": {
+    "contract_version": "1.3",
+    "public_id_suffix": "16 lowercase hexadecimal characters",
+    "model_arguments": [
+      "target business record identifiers",
+      "requested business changes",
+      "policy decision"
+    ],
+    "tool_managed_arguments": [
+      "patient_id",
+      "expected_version",
+      "request_id",
+      "source_chat_request_id",
+      "confirmation_message_id",
+      "requested_at",
+      "reason"
+    ],
+    "notification_policy_id": "Backend가 발급한 reminder_policies.public_id",
+    "additional_properties": false
+  }
+}

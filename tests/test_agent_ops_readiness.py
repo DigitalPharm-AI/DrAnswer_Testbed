@@ -12,16 +12,15 @@ import agent_app.main as agent_main
 from agent_app.persistence import db as agent_db
 from agent_app.jobs.tasks import DEAD, enqueue_async_task
 from agent_app.persistence.models import AgentAsyncTask
-from agent_app.persistence.models import Base as AgentBase
 from agent_app.jobs.readiness import agent_ops_readiness_payload
 from agent_app.jobs.status import mark_worker_started
 from shared.settings import get_settings
 from shared.time_utils import utc_now
+from tests.helpers import build_agent_engine
 
 
 def build_agent_session():
-    engine = create_engine("sqlite:///:memory:", future=True)
-    AgentBase.metadata.create_all(bind=engine)
+    engine, _cleanup = build_agent_engine("agent_ops_readiness")
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)()
 
 
@@ -42,12 +41,14 @@ def test_agent_ops_readiness_flags_dead_callback_and_provider_failures():
     with build_agent_session() as session:
         enqueue_async_task(
             session,
-            request_id="chat_continuation:notification:callback-failed",
-            task_type="chat_continuation",
-            payload={"message": "증상 원문", "phr_patient_key": "secret"},
+            request_id="push_message:notification:callback-failed",
+            task_type="push_message",
+            payload={"message": "증상 원문", "patient_id": "patient-private"},
             max_attempts=1,
         )
-        callback_task = session.query(AgentAsyncTask).filter_by(request_id="chat_continuation:notification:callback-failed").one()
+        callback_task = session.query(AgentAsyncTask).filter_by(
+            request_id="push_message:notification:callback-failed"
+        ).one()
         callback_task.status = DEAD
         callback_task.attempts = 1
         callback_task.completed_at = utc_now()
@@ -91,9 +92,7 @@ def test_agent_ops_readiness_flags_dead_callback_and_provider_failures():
 
 def test_agent_db_routes_run_as_sync_endpoints():
     db_route_handlers = (
-        agent_main.async_daily_patterns,
         agent_main.async_missed_dose_events,
-        agent_main.async_chat_continuations,
         agent_main.async_push_messages,
         agent_main.async_clinician_alerts,
         agent_main.async_task_status,
@@ -109,16 +108,17 @@ def test_agent_db_routes_run_as_sync_endpoints():
 
 
 def test_agent_readiness_returns_connections_before_worker_reuse(tmp_path, monkeypatch):
-    database_path = tmp_path / "agent-readiness-concurrency.db"
+    isolation_engine, cleanup = build_agent_engine(
+        "agent_readiness_concurrency"
+    )
     engine = create_engine(
-        f"sqlite:///{database_path.as_posix()}",
-        connect_args={"check_same_thread": False},
+        isolation_engine.url,
         pool_size=2,
         max_overflow=0,
         pool_timeout=1,
         future=True,
     )
-    AgentBase.metadata.create_all(bind=engine)
+    isolation_engine.dispose()
     session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
     monkeypatch.setattr(agent_main, "SessionLocal", session_factory)
     monkeypatch.setattr(agent_db, "SessionLocal", session_factory)
@@ -127,8 +127,8 @@ def test_agent_readiness_returns_connections_before_worker_reuse(tmp_path, monke
         def verify_contract(self):
             return {
                 "ok": True,
-                "contract_version": "1.2",
-                "dialect": "sqlite",
+                "contract_version": "1.3",
+                "dialect": "postgresql",
                 "read_only": True,
                 "views": [],
             }
@@ -153,6 +153,7 @@ def test_agent_readiness_returns_connections_before_worker_reuse(tmp_path, monke
         assert engine.pool.checkedout() == 0
     finally:
         engine.dispose()
+        cleanup()
 
 
 def test_agent_readiness_fails_closed_when_backend_read_contract_is_unavailable(

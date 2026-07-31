@@ -1,0 +1,659 @@
+{
+  "schema_version": "1",
+  "suite": "DRAnswer AI v1.3 live HTTP conformance",
+  "phase": "initial",
+  "release": "20260730T002607Z",
+  "started_at": "2026-07-30T00:47:11.129185+00:00",
+  "completed_at": "2026-07-30T00:47:11.749796+00:00",
+  "summary": {
+    "total": 50,
+    "passed": 50,
+    "failed": 0
+  },
+  "results": [
+    {
+      "case_id": "OPS-001",
+      "area": "operations",
+      "expected": "GET /health returns deployed release",
+      "passed": true,
+      "duration_ms": 4.0,
+      "evidence": {
+        "status": "ok",
+        "release": "20260730T002607Z"
+      },
+      "error": null
+    },
+    {
+      "case_id": "OPS-002",
+      "area": "operations",
+      "expected": "ready in intentional callback hold mode",
+      "passed": true,
+      "duration_ms": 2.7,
+      "evidence": {
+        "status": "ready",
+        "database_ready": true,
+        "callback_mode": "hold",
+        "callback_delivery_ready": false
+      },
+      "error": null
+    },
+    {
+      "case_id": "SPEC-001",
+      "area": "contract artifacts",
+      "expected": "served v1.3 artifacts are byte-identical to deployed files",
+      "passed": true,
+      "duration_ms": 7.02,
+      "evidence": {
+        "sha256": {
+          "chat.json": "f44670d72b2370f65946bf73fa78563b28b2ec1222a40b5f8f6ac7f004553a43",
+          "async-medication.json": "e646608f5a11f02cc7fa1aa3134e1c1d06d63d27f0df37e9484ca00975cdb042",
+          "backend-callbacks.json": "9fa585fe25437d8c97aa0f0d271499579c74a99458965aaa530680128cbe3fc6"
+        }
+      },
+      "error": null
+    },
+    {
+      "case_id": "SPEC-002",
+      "area": "OpenAPI",
+      "expected": "only four public routes, Bearer security, no 422 drift",
+      "passed": true,
+      "duration_ms": 33.62,
+      "evidence": {
+        "public_paths": [
+          "/agent/async/chat_feedback",
+          "/agent/async/daily-medication-pattern-analysis",
+          "/agent/async/missed-dose-events",
+          "/agent/sync/chat"
+        ],
+        "chat_media_type": "application/x-ndjson"
+      },
+      "error": null
+    },
+    {
+      "case_id": "AUTH-001",
+      "area": "authentication",
+      "expected": "/agent/sync/chat rejects missing/wrong/non-Bearer credentials",
+      "passed": true,
+      "duration_ms": 2.05,
+      "evidence": {
+        "status": 401,
+        "code": "UNAUTHORIZED"
+      },
+      "error": null
+    },
+    {
+      "case_id": "AUTH-002",
+      "area": "authentication",
+      "expected": "/agent/async/chat_feedback rejects missing/wrong/non-Bearer credentials",
+      "passed": true,
+      "duration_ms": 1.86,
+      "evidence": {
+        "status": 401,
+        "code": "UNAUTHORIZED"
+      },
+      "error": null
+    },
+    {
+      "case_id": "AUTH-003",
+      "area": "authentication",
+      "expected": "/agent/async/missed-dose-events rejects missing/wrong/non-Bearer credentials",
+      "passed": true,
+      "duration_ms": 1.61,
+      "evidence": {
+        "status": 401,
+        "code": "UNAUTHORIZED"
+      },
+      "error": null
+    },
+    {
+      "case_id": "AUTH-004",
+      "area": "authentication",
+      "expected": "/agent/async/daily-medication-pattern-analysis rejects missing/wrong/non-Bearer credentials",
+      "passed": true,
+      "duration_ms": 1.6,
+      "evidence": {
+        "status": 401,
+        "code": "UNAUTHORIZED"
+      },
+      "error": null
+    },
+    {
+      "case_id": "AUTH-005",
+      "area": "authentication",
+      "expected": "internal callback inspection requires separate control token",
+      "passed": true,
+      "duration_ms": 1.53,
+      "evidence": {
+        "status": 401
+      },
+      "error": null
+    },
+    {
+      "case_id": "AUTH-006",
+      "area": "authentication",
+      "expected": "rejected calls do not mutate request storage",
+      "passed": true,
+      "duration_ms": 152.84,
+      "evidence": {
+        "persisted_unauthorized_requests": 0
+      },
+      "error": null
+    },
+    {
+      "case_id": "CHAT-001",
+      "area": "sync chat",
+      "expected": "text returns valid LF-framed NDJSON",
+      "passed": true,
+      "duration_ms": 5.8,
+      "evidence": {
+        "status": 200,
+        "events": 2,
+        "sequences": [
+          0,
+          1
+        ],
+        "terminal_type": "text"
+      },
+      "error": null
+    },
+    {
+      "case_id": "CHAT-002",
+      "area": "sync chat",
+      "expected": "selection_box returns valid LF-framed NDJSON",
+      "passed": true,
+      "duration_ms": 4.88,
+      "evidence": {
+        "status": 200,
+        "events": 2,
+        "sequences": [
+          0,
+          1
+        ],
+        "terminal_type": "selection_box"
+      },
+      "error": null
+    },
+    {
+      "case_id": "CHAT-003",
+      "area": "sync chat",
+      "expected": "input_box returns valid LF-framed NDJSON",
+      "passed": true,
+      "duration_ms": 4.86,
+      "evidence": {
+        "status": 200,
+        "events": 2,
+        "sequences": [
+          0,
+          1
+        ],
+        "terminal_type": "input_box"
+      },
+      "error": null
+    },
+    {
+      "case_id": "CHAT-004",
+      "area": "sync chat idempotency",
+      "expected": "same body replays one stored terminal event at sequence 0",
+      "passed": true,
+      "duration_ms": 3.92,
+      "evidence": {
+        "status": 200,
+        "events": 1,
+        "terminal_sequence": 0
+      },
+      "error": null
+    },
+    {
+      "case_id": "CHAT-005",
+      "area": "sync chat idempotency",
+      "expected": "changed body with same request_id returns 409",
+      "passed": true,
+      "duration_ms": 3.38,
+      "evidence": {
+        "status": 409,
+        "code": "IDEMPOTENCY_CONFLICT"
+      },
+      "error": null
+    },
+    {
+      "case_id": "CHAT-006",
+      "area": "sync chat validation",
+      "expected": "missing Accept returns contract 400 instead of 422",
+      "passed": true,
+      "duration_ms": 1.77,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "CHAT-007",
+      "area": "sync chat validation",
+      "expected": "extra retired field returns contract 400 instead of 422",
+      "passed": true,
+      "duration_ms": 1.86,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "CHAT-008",
+      "area": "sync chat validation",
+      "expected": "naive datetime returns contract 400 instead of 422",
+      "passed": true,
+      "duration_ms": 1.95,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "CHAT-009",
+      "area": "sync chat validation",
+      "expected": "invalid input_box JSON string returns contract 400 instead of 422",
+      "passed": true,
+      "duration_ms": 2.99,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "CHAT-010",
+      "area": "sync chat validation",
+      "expected": "invalid public request ID returns request_id null",
+      "passed": true,
+      "duration_ms": 1.58,
+      "evidence": {
+        "status": 400,
+        "request_id": null
+      },
+      "error": null
+    },
+    {
+      "case_id": "CHAT-011",
+      "area": "sync chat validation",
+      "expected": "malformed JSON returns safe contract 400",
+      "passed": true,
+      "duration_ms": 1.26,
+      "evidence": {
+        "status": 400,
+        "request_id": null
+      },
+      "error": null
+    },
+    {
+      "case_id": "FB-001",
+      "area": "chat feedback",
+      "expected": "reaction-only feedback is accepted",
+      "passed": true,
+      "duration_ms": 4.13,
+      "evidence": {
+        "status": 202,
+        "reaction": "like",
+        "accepted_at_aware": true
+      },
+      "error": null
+    },
+    {
+      "case_id": "FB-002",
+      "area": "chat feedback",
+      "expected": "text-only feedback is accepted",
+      "passed": true,
+      "duration_ms": 3.87,
+      "evidence": {
+        "status": 202,
+        "reaction": null,
+        "accepted_at_aware": true
+      },
+      "error": null
+    },
+    {
+      "case_id": "FB-003",
+      "area": "chat feedback",
+      "expected": "reaction plus text is accepted",
+      "passed": true,
+      "duration_ms": 4.1,
+      "evidence": {
+        "status": 202,
+        "reaction": "like"
+      },
+      "error": null
+    },
+    {
+      "case_id": "FB-004",
+      "area": "chat feedback idempotency",
+      "expected": "trim-normalized same body replays exact 202 response",
+      "passed": true,
+      "duration_ms": 3.38,
+      "evidence": {
+        "status": 202,
+        "exact_response_replay": true
+      },
+      "error": null
+    },
+    {
+      "case_id": "FB-005",
+      "area": "chat feedback idempotency",
+      "expected": "changed normalized body returns 409",
+      "passed": true,
+      "duration_ms": 3.24,
+      "evidence": {
+        "status": 409,
+        "code": "IDEMPOTENCY_CONFLICT"
+      },
+      "error": null
+    },
+    {
+      "case_id": "FB-006",
+      "area": "chat feedback validation",
+      "expected": "reaction and text both null returns contract 400",
+      "passed": true,
+      "duration_ms": 1.88,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "FB-007",
+      "area": "chat feedback validation",
+      "expected": "blank text returns contract 400",
+      "passed": true,
+      "duration_ms": 1.68,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "FB-008",
+      "area": "chat feedback validation",
+      "expected": "text over 4000 characters returns contract 400",
+      "passed": true,
+      "duration_ms": 1.8,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "FB-009",
+      "area": "chat feedback validation",
+      "expected": "naive feedback time returns contract 400",
+      "passed": true,
+      "duration_ms": 1.59,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "FB-010",
+      "area": "chat feedback validation",
+      "expected": "user message ID in assistant field returns contract 400",
+      "passed": true,
+      "duration_ms": 1.69,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "FB-011",
+      "area": "chat feedback validation",
+      "expected": "extra retired field returns contract 400",
+      "passed": true,
+      "duration_ms": 1.55,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "FB-012",
+      "area": "chat feedback privacy",
+      "expected": "free text is absent and request digest is keyed, not plain SHA",
+      "passed": true,
+      "duration_ms": 29.58,
+      "evidence": {
+        "plaintext_present": false,
+        "plain_sha256_stored": false,
+        "digest_length": 64,
+        "database_kind": "postgresql"
+      },
+      "error": null
+    },
+    {
+      "case_id": "IDEM-001",
+      "area": "idempotency scope",
+      "expected": "same request_id is independent across endpoint paths",
+      "passed": true,
+      "duration_ms": 66.34,
+      "evidence": {
+        "status": 202,
+        "same_request_id_records": 2
+      },
+      "error": null
+    },
+    {
+      "case_id": "MISS-001",
+      "area": "missed-dose acceptance",
+      "expected": "new event returns 202 accepted",
+      "passed": true,
+      "duration_ms": 6.07,
+      "evidence": {
+        "request_id": "req_5741e118c6bd4613",
+        "status": "accepted"
+      },
+      "error": null
+    },
+    {
+      "case_id": "MISS-002",
+      "area": "missed-dose idempotency",
+      "expected": "same event returns 200 duplicate",
+      "passed": true,
+      "duration_ms": 3.61,
+      "evidence": {
+        "request_id": "req_5741e118c6bd4613",
+        "status": "duplicate"
+      },
+      "error": null
+    },
+    {
+      "case_id": "MISS-003",
+      "area": "missed-dose idempotency",
+      "expected": "changed event body returns 409",
+      "passed": true,
+      "duration_ms": 3.51,
+      "evidence": {
+        "status": 409,
+        "code": "IDEMPOTENCY_CONFLICT"
+      },
+      "error": null
+    },
+    {
+      "case_id": "MISS-004",
+      "area": "missed-dose validation",
+      "expected": "invalid dose ID returns contract 400",
+      "passed": true,
+      "duration_ms": 1.83,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "MISS-005",
+      "area": "missed-dose validation",
+      "expected": "extra field returns contract 400",
+      "passed": true,
+      "duration_ms": 1.71,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "DAILY-001",
+      "area": "daily analysis acceptance",
+      "expected": "new two-patient request returns 202 accepted",
+      "passed": true,
+      "duration_ms": 5.55,
+      "evidence": {
+        "request_id": "req_b765eec456df43c5",
+        "status": "accepted"
+      },
+      "error": null
+    },
+    {
+      "case_id": "DAILY-002",
+      "area": "daily analysis idempotency",
+      "expected": "same body returns 200 duplicate",
+      "passed": true,
+      "duration_ms": 3.74,
+      "evidence": {
+        "request_id": "req_b765eec456df43c5",
+        "status": "duplicate"
+      },
+      "error": null
+    },
+    {
+      "case_id": "DAILY-003",
+      "area": "daily analysis idempotency",
+      "expected": "patient array order change returns 409",
+      "passed": true,
+      "duration_ms": 3.32,
+      "evidence": {
+        "status": 409,
+        "code": "IDEMPOTENCY_CONFLICT"
+      },
+      "error": null
+    },
+    {
+      "case_id": "DAILY-004",
+      "area": "daily analysis validation",
+      "expected": "empty patient array returns contract 400",
+      "passed": true,
+      "duration_ms": 1.89,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "DAILY-005",
+      "area": "daily analysis validation",
+      "expected": "duplicate patients returns contract 400",
+      "passed": true,
+      "duration_ms": 1.74,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "DAILY-006",
+      "area": "daily analysis validation",
+      "expected": "scalar patient ID returns contract 400",
+      "passed": true,
+      "duration_ms": 2.0,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "DAILY-007",
+      "area": "daily analysis validation",
+      "expected": "invalid date returns contract 400",
+      "passed": true,
+      "duration_ms": 1.83,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "DAILY-008",
+      "area": "daily analysis validation",
+      "expected": "extra retired field returns contract 400",
+      "passed": true,
+      "duration_ms": 1.63,
+      "evidence": {
+        "status": 400,
+        "code": "INVALID_REQUEST"
+      },
+      "error": null
+    },
+    {
+      "case_id": "CALLBACK-001",
+      "area": "callback outbox",
+      "expected": "three spec-valid callbacks are held with attempts 0",
+      "passed": true,
+      "duration_ms": 3.6,
+      "evidence": {
+        "callbacks": 3,
+        "statuses": [
+          "held"
+        ],
+        "attempts": [
+          0
+        ],
+        "paths": [
+          "/api/agent/async/missed-dose-results",
+          "/api/agent/async/notification-policy-change-proposals"
+        ]
+      },
+      "error": null
+    },
+    {
+      "case_id": "CALLBACK-002",
+      "area": "callback containment",
+      "expected": "release is refused while Backend delivery is unconfigured",
+      "passed": true,
+      "duration_ms": 5.56,
+      "evidence": {
+        "status": 409,
+        "callback_status_after": "held",
+        "attempts_after": 0
+      },
+      "error": null
+    },
+    {
+      "case_id": "CALLBACK-003",
+      "area": "callback containment",
+      "expected": "hold mode performs no delivery attempts",
+      "passed": true,
+      "duration_ms": 204.19,
+      "evidence": {
+        "held": 3,
+        "max_attempts": 0
+      },
+      "error": null
+    }
+  ],
+  "not_exercised": [
+    "404 ownership/not-found branches require a real Backend read view",
+    "500/503/504 fault injection was not performed on the shared test endpoint",
+    "Outbound callback delivery requires the future Backend URL and token",
+    "Medical/LLM answer quality is outside this deterministic contract stub"
+  ]
+}

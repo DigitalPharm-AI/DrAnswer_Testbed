@@ -2,9 +2,11 @@ import asyncio
 import json
 from datetime import datetime, timedelta
 
-from sqlalchemy import create_engine
+import pytest
 from sqlalchemy.orm import sessionmaker
 
+from agent_app.errors import AgentExecutionError
+from agent_app.jobs import worker as async_worker
 from agent_app.agents.multiturn_chat import MultiturnChatAgent
 from agent_app.jobs.tasks import (
     DEAD,
@@ -17,16 +19,17 @@ from agent_app.jobs.tasks import (
     claim_next_async_task,
     dismiss_dead_async_task,
     enqueue_async_task,
+    mark_async_task_done,
     mark_async_task_failed,
+    mark_async_task_terminal_failure,
     retry_dead_async_task,
+    stage_async_task_callback_delivery,
 )
 from agent_app.jobs.tasks import (
     RUNNING as TASK_RUNNING,
 )
-from agent_app.jobs.worker import _execute_snapshot
 from agent_app.persistence.models import AgentWorkerHeartbeat
-from agent_app.persistence.models import Base as AgentBase
-from agent_app.providers.rule_based import RuleBasedProvider
+from agent_app.providers.deterministic_test import DeterministicTestProvider
 from agent_app.tools.runtime import ToolRuntime
 from agent_app.jobs.status import (
     WORKER_RUNNING,
@@ -39,29 +42,73 @@ from agent_app.jobs.status import (
     worker_status_payload,
 )
 from shared.time_utils import utc_now
+from shared.settings import get_settings
 from shared.schemas import (
-    AgentAsyncChatResultRequest,
     AgentAsyncClinicianAlertRequest,
-    AgentAsyncJobResultRequest,
-    AgentResponse,
-    MissedDoseEventPayload,
+    AgentCallbackContext,
     MultiturnChatRequest,
 )
-from system_app.models import AgentJob, ChatMessage, Notification
-from system_app.services.agent_async_callback_service import (
-    process_async_chat_result_callback,
-    process_async_clinician_alert_callback,
-    process_async_job_result_callback,
+from system_app.models import (
+    DoseEvent,
+    DoseSchedule,
+    MedicationPlan,
+    Notification,
 )
-from system_app.services.agent_jobs import DONE, RUNNING, create_agent_job
+from system_app.services.agent_async_callback_service import (
+    process_async_clinician_alert_callback,
+)
 from system_app.services.clock_service import ensure_clock
-from tests.helpers import build_session
+from tests.helpers import build_agent_engine, build_session
+
+
+TEST_PATIENT_ID = get_settings().patient_id
 
 
 def build_agent_session():
-    engine = create_engine("sqlite:///:memory:", future=True)
-    AgentBase.metadata.create_all(bind=engine)
+    engine, _cleanup = build_agent_engine("agent_async_callbacks")
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)()
+
+
+def _seed_dose_event(
+    session,
+    *,
+    event_id: int,
+    status: str = "scheduled",
+) -> DoseEvent:
+    plan, schedule = _seed_dose_parent(session)
+    event = DoseEvent(
+        id=event_id,
+        patient_id=TEST_PATIENT_ID,
+        plan_id=plan.id,
+        schedule_id=schedule.id,
+        medication_name="test medication",
+        slot_label="morning 08:00",
+        scheduled_for=datetime(2026, 4, 20, 8, 0),
+        status=status,
+    )
+    session.add(event)
+    session.flush()
+    return event
+
+
+def _seed_dose_parent(session) -> tuple[MedicationPlan, DoseSchedule]:
+    plan = MedicationPlan(
+        patient_id=TEST_PATIENT_ID,
+        medication_name="test medication",
+        start_date=datetime(2026, 4, 20).date(),
+        end_date=datetime(2026, 4, 20).date(),
+        active=True,
+    )
+    session.add(plan)
+    session.flush()
+    schedule = DoseSchedule(
+        plan_id=plan.id,
+        slot_label="morning 08:00",
+        scheduled_time="08:00",
+    )
+    session.add(schedule)
+    session.flush()
+    return plan, schedule
 
 
 def test_agent_async_task_enqueue_deduplicates_request_id():
@@ -138,6 +185,252 @@ def test_agent_async_task_failure_retries_then_dead():
         assert dead_task.run_after is None
 
 
+def test_agent_async_task_uncertain_provider_timeout_is_terminal():
+    with build_agent_session() as session:
+        task, _created = enqueue_async_task(
+            session,
+            request_id="missed_dose:timeout:1",
+            task_type="missed_dose",
+            payload={"dose_event_id": 1},
+            max_attempts=3,
+        )
+        claimed = claim_next_async_task(
+            session,
+            worker_id="worker-a",
+            visibility_timeout_seconds=60,
+        )
+        assert claimed is not None
+
+        failed = mark_async_task_terminal_failure(
+            session,
+            task.id,
+            "llm_generation_timeout:0.1s",
+        )
+
+        assert failed is not None
+        assert failed.status == DEAD
+        assert failed.attempts == 1
+        assert failed.completed_at is not None
+        assert failed.run_after is None
+        assert failed.locked_by == ""
+        assert failed.locked_until is None
+
+
+def test_worker_only_callbacks_missed_dose_failure_with_safe_public_error():
+    missed_dose = async_worker._failure_callback_envelope(
+        {
+            "request_id": "req_0000000012345678",
+            "task_type": "missed_dose",
+        },
+        RuntimeError("provider secret diagnostic"),
+    )
+    daily_pattern = async_worker._failure_callback_envelope(
+        {
+            "request_id": "req_0000000087654321",
+            "task_type": "daily_pattern_analysis",
+        },
+        RuntimeError("provider secret diagnostic"),
+    )
+
+    assert missed_dose is not None
+    path, payload, bearer = missed_dose
+    assert path == "/api/agent/async/missed-dose-results"
+    assert bearer is True
+    assert payload == {
+        "request_id": "req_0000000012345678",
+        "status": "failed",
+        "result": None,
+        "error": {
+            "code": "AI_PROCESSING_ERROR",
+            "message": (
+                "An internal AI Server processing error occurred."
+            ),
+            "retryable": True,
+        },
+    }
+    assert "provider secret diagnostic" not in json.dumps(payload)
+    assert daily_pattern is None
+
+
+def test_worker_callback_exposes_specific_safe_llm_error():
+    callback = async_worker._failure_callback_envelope(
+        {
+            "request_id": "req_0000000012345678",
+            "task_type": "missed_dose",
+        },
+        AgentExecutionError(
+            "provider secret diagnostic",
+            error_type="llm_output_parse_failed",
+            trace_id="trace-internal",
+            agent_name="missed-dose-agent",
+            decision_type="missed-dose",
+        ),
+    )
+
+    assert callback is not None
+    _path, payload, _bearer = callback
+    assert payload["request_id"] == "req_0000000012345678"
+    assert payload["error"] == {
+        "code": "LLM_OUTPUT_PARSE_FAILED",
+        "message": (
+            "The LLM response could not be parsed as the required JSON "
+            "object."
+        ),
+        "retryable": True,
+    }
+    assert "provider secret diagnostic" not in json.dumps(payload)
+    assert "trace-internal" not in json.dumps(payload)
+
+
+def test_terminal_failure_callback_is_retried_from_persisted_outbox_until_ack(
+    monkeypatch,
+):
+    sent_payloads: list[dict] = []
+    callback_payload = {
+        "request_id": "missed_dose:failure-callback:1",
+        "status": "failed",
+        "result": None,
+        "error": {
+            "code": "AI_PROCESSING_ERROR",
+            "message": "provider exhausted",
+            "retryable": True,
+        },
+    }
+
+    with build_agent_session() as session:
+        task, _created = enqueue_async_task(
+            session,
+            request_id=callback_payload["request_id"],
+            task_type="missed_dose",
+            payload={"dose_event_id": "dose_test"},
+            max_attempts=2,
+        )
+        claimed = claim_next_async_task(session, worker_id="worker-a")
+        assert claimed is not None
+        mark_async_task_terminal_failure(
+            session,
+            task.id,
+            "provider exhausted",
+        )
+        staged = stage_async_task_callback_delivery(
+            session,
+            task.id,
+            callback_payload=callback_payload,
+            callback_path="/api/agent/async/missed-dose-results",
+            callback_bearer=True,
+            processing_error="provider exhausted",
+        )
+        assert staged is not None
+        assert staged.status == PENDING
+        assert staged.attempts == 0
+
+        callback_claim = claim_next_async_task(
+            session,
+            worker_id="callback-worker",
+        )
+        assert callback_claim is not None
+        first_snapshot = async_worker._snapshot_task(callback_claim)
+
+        async def fail_callback(_context, _path, payload, **_kwargs):
+            sent_payloads.append(payload)
+            raise RuntimeError("callback ACK lost")
+
+        monkeypatch.setattr(
+            async_worker,
+            "_post_callback",
+            fail_callback,
+        )
+        with pytest.raises(RuntimeError, match="ACK lost"):
+            asyncio.run(
+                async_worker._execute_snapshot(
+                    first_snapshot,
+                    object(),
+                )
+            )
+        retrying, final_failure = mark_async_task_failed(
+            session,
+            task.id,
+            "callback ACK lost",
+        )
+        assert retrying is not None
+        assert final_failure is False
+        assert retrying.status == PENDING
+        retrying.run_after = utc_now() - timedelta(seconds=1)
+        session.flush()
+
+        second_claim = claim_next_async_task(
+            session,
+            worker_id="callback-worker",
+        )
+        assert second_claim is not None
+        second_snapshot = async_worker._snapshot_task(second_claim)
+
+        async def accept_callback(_context, _path, payload, **_kwargs):
+            sent_payloads.append(payload)
+
+        monkeypatch.setattr(
+            async_worker,
+            "_post_callback",
+            accept_callback,
+        )
+        asyncio.run(
+            async_worker._execute_snapshot(
+                second_snapshot,
+                object(),
+            )
+        )
+        mark_async_task_done(session, task.id)
+
+        assert sent_payloads == [callback_payload, callback_payload]
+        assert session.get(type(task), task.id).status == "done"
+
+
+def test_job_result_callback_requires_correlated_contract_ack(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "request_id": "req_0000000087654321",
+                "status": "processed",
+            }
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        async_worker.httpx,
+        "AsyncClient",
+        FakeAsyncClient,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="ack_request_id_mismatch",
+    ):
+        asyncio.run(
+            async_worker._post_callback(
+                AgentCallbackContext(
+                    app_base_url="http://backend.test",
+                ),
+                "/api/agent/async/missed-dose-results",
+                {"request_id": "req_0000000012345678"},
+                bearer=True,
+            )
+        )
+
+
 def test_agent_async_task_stale_lock_is_reclaimed():
     with build_agent_session() as session:
         task, _created = enqueue_async_task(
@@ -190,7 +483,7 @@ def test_agent_async_task_observability_payload_hides_payload_values():
             session,
             request_id="missed_dose:observability:1",
             task_type="missed_dose",
-            payload={"dose_event_id": 1, "phr_patient_key": "secret-phr-key"},
+            payload={"dose_event_id": 1, "patient_id": "patient-observability"},
             callback_context={"job_id": 77},
         )
         task.status = DEAD
@@ -213,10 +506,10 @@ def test_agent_async_task_observability_payload_hides_payload_values():
         assert payload["next_retry_in_seconds"] is not None
         assert payload["is_locked"] is False
         assert payload["is_retry_due"] is True
-        assert payload["payload_keys"] == ["dose_event_id", "phr_patient_key"]
+        assert payload["payload_keys"] == ["dose_event_id", "patient_id"]
         assert payload["payload_parse_error"] is False
         assert payload["callback_context"] == {"job_id": 77}
-        assert "secret-phr-key" not in json.dumps(payload, ensure_ascii=False)
+        assert "patient-observability" not in json.dumps(payload, ensure_ascii=False)
 
 
 def test_agent_async_task_observability_payload_uses_completed_runtime():
@@ -357,379 +650,56 @@ def test_agent_worker_heartbeat_status_tracks_running_stopped_and_stale(monkeypa
         assert stale_status["stored_status"] == WORKER_RUNNING
 
 
-def test_multiturn_side_effect_request_returns_async_continuation_ack():
-    agent = MultiturnChatAgent(RuleBasedProvider(), ToolRuntime(None))
+def test_multiturn_side_effect_request_returns_internal_continuation_control():
+    agent = MultiturnChatAgent(DeterministicTestProvider(), ToolRuntime(None))
     request = MultiturnChatRequest(
         patient_id="demo-patient",
-        phr_patient_key="phr-demo",
         event_type="multiturn_chat",
         message="속이 메스꺼운데 약 때문일까?",
         current_time=datetime(2026, 4, 20, 9, 30),
         context={},
     )
 
-    response = asyncio.run(agent.run("trace-chat-async", request.model_dump(mode="json")))
+    response = asyncio.run(
+        agent.run("trace-chat-continuation", request.model_dump(mode="json"))
+    )
 
-    assert response.decision_type == "async_continuation_requested"
-    assert response.human_summary
+    assert response.decision_type == "continuation_required"
+    assert response.human_summary == ""
     assert response.structured_payload["routing_mode"] == "delegated_agent"
     assert response.structured_payload["supervisor_tool_calls"][0]["name"] == "delegate_to_medication_agent"
     assert response.structured_payload["specialist_tool_calls"][0]["name"] == "get_medication_side_effect_assessment"
-    assert response.structured_payload["async_continuation_required"] is True
-    assert response.structured_payload["async_continuation_type"] == "side_effect_assessment"
+    assert response.structured_payload["continuation_required"] is True
+    assert response.structured_payload["continuation_type"] == "side_effect_assessment"
     assert response.structured_payload["tool_calls"][0]["name"] == "get_medication_side_effect_assessment"
 
 
-def test_multiturn_policy_request_returns_async_continuation_ack():
-    agent = MultiturnChatAgent(RuleBasedProvider(), ToolRuntime(None))
+def test_multiturn_policy_request_returns_internal_continuation_control():
+    agent = MultiturnChatAgent(DeterministicTestProvider(), ToolRuntime(None))
     request = MultiturnChatRequest(
         patient_id="demo-patient",
-        phr_patient_key="phr-demo",
         event_type="multiturn_chat",
         message="아침 알림을 2번 10분 간격으로 바꿔줘",
         current_time=datetime(2026, 4, 20, 9, 30),
         context={},
     )
 
-    response = asyncio.run(agent.run("trace-policy-async", request.model_dump(mode="json")))
-
-    assert response.decision_type == "async_continuation_requested"
-    assert response.human_summary == "알림 정책 변경 후보를 만들고 있어요. 준비되면 확인할 수 있게 보여드릴게요."
-    assert response.structured_payload["async_continuation_type"] == "policy_change_request"
-    assert response.structured_payload["policy_confirmation_required"] is True
-    assert response.structured_payload["tool_calls"][0]["name"] == "propose_notification_policy"
-
-
-def test_async_missed_dose_job_result_persists_once_by_idempotency_key():
-    with build_session() as session:
-        payload = MissedDoseEventPayload(
-            patient_id="demo-patient",
-            dose_event_id=33,
-            medication_name="영양제",
-            slot_label="아침 08:00",
-            scheduled_for=datetime(2026, 4, 20, 8, 0),
-            detected_at=datetime(2026, 4, 20, 9, 30),
-        )
-        job = create_agent_job(session, "missed_dose", payload)
-        job.status = RUNNING
-        response = AgentResponse(
-            trace_id="trace-missed-async",
-            agent_name="missed_dose_coach",
-            prompt_version_id="v1",
-            decision_type="missed_dose_assessment",
-            structured_payload={},
-            human_summary="복약 루틴을 함께 맞춰봐요. 지금 확인해보세요.",
-            requires_conversation_alert=True,
-        )
-        callback = AgentAsyncJobResultRequest(
-            request_id=f"missed_dose:job:{job.id}",
-            task_type="missed_dose",
-            job_id=job.id,
-            related_dose_event_id=33,
-            response=response,
-            idempotency_key="missed-dose-result-once",
-        )
-
-        first = process_async_job_result_callback(session, callback)
-        second = process_async_job_result_callback(session, callback)
-
-        assert first["status"] == "ok"
-        assert second["status"] == "duplicate"
-        assert session.get(AgentJob, job.id).status == DONE
-        assert session.query(ChatMessage).filter(ChatMessage.category == "missed_dose").count() == 1
-
-
-def test_async_chat_result_creates_ae_pro_ctcae_chat_prompt():
-    with build_session() as session:
-        clock = ensure_clock(session)
-        notification = Notification(
-            notification_type="system_policy_request",
-            title="에이전트 대화 전송",
-            body="에이전트에게 메시지를 보냈습니다.",
-            visible_at=clock.current_time,
-            metadata_json=json.dumps({"request_message": "속이 메스꺼워요", "status": "sent"}, ensure_ascii=False),
-        )
-        session.add(notification)
-        session.flush()
-        response = AgentResponse(
-            trace_id="trace-ae-async",
-            agent_name="side_effect_triage_agent",
-            prompt_version_id="v1",
-            decision_type="side_effect_assessment",
-            structured_payload={
-                "ae_pro_ctcae": {
-                    "input_symptom": "메스꺼움",
-                    "matched": True,
-                    "match_type": "exact",
-                    "matched_symptom_term": "Nausea",
-                    "matched_korean_symptom_name": "메스꺼움",
-                    "similarity": 1.0,
-                    "threshold": 0.56,
-                    "sheet_name": "PRO-CTCAE",
-                    "questions": [
-                        {
-                            "symptom_term": "Nausea",
-                            "korean_symptom_name": "메스꺼움",
-                            "item_code": "PROCTCAE_NAUSEA",
-                            "question": "지난 7일 동안 메스꺼움이 있었나요?",
-                            "sheet_name": "PRO-CTCAE",
-                        }
-                    ],
-                }
-            },
-            human_summary=(
-                "말씀하신 메스꺼움은 복용약과 관련 가능성이 있어 확인 문항을 준비했습니다. "
-                "아래 문항에 답해주세요."
-            ),
-        )
-        callback = AgentAsyncChatResultRequest(
-            request_id="chat_continuation:notification:1",
-            notification_id=notification.id,
-            event_type="multiturn_chat",
-            message="속이 메스꺼워요",
-            response=response,
-            idempotency_key="chat-ae-result-once",
-        )
-
-        result = process_async_chat_result_callback(session, callback)
-
-        assert result["status"] == "ok"
-        message = session.query(ChatMessage).filter(ChatMessage.category == "multiturn_chat", ChatMessage.role == "assistant").one()
-        metadata = json.loads(message.metadata_json)
-        assert message.content == "말씀하신 메스꺼움은 복용약과 관련 가능성이 있어 확인 문항을 준비했습니다. 아래 문항에 답해주세요."
-        assert metadata["ae_pro_ctcae"]["matched"] is True
-        assert metadata["ae_pro_ctcae"]["questions"][0]["item_code"] == "PROCTCAE_NAUSEA"
-
-
-def test_async_chat_result_preserves_llm_food_selection_message():
-    with build_session() as session:
-        clock = ensure_clock(session)
-        notification = Notification(
-            notification_type="system_policy_request",
-            title="에이전트 대화 전송",
-            body="에이전트에게 메시지를 보냈습니다.",
-            visible_at=clock.current_time,
-            metadata_json=json.dumps({"request_message": "삶은 계란 먹었어", "status": "sent"}, ensure_ascii=False),
-        )
-        session.add(notification)
-        session.flush()
-        response = AgentResponse(
-            trace_id="trace-food-async",
-            agent_name="multiturn_chat_agent",
-            prompt_version_id="v1",
-            decision_type="tool_call",
-            structured_payload={
-                "food_searches": [
-                    {
-                        "query": "삶은 계란",
-                        "candidates": [
-                            {
-                                "food_ref_id": "egg-boiled",
-                                "food_name": "삶은 달걀",
-                                "serving_size": 50,
-                                "nutrients": {"calories": 70, "protein": 6},
-                            }
-                        ],
-                    }
-                ]
-            },
-            human_summary="음식 후보를 찾았습니다. 아래 카드에서 선택해주세요.",
-        )
-        callback = AgentAsyncChatResultRequest(
-            request_id="chat_continuation:notification:food",
-            notification_id=notification.id,
-            event_type="multiturn_chat",
-            message="삶은 계란 먹었어",
-            response=response,
-            idempotency_key="chat-food-result-once",
-        )
-
-        result = process_async_chat_result_callback(session, callback)
-
-        assert result["status"] == "ok"
-        message = session.query(ChatMessage).filter(ChatMessage.category == "multiturn_chat", ChatMessage.role == "assistant").one()
-        metadata = json.loads(message.metadata_json)
-        assert message.content == "음식 후보를 찾았습니다. 아래 카드에서 선택해주세요."
-        assert metadata["food_selection"]["candidates"][0]["food_name"] == "삶은 달걀"
-
-def test_async_chat_result_skips_food_selection_after_nutrition_write():
-    with build_session() as session:
-        clock = ensure_clock(session)
-        notification = Notification(
-            notification_type="system_policy_request",
-            title="에이전트 대화 전송",
-            body="에이전트에게 메시지를 보냈습니다.",
-            visible_at=clock.current_time,
-            metadata_json=json.dumps({"request_message": "마라탕을 영양돌솥밥으로 바꿔줘", "status": "sent"}, ensure_ascii=False),
-        )
-        session.add(notification)
-        session.flush()
-        response = AgentResponse(
-            trace_id="trace-food-update-async",
-            agent_name="multiturn_chat_agent",
-            prompt_version_id="v1",
-            decision_type="tool_call",
-            structured_payload={
-                "food_searches": [
-                    {
-                        "query": "영양돌솥밥",
-                        "candidates": [
-                            {
-                                "food_ref_id": "rice-pot",
-                                "food_name": "영양돌솥밥",
-                                "serving_size": 350,
-                                "nutrients": {"calories": 644, "protein": 12},
-                            }
-                        ],
-                    }
-                ],
-                "nutrition_food_update_result": {"success": True, "food": {"food_name": "영양돌솥밥"}},
-                "tool_results": [
-                    {"tool_name": "search_nutrition_food_candidates", "status": "success", "response": {"success": True}},
-                    {"tool_name": "update_nutrition_food_record", "status": "success", "response": {"success": True}},
-                ],
-                "tools_executed": True,
-            },
-            human_summary="점심 마라탕을 영양돌솥밥으로 교체했어요.",
-        )
-        callback = AgentAsyncChatResultRequest(
-            request_id="chat_continuation:notification:food-update",
-            notification_id=notification.id,
-            event_type="multiturn_chat",
-            message="마라탕을 영양돌솥밥으로 바꿔줘",
-            response=response,
-            idempotency_key="chat-food-update-result-once",
-        )
-
-        result = process_async_chat_result_callback(session, callback)
-
-        assert result["status"] == "ok"
-        message = session.query(ChatMessage).filter(ChatMessage.category == "multiturn_chat", ChatMessage.role == "assistant").one()
-        metadata = json.loads(message.metadata_json)
-        assert message.content == "점심 마라탕을 영양돌솥밥으로 교체했어요."
-        assert "food_selection" not in metadata
-
-
-def test_async_chat_result_preserves_diet_recommendation_cards():
-    with build_session() as session:
-        clock = ensure_clock(session)
-        notification = Notification(
-            notification_type="system_policy_request",
-            title="에이전트 대화 전송",
-            body="에이전트에게 메시지를 보냅니다.",
-            visible_at=clock.current_time,
-            metadata_json=json.dumps({"request_message": "신장 건강에 좋은 식사 추천해줘", "status": "sent"}, ensure_ascii=False),
-        )
-        session.add(notification)
-        session.flush()
-        response = AgentResponse(
-            trace_id="trace-diet-recommendation-async",
-            agent_name="multiturn_chat_agent",
-            prompt_version_id="v1",
-            decision_type="tool_call",
-            structured_payload={
-                "diet_recommendations": [
-                    {
-                        "food_ref_id": "tofu-salad",
-                        "food_name": "두부 샐러드",
-                        "category": "샐러드",
-                        "serving_size": 180,
-                        "nutrients": {"energy": {"value": 210, "unit": "kcal"}},
-                    }
-                ],
-                "constraints_applied": {"나트륨": "low"},
-                "blocked_count": 1,
-                "total_candidates": 8,
-            },
-            human_summary="신장 건강을 위한 추천 후보를 아래에 준비했어요.",
-        )
-        callback = AgentAsyncChatResultRequest(
-            request_id="chat_continuation:notification:diet",
-            notification_id=notification.id,
-            event_type="multiturn_chat",
-            message="신장 건강에 좋은 식사 추천해줘",
-            response=response,
-            idempotency_key="chat-diet-result-once",
-        )
-
-        result = process_async_chat_result_callback(session, callback)
-
-        assert result["status"] == "ok"
-        message = session.query(ChatMessage).filter(ChatMessage.category == "multiturn_chat", ChatMessage.role == "assistant").one()
-        metadata = json.loads(message.metadata_json)
-        assert message.content == "신장 건강을 위한 추천 후보를 아래에 준비했어요."
-        assert metadata["diet_recommendations"]["recommendations"][0]["food_name"] == "두부 샐러드"
-        assert metadata["diet_recommendations"]["constraints_applied"] == {"나트륨": "low"}
-
-
-def test_async_chat_worker_executes_required_continuation_before_callback(monkeypatch):
-    class ContinuationOrchestrator:
-        def __init__(self) -> None:
-            self.payloads = []
-
-        async def invoke(self, _mode, payload):
-            self.payloads.append(payload)
-            if len(self.payloads) == 1:
-                return AgentResponse(
-                    trace_id="trace-first",
-                    agent_name="multiturn_chat_agent",
-                    prompt_version_id="v1",
-                    decision_type="async_continuation_requested",
-                    structured_payload={
-                        "tool_calls": [{"name": "get_medication_side_effect_assessment", "arguments": {"symptom_text": "메스꺼움"}}],
-                        "tool_results": [],
-                        "async_continuation_required": True,
-                        "async_continuation_type": "side_effect_lookup",
-                    },
-                    human_summary="증상 내용을 확인해서 문항을 준비할게요.",
-                )
-            return AgentResponse(
-                trace_id="trace-final",
-                agent_name="side_effect_triage_agent",
-                prompt_version_id="v1",
-                decision_type="side_effect_assessment",
-                structured_payload={"tool_results": [{"tool_name": "get_pro_ctcae_questionnaire", "status": "success"}]},
-                human_summary="의료진에게 알려야 할 증상인지 확인하기 위해 식사와 수분 상태를 같이 확인해 주세요.",
-            )
-
-    captured = {}
-
-    async def fake_post_chat_result(snapshot, response):
-        captured["snapshot"] = snapshot
-        captured["response"] = response
-
-    monkeypatch.setattr("agent_app.jobs.worker._post_chat_result", fake_post_chat_result)
-    orchestrator = ContinuationOrchestrator()
-
-    asyncio.run(
-        _execute_snapshot(
-            {
-                "id": 1,
-                "request_id": "chat_continuation:conversation:system-event-test",
-                "task_type": "chat_continuation",
-                "payload": {
-                    "patient_id": "demo-patient",
-                    "event_type": "multiturn_chat",
-                    "message": "메스꺼움이 있어요",
-                    "current_time": "2026-04-20T09:35:00",
-                    "context": {},
-                },
-                "callback_context": {"app_base_url": "http://system", "notification_id": 1},
-            },
-            orchestrator,
-        )
+    response = asyncio.run(
+        agent.run("trace-policy-continuation", request.model_dump(mode="json"))
     )
 
-    assert len(orchestrator.payloads) == 2
-    assert orchestrator.payloads[1]["context"]["execute_async_continuation"] is True
-    assert orchestrator.payloads[1]["context"]["async_tool_calls"][0]["name"] == "get_medication_side_effect_assessment"
-    assert captured["response"].decision_type == "side_effect_assessment"
-    assert "의료진" in captured["response"].human_summary
+    assert response.decision_type == "continuation_required"
+    assert response.human_summary == ""
+    assert response.structured_payload["continuation_required"] is True
+    assert response.structured_payload["continuation_type"] == "policy_change_request"
+    assert response.structured_payload["policy_confirmation_required"] is True
+    assert response.structured_payload["tool_calls"][0]["name"] == "propose_notification_policy"
 
 
 def test_async_clinician_alert_callback_creates_internal_only_stub_once():
     with build_session() as session:
         ensure_clock(session)
+        _seed_dose_event(session, event_id=77)
         callback = AgentAsyncClinicianAlertRequest(
             request_id="clinician_alert:event:77:D",
             idempotency_key="clinician-alert-once",
@@ -768,6 +738,7 @@ def test_async_clinician_alert_callback_creates_internal_only_stub_once():
 def test_async_clinician_alert_callback_dedupes_same_dose_event_and_pattern():
     with build_session() as session:
         ensure_clock(session)
+        _seed_dose_event(session, event_id=88)
         first = AgentAsyncClinicianAlertRequest(
             request_id="clinician_alert:first",
             idempotency_key="clinician-alert-first",

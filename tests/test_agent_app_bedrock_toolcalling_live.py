@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-_shared_env = Path(".env") if Path(".env").exists() else Path("..") / ".env"
-os.environ.setdefault("DA_DRUG_ENV_FILE", f"{_shared_env},.env.agent_app")
+os.environ.setdefault("DA_DRUG_ENV_FILE", ".env.agent_app")
 
 from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator  # noqa: E402
 from agent_app.providers.bedrock import BedrockAnthropicProvider  # noqa: E402
@@ -49,7 +47,7 @@ class RecordingToolExecutor:
                     "matched_effects": ["메스꺼움"],
                     "matched_items": ["테스트 항암제"],
                     "severity": "moderate",
-                    "evidence": "테스트 PHR 주의사항에 메스꺼움이 포함되어 있습니다.",
+                    "evidence": "테스트 의약품 기준정보에 메스꺼움이 포함되어 있습니다.",
                     "recommendation": "PRO-CTCAE 문항 확인이 필요합니다.",
                 },
                 idempotency_key=f"{trace_id}:get_medication_side_effect_assessment",
@@ -59,7 +57,7 @@ class RecordingToolExecutor:
                 tool_name="get_pro_ctcae_questionnaire",
                 status="success",
                 response={
-                    "input_symptom": arguments.get("symptom_normalize") or arguments.get("symptom_text") or "메스꺼움",
+                    "input_symptom": arguments.get("symptom_text") or "메스꺼움",
                     "matched": True,
                     "match_type": "exact",
                     "matched_symptom_term": "Nausea",
@@ -80,7 +78,15 @@ class RecordingToolExecutor:
 def _build_orchestrator() -> tuple[AgentLangGraphNativeOrchestrator, RecordingToolExecutor]:
     get_settings.cache_clear()
     settings = get_settings()
-    if not (settings.aws_bearer_token_bedrock or settings.aws_profile or (settings.aws_access_key_id and settings.aws_secret_access_key)):
+    bearer_token = settings.aws_bearer_token_bedrock
+    bearer_configured = bool(
+        bearer_token and bearer_token.get_secret_value().strip()
+    )
+    if not (
+        bearer_configured
+        or settings.aws_profile
+        or (settings.aws_access_key_id and settings.aws_secret_access_key)
+    ):
         pytest.skip("Bedrock credentials are not configured.")
     executor = RecordingToolExecutor()
     return AgentLangGraphNativeOrchestrator(provider=BedrockAnthropicProvider(), tool_executor=executor), executor
@@ -125,7 +131,6 @@ async def test_bedrock_multiturn_side_effect_lookup_forces_ae_pro_ctcae() -> Non
     orchestrator, executor = _build_orchestrator()
     request = MultiturnChatRequest(
         patient_id="demo-patient",
-        phr_patient_key="phr-live-tool-test",
         event_type="multiturn_chat",
         message="항암제 복용 후 속이 메스꺼운데 약 때문일까요? 복용약 주의사항을 먼저 확인해줘.",
         current_time=datetime(2026, 5, 19, 9, 40),
@@ -139,19 +144,20 @@ async def test_bedrock_multiturn_side_effect_lookup_forces_ae_pro_ctcae() -> Non
 
     response = await orchestrator.invoke("multiturn_chat", request.model_dump(mode="json"))
 
-    assert response.decision_type == "async_continuation_requested"
+    assert response.decision_type == "continuation_required"
+    assert response.human_summary == ""
     assert response.structured_payload["routing_mode"] == "delegated_agent"
     assert response.structured_payload["supervisor_tool_calls"][0]["name"] == "delegate_to_medication_agent"
-    assert response.structured_payload["async_continuation_required"] is True
-    assert response.structured_payload["async_continuation_type"] == "side_effect_assessment"
+    assert response.structured_payload["continuation_required"] is True
+    assert response.structured_payload["continuation_type"] == "side_effect_assessment"
     assert [call["name"] for call in response.structured_payload["tool_calls"]] == ["get_medication_side_effect_assessment"]
     assert executor.calls == []
 
     continuation = request.model_copy(deep=True)
     continuation.context = {
         **request.context,
-        "execute_async_continuation": True,
-        "async_tool_calls": response.structured_payload["tool_calls"],
+        "execute_tool_continuation": True,
+        "continuation_tool_calls": response.structured_payload["tool_calls"],
     }
     response = await orchestrator.invoke("multiturn_chat", continuation.model_dump(mode="json"))
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
-
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -20,12 +18,7 @@ from shared.tool_names import (
 from shared.json_utils import dump_json, parse_json_object
 from shared.schemas import AgentResponse, NotificationPolicyDelta
 from system_app.models import ChatMessage
-from system_app.services.agent_client import AgentClient
-from system_app.services.agent_error_service import present_agent_error
-from system_app.services.agent_jobs import create_agent_job
-from system_app.services.audit_service import record_agent_audit
 from system_app.services.clock_service import ensure_clock, pause_simulation_clock_for_conversation
-from system_app.services.dose_event_service import build_daily_pattern
 from system_app.services.missed_dose_agent_response_service import missed_dose_adherence_pattern_message
 from system_app.services.notification_service import acknowledge_duplicate_conversation_alerts, create_notification, get_unacknowledged_conversation_alert
 from system_app.services.policy_confirmation import (
@@ -36,7 +29,6 @@ from system_app.services.policy_confirmation import (
     policy_deltas_from_tool_response,
     system_policy_deltas_from_tool_response,
 )
-from system_app.services.side_effect_reminder_safety import is_reminder_suppressed_after_side_effect
 from system_app.services.timeline_service import add_chat_message, conversation_alert_chat_metadata, conversation_alert_visible_at, ensure_chat_message_for_conversation_alert
 
 POLICY_DELTA_REQUIRED_FIELDS = {
@@ -121,14 +113,6 @@ def ae_pro_ctcae_chat_metadata(response: AgentResponse) -> dict:
     return metadata
 
 
-def ae_pro_ctcae_chat_content(response: AgentResponse) -> str:
-    payload = ae_pro_ctcae_payload(response) or {}
-    symptom = str(payload.get("matched_korean_symptom_name") or payload.get("input_symptom") or "").strip()
-    if symptom:
-        return f"{symptom} 증상과 복용약의 관련 가능성을 확인하기 위한 문항을 준비했어요. 아래 문항에 답해주세요."
-    return "증상과 복용약의 관련 가능성을 확인하기 위한 문항을 준비했어요. 아래 문항에 답해주세요."
-
-
 def food_selection_chat_metadata(response: AgentResponse) -> dict:
     if has_successful_nutrition_write(response):
         return {}
@@ -201,14 +185,6 @@ def has_successful_nutrition_write(response: AgentResponse) -> bool:
     return False
 
 
-def food_selection_chat_content(message_metadata: dict) -> str:
-    food_selection = message_metadata.get("food_selection") if isinstance(message_metadata.get("food_selection"), dict) else {}
-    queue = food_selection.get("foods_queue") if isinstance(food_selection.get("foods_queue"), list) else []
-    if queue:
-        return "음식 후보를 찾았습니다. 아래 카드에서 선택해주세요. 선택이 끝나면 다음 음식도 이어서 확인할게요."
-    return "음식 후보를 찾았습니다. 아래 카드에서 선택해주세요."
-
-
 def diet_recommendation_chat_metadata(response: AgentResponse) -> dict:
     recommendations = response.structured_payload.get("diet_recommendations")
     if not isinstance(recommendations, list) or not recommendations:
@@ -239,16 +215,19 @@ def mutation_confirmation_chat_metadata(response: AgentResponse) -> dict:
     if response.structured_payload.get("mutation_confirmation_required") is not True:
         return {}
     proposal = response.structured_payload.get("mutation_confirmation")
-    if not isinstance(proposal, dict) or not proposal.get("confirmation_id"):
+    if not isinstance(proposal, dict):
         return {}
+    display = (
+        proposal.get("display")
+        if isinstance(proposal.get("display"), dict)
+        else {}
+    )
     return {
-        "mutation_confirmation": {
-            "confirmation_id": proposal.get("confirmation_id"),
+        "record_approval_card": {
             "status": proposal.get("status", "pending"),
             "action_type": proposal.get("action_type", "agent_tool"),
             "action_name": proposal.get("action_name", ""),
-            "display": proposal.get("display") if isinstance(proposal.get("display"), dict) else {},
-            "error": "",
+            "display": display,
         }
     }
 
@@ -259,6 +238,12 @@ def persist_agent_summary(
     category: str,
     related_dose_event_id: int | None = None,
 ) -> ChatMessage | None:
+    human_summary = str(response.human_summary or "").strip()
+    if not human_summary:
+        raise ValueError("agent_human_summary_missing")
+    if category == "missed_dose" and related_dose_event_id is None:
+        raise ValueError("missed_dose_event_context_missing")
+
     existing = get_unacknowledged_conversation_alert(session, related_dose_event_id)
     conversation_notification = None
     message_metadata = ae_pro_ctcae_chat_metadata(response)
@@ -281,14 +266,25 @@ def persist_agent_summary(
             clock, resume_state = pause_simulation_clock_for_conversation(session)
             existing_metadata = {}
         visible_at = conversation_alert_visible_at(session, related_dose_event_id, clock.current_time)
-        metadata = {**existing_metadata, "trace_id": response.trace_id, "category": category, "status": "agent_ready", "resume_clock": resume_state}
-        fallback_body = "AI가 미복용 상황을 확인했습니다. 현재 상태와 복용하지 못한 이유를 알려주세요." if category == "missed_dose" else "AI가 복약 관련 대화를 요청하고 있습니다."
+        existing_metadata.pop("trace_id", None)
+        metadata = {
+            **existing_metadata,
+            "category": category,
+            "status": "agent_ready",
+            "resume_clock": resume_state,
+        }
         pattern_message = ""
         if category == "missed_dose" and related_dose_event_id is not None:
-            pattern_message = missed_dose_adherence_pattern_message(session, related_dose_event_id, message_metadata, response)
-        body = pattern_message or response.human_summary or fallback_body
+            pattern_message = missed_dose_adherence_pattern_message(
+                session,
+                related_dose_event_id,
+                message_metadata,
+                response,
+            )
+        body = pattern_message or human_summary
         if category == "missed_dose":
-            metadata["agent_response_preview"] = body[:200]
+            metadata["agent_response_preview"] = human_summary[:200]
+            metadata["feedback_message_source"] = "llm_generated"
         if existing is not None:
             existing.title = "AI가 대화를 요청합니다." if category == "missed_dose" else "AI 대화 알림"
             existing.body = body
@@ -309,15 +305,12 @@ def persist_agent_summary(
     if conversation_notification is not None and category == "missed_dose":
         acknowledge_duplicate_conversation_alerts(session, related_dose_event_id, conversation_notification.id)
         message_metadata = conversation_alert_chat_metadata(conversation_notification, message_metadata)
-    message_content = response.human_summary
-    if conversation_notification is not None and category == "missed_dose":
-        message_content = message_content or conversation_notification.body
-        if pattern_message:
-            message_content = pattern_message
-    if not message_content and "ae_pro_ctcae" in message_metadata:
-        message_content = ae_pro_ctcae_chat_content(response)
-    if not message_content and "food_selection" in message_metadata:
-        message_content = food_selection_chat_content(message_metadata)
+    message_content = (
+        conversation_notification.body
+        if conversation_notification is not None
+        and category == "missed_dose"
+        else human_summary
+    )
     persisted_message = None
     if conversation_notification is not None and category == "missed_dose":
         persisted_message = ensure_chat_message_for_conversation_alert(
@@ -326,6 +319,17 @@ def persist_agent_summary(
             content=message_content,
             metadata=message_metadata,
         )
+        if persisted_message is not None:
+            notification_metadata = parse_json_object(
+                conversation_notification.metadata_json,
+            )
+            notification_metadata["chat_message_id"] = (
+                persisted_message.public_id
+            )
+            conversation_notification.metadata_json = dump_json(
+                notification_metadata,
+            )
+            session.flush()
     elif message_content:
         persisted_message = add_chat_message(
             session,
@@ -342,7 +346,6 @@ def persist_agent_summary(
 def maybe_apply_policy_response(session: Session, response: AgentResponse, source_event_type: str) -> tuple[bool, str]:
     tool_call = response.structured_payload.get("tool_call")
     if isinstance(tool_call, dict) and tool_call.get("name") not in POLICY_TOOLS:
-        record_agent_audit(session, response, source_event_type, applied=False, error_message="")
         return False, response.human_summary or "정책 변경 대상이 아닌 응답입니다."
 
     if response.decision_type == "tool_call":
@@ -353,7 +356,6 @@ def maybe_apply_policy_response(session: Session, response: AgentResponse, sourc
             try:
                 deltas = policy_deltas_from_tool_response(response, source_event_type)
             except (ValidationError, ValueError) as exc:
-                record_agent_audit(session, response, source_event_type, applied=False, error_message=str(exc))
                 raise
             return create_policy_confirmation_alert(session, response, source_event_type, deltas)
 
@@ -361,7 +363,6 @@ def maybe_apply_policy_response(session: Session, response: AgentResponse, sourc
             try:
                 deltas = system_policy_deltas_from_tool_response(response, source_event_type)
             except (ValidationError, ValueError) as exc:
-                record_agent_audit(session, response, source_event_type, applied=False, error_message=str(exc))
                 raise
             return create_system_policy_confirmation_alert(session, response, source_event_type, deltas)
 
@@ -371,7 +372,6 @@ def maybe_apply_policy_response(session: Session, response: AgentResponse, sourc
         try:
             deltas = policy_deltas_from_tool_response(response)
         except (ValidationError, ValueError) as exc:
-            record_agent_audit(session, response, source_event_type, applied=False, error_message=str(exc))
             raise
 
         return create_policy_confirmation_alert(session, response, source_event_type, deltas)
@@ -380,16 +380,13 @@ def maybe_apply_policy_response(session: Session, response: AgentResponse, sourc
         "pattern_policy_recommendation",
         "patient_requested_policy_change",
     }:
-        record_agent_audit(session, response, source_event_type, applied=False, error_message="")
         return False, response.human_summary or "정책 변경 대상이 아닌 응답입니다."
 
     try:
         deltas = policy_deltas_from_response_payload(response)
     except ValidationError as exc:
-        record_agent_audit(session, response, source_event_type, applied=False, error_message=str(exc))
         raise
     if not deltas:
-        record_agent_audit(session, response, source_event_type, applied=False, error_message="")
         return False, response.human_summary or "정책 변경 후보가 없습니다."
 
     return create_policy_confirmation_alert(session, response, source_event_type, deltas)
@@ -405,7 +402,6 @@ def tool_results_have_error(response: AgentResponse) -> bool:
 def record_executed_tool_results(session: Session, response: AgentResponse, source_event_type: str) -> tuple[bool, str]:
     raw_results = response.structured_payload.get("tool_results")
     if not isinstance(raw_results, list):
-        record_agent_audit(session, response, source_event_type, applied=False, error_message="실행된 tool result가 없습니다.")
         return False, "실행된 tool result가 없습니다."
     applied = all(isinstance(result, dict) and result.get("status") == "success" for result in raw_results)
     result_messages: list[str] = []
@@ -421,13 +417,6 @@ def record_executed_tool_results(session: Session, response: AgentResponse, sour
         )
         if result.get("error"):
             result_messages.append(str(result["error"]))
-    record_agent_audit(
-        session,
-        response,
-        source_event_type,
-        applied=applied,
-        error_message="" if applied else " / ".join(result_messages),
-    )
     return applied, " / ".join(result_messages) if result_messages else response.human_summary
 
 
@@ -445,46 +434,7 @@ def maybe_apply_dose_taken_response(session: Session, response: AgentResponse, s
                 payload = result.get("response") if isinstance(result.get("response"), dict) else {}
                 message = str(payload.get("message") or result.get("error") or response.human_summary or "")
                 applied = result.get("status") == "success" and payload.get("status") == "taken"
-                record_agent_audit(session, response, source_event_type, applied=applied, error_message="" if applied else message)
                 return applied, message or response.human_summary
-        record_agent_audit(session, response, source_event_type, applied=False, error_message=f"실행된 {UPDATE_MEDICATION_DOSE_EVENT_STATUS} tool result가 없습니다.")
         return False, "실행된 복약 완료 tool result가 없습니다."
 
-    record_agent_audit(session, response, source_event_type, applied=False, error_message=f"{UPDATE_MEDICATION_DOSE_EVENT_STATUS} tool was not executed")
     return False, "실행된 복약 완료 tool result가 없습니다."
-
-
-def build_manual_pattern_analysis_payload(session: Session, target_date: date | None = None):
-    clock = ensure_clock(session)
-    analysis_date = target_date or clock.current_time.date()
-    return build_daily_pattern(session, analysis_date)
-
-
-def persist_manual_pattern_analysis_response(session: Session, response: AgentResponse) -> None:
-    persist_agent_summary(session, response, category="pattern_analysis")
-    maybe_apply_policy_response(session, response, "manual_daily_pattern")
-    session.commit()
-
-
-def persist_manual_pattern_analysis_failure(session: Session, error: Exception) -> None:
-    present_agent_error(
-        session,
-        "manual_daily_pattern",
-        error,
-        user_message="AI 일일 패턴 분석에 실패했습니다. 잠시 후 다시 시도해주세요.",
-        add_chat=True,
-    )
-    session.commit()
-
-
-async def run_manual_pattern_analysis(session: Session, agent_client: AgentClient, target_date: date | None = None) -> bool:
-    if is_reminder_suppressed_after_side_effect(session):
-        session.commit()
-        return False
-    pattern = build_manual_pattern_analysis_payload(session, target_date)
-    if not pattern:
-        session.commit()
-        return False
-    create_agent_job(session, "daily_pattern", pattern)
-    session.commit()
-    return True

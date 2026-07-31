@@ -4,63 +4,44 @@ import asyncio
 import logging
 import threading
 from datetime import timedelta
-from typing import Any
 
 from sqlalchemy import desc, select
 
-from shared.chat_contracts import ChatSyncRequest
-from shared.tool_names import CREATE_MEDICATION_SIDE_EFFECT_RECORD
+from shared.async_v13_contracts import (
+    DailyMedicationPatternAnalysisRequest,
+    MissedDoseEventRequest,
+)
 from shared.json_utils import dump_json as dump_metadata_json
 from shared.json_utils import parse_json_object as parse_metadata_json
 from shared.redaction import safe_exception_summary
-from shared.schemas import AgentCallbackContext, MutationConfirmationResolutionRequest
 from shared.settings import get_settings
+from shared.schemas import MissedDoseEventPayload
 from shared.time_utils import utc_now
 from system_app.db import SessionLocal
-from system_app.models import AgentJob, Base, ChatMessage, MutationConfirmation, Notification
-from system_app.services import trace_logging
+from system_app.models import AgentJob, DoseEvent, Notification
 from system_app.services.agent_client import AgentClient
-from system_app.services.backend_chat_service import mark_user_message_failed, persist_assistant_response
 from system_app.services.agent_error_service import present_agent_error
 from system_app.services.agent_jobs import (
+    DAILY_PATTERN_JOB_TYPE,
+    PENDING,
     RUNNING,
     agent_job_runtime_metadata,
     claim_next_agent_job,
     create_agent_job,
     deserialize_agent_job_payload,
+    mark_agent_job_done,
     mark_agent_job_failed,
     reset_running_agent_jobs,
 )
 from system_app.services.clock_service import ensure_clock
+from system_app.services.daily_pattern_scheduler import (
+    ensure_due_daily_pattern_job,
+)
 from system_app.services.dose_event_service import ensure_day_events, prepare_notification_window
 from system_app.services.failure_copy import copy_for_async_task
-from system_app.services.mutation_confirmation_service import (
-    APPLIED,
-    CANCELLED,
-    EXECUTING,
-    FAILED,
-    mirror_confirmation_card_status,
-)
 from system_app.services.patient_profile_service import can_run_simulation, ensure_base_data
-from system_app.services.side_effect_reminder_safety import create_side_effect_reminder_safety_prompt
-from system_app.services.system_request_service import (
-    apply_async_continuation_ack,
-    apply_system_event_response,
-    build_async_continuation_request,
-    build_multiturn_chat_request,
-    mark_system_event_async_submitted,
-    mark_system_event_request_failed,
-    response_requires_async_continuation,
-    update_system_event_request_notification,
-)
 
 logger = logging.getLogger("uvicorn.error")
-MUTATION_APPLIED_FINALIZATION_FAILED_MESSAGE = (
-    "\ubcc0\uacbd\uc740 \uc801\uc6a9\ub418\uc5c8\uc9c0\ub9cc AI\uc758 \ucd5c\uc885 \uc548\ub0b4\ub97c \uc0dd\uc131\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4. "
-    "\ud654\uba74\uc5d0\uc11c \uae30\ub85d \uc0c1\ud0dc\ub97c \ud655\uc778\ud574\uc8fc\uc138\uc694."
-)
-
-
 def clock_worker(stop_event: threading.Event, write_lock: threading.RLock) -> None:
     while not stop_event.wait(1):
         try:
@@ -82,15 +63,6 @@ def clock_worker(stop_event: threading.Event, write_lock: threading.RLock) -> No
         except Exception as exc:  # pragma: no cover - defensive path
             logger.error("clock_worker_loop_failed error=%s", safe_exception_summary(exc))
             stop_event.wait(1)
-
-
-def attach_job_callback_context(payload: Any, job_id: int) -> Any:
-    callback_context = getattr(payload, "callback_context", None)
-    if callback_context is None:
-        callback_context = AgentCallbackContext(app_base_url=get_settings().system_base_url, job_id=job_id)
-    callback_context.job_id = job_id
-    payload.callback_context = callback_context
-    return payload
 
 
 def mark_awaiting_conversation_alert_failed(
@@ -121,9 +93,9 @@ def mark_awaiting_conversation_alert_failed(
             "status": "agent_error",
             "agent_job_id": job_id,
             "error_type": getattr(error, "error_type", "agent_runtime_error"),
-            "trace_id": getattr(error, "trace_id", metadata.get("trace_id")),
         }
     )
+    metadata.pop("trace_id", None)
     notification.body = copy_for_async_task("missed_dose").body
     notification.metadata_json = dump_metadata_json(metadata)
     session.flush()
@@ -137,8 +109,44 @@ def persist_agent_failure(job_id: int, source_event_type: str, payload: object, 
                 logger.debug("agent_job_failure_discarded job_id=%s job_type=%s reason=stale_or_missing", job_id, source_event_type)
                 return
             safe_error = safe_exception_summary(error)
+            max_attempts = max(1, get_settings().agent_task_max_attempts)
+            if (
+                bool(getattr(error, "retryable", False))
+                and job.attempts < max_attempts
+            ):
+                # A timeout/transport exception can happen after AI Server
+                # durably accepted the request. Keep the Backend job
+                # non-terminal and resend the same request_id; AI Server's
+                # request-id idempotency then returns duplicate or accepts it
+                # exactly once.
+                job.status = PENDING
+                job.started_at = None
+                job.completed_at = None
+                job.updated_at = utc_now()
+                job.error_message = safe_error
+                session.commit()
+                logger.warning(
+                    "agent_job_delivery_retry_scheduled "
+                    "job_id=%s job_type=%s attempt=%s max_attempts=%s "
+                    "error=%s",
+                    job_id,
+                    source_event_type,
+                    job.attempts,
+                    max_attempts,
+                    safe_error,
+                )
+                return
             mark_agent_job_failed(session, job_id, safe_error)
             job = session.get(AgentJob, job_id)
+            if source_event_type == DAILY_PATTERN_JOB_TYPE:
+                session.commit()
+                logger.error(
+                    "agent_job_failed job_id=%s job_type=%s error=%s",
+                    job_id,
+                    source_event_type,
+                    safe_error,
+                )
+                return
             related_dose_event_id = getattr(payload, "dose_event_id", None)
             mark_awaiting_conversation_alert_failed(session, source_event_type, related_dose_event_id, job_id, error)
             present_agent_error(
@@ -155,6 +163,9 @@ def persist_agent_failure(job_id: int, source_event_type: str, payload: object, 
 
 def fail_agent_job_before_send(session, job: AgentJob, error: Exception) -> None:
     mark_agent_job_failed(session, job.id, safe_exception_summary(error))
+    if job.job_type == DAILY_PATTERN_JOB_TYPE:
+        session.flush()
+        return
     mark_awaiting_conversation_alert_failed(session, job.job_type, job.related_dose_event_id, job.id, error)
     present_agent_error(
         session,
@@ -172,6 +183,11 @@ def agent_worker(stop_event: threading.Event, write_lock: threading.RLock, agent
         try:
             with write_lock:
                 with SessionLocal() as session:
+                    clock = ensure_clock(session)
+                    ensure_due_daily_pattern_job(
+                        session,
+                        current_time=clock.current_time,
+                    )
                     job = claim_next_agent_job(session)
                     if job is None:
                         session.commit()
@@ -181,12 +197,22 @@ def agent_worker(stop_event: threading.Event, write_lock: threading.RLock, agent
                         job_type = job.job_type
                         try:
                             payload = deserialize_agent_job_payload(job)
+                            request = external_agent_request(
+                                session,
+                                job,
+                                payload,
+                            )
                         except Exception as exc:
                             logger.error("agent_job_payload_invalid job_id=%s job_type=%s error=%s", job_id, job_type, safe_exception_summary(exc))
                             fail_agent_job_before_send(session, job, exc)
                             session.commit()
                             continue
-                        job_snapshot = (job_id, job_type, payload)
+                        job_snapshot = (
+                            job_id,
+                            job_type,
+                            payload,
+                            request,
+                        )
                         session.commit()
         except Exception as exc:  # pragma: no cover - defensive path
             logger.error("agent_worker_loop_failed error=%s", safe_exception_summary(exc))
@@ -197,350 +223,88 @@ def agent_worker(stop_event: threading.Event, write_lock: threading.RLock, agent
             stop_event.wait(0.5)
             continue
 
-        job_id, job_type, payload = job_snapshot
+        job_id, job_type, payload, request = job_snapshot
         try:
-            if job_type == "missed_dose":
-                payload = attach_job_callback_context(payload, job_id)
-                asyncio.run(agent_client.send_missed_dose_async(payload))
-            elif job_type == "daily_pattern":
-                payload = attach_job_callback_context(payload, job_id)
-                asyncio.run(agent_client.send_daily_pattern_async(payload))
+            if job_type == DAILY_PATTERN_JOB_TYPE:
+                asyncio.run(
+                    agent_client.send_daily_pattern_analysis_async(request)
+                )
+                with write_lock:
+                    with SessionLocal() as session:
+                        mark_agent_job_done(session, job_id)
+                        session.commit()
+            else:
+                asyncio.run(
+                    agent_client.send_medication_event_async(request)
+                )
         except Exception as exc:  # pragma: no cover - defensive path
             persist_agent_failure(job_id, job_type, payload, exc, write_lock)
 
 
-def system_event_worker(
-    event_type: str,
-    message: str,
-    notification_id: int,
-    write_lock: threading.RLock,
-    agent_client: AgentClient,
-) -> None:
-    trace_logging.log_info(
-        "system_event_worker_started",
-        event_type=event_type,
-        notification_id=notification_id,
-        message=trace_logging.snippet(message),
+def external_agent_request(
+    session,
+    job: AgentJob,
+    payload: MissedDoseEventPayload
+    | DailyMedicationPatternAnalysisRequest,
+) -> MissedDoseEventRequest | DailyMedicationPatternAnalysisRequest:
+    """Map Backend-owned job state to the exact external v1.3 request DTO."""
+
+    if job.job_type == DAILY_PATTERN_JOB_TYPE and isinstance(
+        payload,
+        DailyMedicationPatternAnalysisRequest,
+    ):
+        if payload.request_id != job.request_id:
+            raise ValueError("daily_pattern_request_id_mismatch")
+        return payload
+    if job.job_type != "missed_dose" or not isinstance(
+        payload,
+        MissedDoseEventPayload,
+    ):
+        raise ValueError("unsupported_external_agent_job_type")
+    dose_event_id = _public_dose_event_id(
+        session,
+        payload.dose_event_id,
+        required=True,
     )
-    try:
-        with write_lock:
-            with SessionLocal() as session:
-                notification = session.get(Notification, notification_id)
-                request_metadata = parse_metadata_json(notification.metadata_json) if notification is not None else {}
-        if request_metadata.get("contract_version") == "v1.2":
-            _system_event_worker_v12(
-                event_type,
-                message,
-                notification_id,
-                write_lock,
-                agent_client,
-                request_metadata,
-            )
-            return
-
-        with write_lock:
-            with SessionLocal() as session:
-                request = build_multiturn_chat_request(session, event_type, message, notification_id)
-                session.commit()
-
-        trace_logging.log_info(
-            "system_event_multiturn_chat_agent_call_started",
-            event_type=event_type,
-            notification_id=notification_id,
-            phr_registered=bool(request.phr_patient_key),
-            context_keys=sorted(request.context.keys()),
-        )
-        if hasattr(agent_client, "send_chat_continuation_async"):
-            accepted = asyncio.run(agent_client.send_chat_continuation_async(request))
-            with write_lock:
-                with SessionLocal() as session:
-                    mark_system_event_async_submitted(
-                        session,
-                        event_type,
-                        message,
-                        notification_id,
-                        request_id=getattr(accepted, "request_id", ""),
-                        task_type=getattr(accepted, "task_type", "chat_continuation"),
-                    )
-                    session.commit()
-            trace_logging.log_info(
-                "system_event_async_chat_submitted",
-                event_type=event_type,
-                notification_id=notification_id,
-                request_id=getattr(accepted, "request_id", ""),
-                task_type=getattr(accepted, "task_type", "chat_continuation"),
-            )
-            return
-
-        response = asyncio.run(agent_client.send_multiturn_chat(request))
-        trace_logging.log_info(
-            "system_event_multiturn_chat_agent_call_completed",
-            event_type=event_type,
-            notification_id=notification_id,
-            trace_id=response.trace_id,
-            agent=response.agent_name,
-            decision=response.decision_type,
-            summary=trace_logging.snippet(response.human_summary),
-        )
-
-        if response_requires_async_continuation(response):
-            continuation_request = build_async_continuation_request(request, response)
-            with write_lock:
-                with SessionLocal() as session:
-                    apply_async_continuation_ack(session, event_type, message, notification_id, response)
-                    session.commit()
-            if hasattr(agent_client, "send_chat_continuation_async"):
-                asyncio.run(agent_client.send_chat_continuation_async(continuation_request))
-            else:
-                continuation_response = asyncio.run(agent_client.send_multiturn_chat(continuation_request))
-                with write_lock:
-                    with SessionLocal() as session:
-                        apply_system_event_response(session, event_type, message, notification_id, continuation_response)
-                        session.commit()
-            trace_logging.log_info(
-                "system_event_async_continuation_submitted",
-                event_type=event_type,
-                notification_id=notification_id,
-                trace_id=response.trace_id,
-                continuation_type=response.structured_payload.get("async_continuation_type"),
-            )
-            return
-
-        response_follow_up: dict | None = None
-        with write_lock:
-            with SessionLocal() as session:
-                response_follow_up = apply_system_event_response(
-                    session,
-                    event_type,
-                    message,
-                    notification_id,
-                    response,
-                )
-                session.commit()
-        if response_follow_up and response_follow_up.get("start_mutation_confirmation_worker") is True:
-            mutation_confirmation_worker(
-                str(response_follow_up.get("confirmation_id") or ""),
-                str(response_follow_up.get("intent") or ""),
-                write_lock,
-                agent_client,
-            )
-        trace_logging.log_info(
-            "system_event_response_persisted",
-            event_type=event_type,
-            notification_id=notification_id,
-            trace_id=response.trace_id,
-            decision=response.decision_type,
-        )
-    except Exception as exc:  # pragma: no cover - defensive path
-        safe_error = safe_exception_summary(exc)
-        logger.error("system_event_worker_failed notification_id=%s event_type=%s error=%s", notification_id, event_type, safe_error)
-        trace_logging.log_warning(
-            "system_event_worker_failed",
-            event_type=event_type,
-            notification_id=notification_id,
-            error_type=type(exc).__name__,
-            error=safe_error,
-        )
-        with write_lock:
-            with SessionLocal() as session:
-                notification = session.get(Notification, notification_id)
-                metadata = parse_metadata_json(notification.metadata_json) if notification is not None else {}
-                if metadata.get("contract_version") == "v1.2":
-                    mark_user_message_failed(
-                        session,
-                        user_message_id=int(metadata.get("chat_message_id") or 0),
-                        error_code="BACKEND_CHAT_PROCESSING_ERROR",
-                        retryable=True,
-                    )
-                mark_system_event_request_failed(session, event_type, message, notification_id, exc)
-                session.commit()
-
-
-def _system_event_worker_v12(
-    event_type: str,
-    message: str,
-    notification_id: int,
-    write_lock: threading.RLock,
-    agent_client: AgentClient,
-    request_metadata: dict[str, Any],
-) -> None:
-    chat_message_id = int(request_metadata.get("chat_message_id") or 0)
-    request_id = str(request_metadata.get("ai_request_id") or "")
-    conversation_id = str(request_metadata.get("agent_conversation_id") or "")
-    message_at_text = str(request_metadata.get("message_at") or "")
-    if not chat_message_id or not request_id or not conversation_id or not message_at_text:
-        raise ValueError("backend_v12_chat_metadata_missing")
-    from datetime import datetime
-
-    message_at = datetime.fromisoformat(message_at_text)
-    with write_lock:
-        with SessionLocal() as session:
-            user_message = session.get(ChatMessage, chat_message_id)
-            if user_message is None:
-                raise ValueError("backend_v12_user_message_missing")
-            request = ChatSyncRequest(
-                request_id=request_id,
-                message_id=str(user_message.id),
-                conversation_id=conversation_id,
-                patient_id=user_message.patient_id,
-                requested_return_type=request_metadata.get("requested_return_type"),
-                message=message,
-                message_at=message_at,
-            )
-
-    response = asyncio.run(agent_client.send_sync_chat(request))
-    with write_lock:
-        with SessionLocal() as session:
-            user_message = session.get(ChatMessage, chat_message_id)
-            if user_message is None:
-                raise ValueError("backend_v12_user_message_missing")
-            persisted = persist_assistant_response(
-                session,
-                user_message=user_message,
-                response=response,
-            )
-            result_message = response.message.text or response.message.message_title or ""
-            update_system_event_request_notification(
-                session,
-                notification_id,
-                status="answered",
-                request_message=message,
-                result_message=result_message,
-                response=None,
-            )
-            session.commit()
-    trace_logging.log_info(
-        "system_event_v12_response_persisted",
-        event_type=event_type,
-        notification_id=notification_id,
-        request_id=request_id,
-        user_message_id=chat_message_id,
-        assistant_message_id=persisted.assistant_message_id,
+    return MissedDoseEventRequest(
+        request_id=job.request_id,
+        patient_id=payload.patient_id,
+        dose_event_id=dose_event_id,
     )
 
 
-def mutation_confirmation_worker(
-    confirmation_id: str,
-    resolution: str,
-    write_lock: threading.RLock,
-    agent_client: AgentClient,
-) -> None:
-    event_type = "multiturn_chat"
-    message = ""
-    notification_id: int | None = None
-    try:
-        with write_lock:
-            with SessionLocal() as session:
-                row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == confirmation_id))
-                if row is None:
-                    raise ValueError("mutation_confirmation_not_found")
-                notification_id = row.origin_request_notification_id
-                notification = session.get(Notification, notification_id) if notification_id is not None else None
-                metadata = parse_metadata_json(notification.metadata_json) if notification is not None else {}
-                event_type = str(metadata.get("event_type") or "multiturn_chat")
-                message = str(metadata.get("request_message") or "")
-                if notification_id is None:
-                    raise ValueError("mutation_confirmation_origin_request_missing")
-                original_request = build_multiturn_chat_request(
-                    session,
-                    event_type,
-                    message,
-                    notification_id,
-                )
-                request = MutationConfirmationResolutionRequest(
-                    confirmation_id=row.public_id,
-                    resolution=resolution,
-                    action_type=row.action_type,
-                    action_name=row.action_name,
-                    tool_call_id=row.tool_call_id,
-                    arguments=parse_metadata_json(row.arguments_json),
-                    action_fingerprint=row.action_fingerprint,
-                    source_event_type=row.source_event_type,
-                    original_request=original_request,
-                )
-                session.commit()
-
-        response = asyncio.run(agent_client.resolve_mutation_confirmation(request))
-        with write_lock:
-            with SessionLocal() as session:
-                row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == confirmation_id))
-                if row is not None:
-                    mirror_confirmation_card_status(session, row)
-                apply_system_event_response(
-                    session,
-                    event_type,
-                    message,
-                    notification_id,
-                    response,
-                )
-                if row is not None and row.action_name == CREATE_MEDICATION_SIDE_EFFECT_RECORD and row.status in {APPLIED, CANCELLED} and row.chat_message_id is not None:
-                    create_side_effect_reminder_safety_prompt(
-                        session,
-                        row.chat_message_id,
-                        recorded=row.status == APPLIED,
-                    )
-                session.commit()
-    except Exception as exc:  # pragma: no cover - defensive path
-        safe_error = safe_exception_summary(exc)
-        logger.error(
-            "mutation_confirmation_worker_failed confirmation_id=%s error=%s",
-            confirmation_id,
-            safe_error,
-        )
-        with write_lock:
-            with SessionLocal() as session:
-                row = session.scalar(select(MutationConfirmation).where(MutationConfirmation.public_id == confirmation_id))
-                mutation_applied = row is not None and row.status == APPLIED
-                if row is not None:
-                    if row.status == EXECUTING:
-                        row.status = FAILED
-                        row.error_message = safe_error
-                        row.resolved_at = utc_now()
-                    mirror_confirmation_card_status(session, row)
-                if notification_id is not None:
-                    if mutation_applied:
-                        update_system_event_request_notification(
-                            session,
-                            notification_id,
-                            status=APPLIED,
-                            request_message=message,
-                            result_message=MUTATION_APPLIED_FINALIZATION_FAILED_MESSAGE,
-                        )
-                        present_agent_error(
-                            session,
-                            event_type,
-                            exc,
-                            user_message=MUTATION_APPLIED_FINALIZATION_FAILED_MESSAGE,
-                            add_chat=True,
-                            metadata={
-                                "confirmation_id": confirmation_id,
-                                "mutation_status": APPLIED,
-                                "finalization_failed": True,
-                            },
-                        )
-                    else:
-                        mark_system_event_request_failed(
-                            session,
-                            event_type,
-                            message,
-                            notification_id,
-                            exc,
-                        )
-                session.commit()
+def _public_dose_event_id(
+    session,
+    value: str | int | None,
+    *,
+    required: bool,
+) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, int):
+        row = session.get(DoseEvent, value)
+        if row is not None and row.public_id:
+            return row.public_id
+    if required:
+        raise ValueError("dose_event_public_id_not_found")
+    return None
 
 
 def notification_worker(stop_event: threading.Event, write_lock: threading.RLock) -> None:
     while not stop_event.wait(0.25):
         try:
             missed_payloads = []
-            pattern_jobs = []
             with write_lock:
                 with SessionLocal() as session:
                     clock = ensure_clock(session)
                     start_dt = clock.last_processed_sim_time
                     end_dt = clock.current_time
                     if end_dt > start_dt:
-                        missed_payloads, pattern_jobs = prepare_notification_window(session, start_dt, end_dt)
+                        missed_payloads = prepare_notification_window(
+                            session,
+                            start_dt,
+                            end_dt,
+                        )
 
             for payload in missed_payloads:
                 with write_lock:
@@ -548,20 +312,12 @@ def notification_worker(stop_event: threading.Event, write_lock: threading.RLock
                         create_agent_job(session, "missed_dose", payload)
                         session.commit()
 
-            for pattern in pattern_jobs:
-                with write_lock:
-                    with SessionLocal() as session:
-                        create_agent_job(session, "daily_pattern", pattern)
-                        session.commit()
         except Exception as exc:  # pragma: no cover - defensive path
             logger.error("notification_worker_loop_failed error=%s", safe_exception_summary(exc))
             stop_event.wait(1)
 
 
 def initialize_runtime_state(write_lock: threading.RLock) -> None:
-    from system_app.db import engine
-
-    Base.metadata.create_all(bind=engine)
     with write_lock:
         with SessionLocal() as session:
             reset_running_agent_jobs(session)

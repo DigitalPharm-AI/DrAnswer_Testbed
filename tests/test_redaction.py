@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import json
 
-from shared.json_utils import parse_json_object
 from shared.redaction import redact_for_logging, redact_inline_secrets, safe_exception_summary, safe_log_arguments
-from shared.schemas import AgentNotificationRequest, AgentResponse, ToolCallResult
-from system_app.models import AgentDecisionAudit, ChatMessage, Notification
+from shared.schemas import AgentNotificationRequest, ToolCallResult
+from system_app.models import BackendApiRequest, ChatMessage, Notification
 from system_app.services.agent_callback_service import process_agent_notification_callback
-from system_app.services.audit_service import create_agent_decision_audit, record_agent_audit
-from agent_app.tools.names import CREATE_NUTRITION_MEAL_RECORD, UPDATE_MEDICATION_DOSE_EVENT_STATUS
+from shared.tool_names import CREATE_NUTRITION_MEAL_RECORD, UPDATE_MEDICATION_DOSE_EVENT_STATUS
 from agent_app.tools.protocol import mcp_result_from_json_rpc_response, mcp_result_from_tool_result, tool_result_from_mcp_result
 from agent_app.tools.results import tool_calls_payload, tool_result_summary
 from tests.helpers import build_session
@@ -18,7 +16,7 @@ def test_redact_for_logging_hashes_identifiers_and_redacts_clinical_text():
     payload = redact_for_logging(
         {
             "patient_id": "patient-demo-001",
-            "phr_patient_key": "phr-secret-key",
+            "medical_record_number": "mrn-secret-value",
             "message": "속이 메스꺼워요",
             "medication_name": "항암제",
             "nested": {"authorization": "Bearer token-value"},
@@ -29,14 +27,14 @@ def test_redact_for_logging_hashes_identifiers_and_redacts_clinical_text():
 
     assert payload["patient_id"]["type"] == "identifier"
     assert payload["patient_id"]["sha256"]
-    assert payload["phr_patient_key"]["type"] == "identifier"
+    assert payload["medical_record_number"]["type"] == "identifier"
     assert payload["message"]["type"] == "clinical_text"
     assert payload["medication_name"]["type"] == "clinical_text"
     assert payload["nested"]["authorization"]["type"] == "secret"
     assert payload["token_usage"] == {"input_tokens": 120, "output_tokens": 80}
     assert payload["safe_status"] == "ok"
     assert "patient-demo-001" not in str(payload)
-    assert "phr-secret-key" not in str(payload)
+    assert "mrn-secret-value" not in str(payload)
     assert "속이 메스꺼워요" not in str(payload)
 
 
@@ -103,31 +101,34 @@ def test_safe_log_arguments_uses_central_redaction_and_compacts_payloads():
     payload = safe_log_arguments(
         {
             "patient_id": "patient-demo-001",
-            "phr_patient_key": "phr-secret-key",
+            "medical_record_number": "mrn-secret-value",
             "object_label": "soy",
             "query": "soy allergy lunch",
             "foods": [{"food_name": "soy soup", "nutrients": {"sodium": 500}}],
             "metadata": {"free_text": "not expanded in compact log"},
             "api_key": "secret-api-key",
+            "approval_key": "apv_private-capability",
             "limit": 5,
         }
     )
 
     assert payload["patient_id"]["type"] == "identifier"
-    assert payload["phr_patient_key"]["type"] == "identifier"
+    assert payload["medical_record_number"]["type"] == "identifier"
     assert payload["object_label"]["type"] == "clinical_text"
     assert payload["query"]["type"] == "clinical_text"
     assert payload["foods"] == {"count": 1}
     assert payload["metadata"] == {"keys": ["free_text"]}
     assert payload["api_key_present"] is True
+    assert payload["approval_key_present"] is True
     assert payload["limit"] == 5
 
     rendered = str(payload)
     assert "patient-demo-001" not in rendered
-    assert "phr-secret-key" not in rendered
+    assert "mrn-secret-value" not in rendered
     assert "soy allergy lunch" not in rendered
     assert "soy soup" not in rendered
     assert "secret-api-key" not in rendered
+    assert "apv_private-capability" not in rendered
 
 
 def test_safe_exception_summary_redacts_raw_exception_text():
@@ -231,84 +232,7 @@ def test_agent_tool_calls_payload_redacts_error_response_but_keeps_success_respo
     assert raw_error not in rendered
 
 
-def test_record_agent_audit_persists_redacted_summary_and_payload():
-    with build_session() as session:
-        response = AgentResponse(
-            trace_id="trace-audit-redaction",
-            agent_name="nutrition_agent",
-            prompt_version_id="test",
-            decision_type="tool_call",
-            structured_payload={
-                "tool_call": {
-                    "name": "upsert_nutrition_preference_fact",
-                    "arguments": {
-                        "patient_id": "patient-redaction-001",
-                        "message": "pytest private nausea and peanut allergy",
-                        "slot_label": "아침 08:00",
-                    },
-                },
-                "advice": "pytest private advice about jajangmyeon",
-                "tools_executed": True,
-            },
-            human_summary="pytest private summary about peanut allergy and jajangmyeon",
-            requires_conversation_alert=False,
-        )
-
-        audit = record_agent_audit(session, response, "multiturn_chat", applied=False, error_message="token=secret-value")
-        session.commit()
-
-        payload = parse_json_object(audit.structured_payload)
-        audit_summary = audit.human_summary
-        audit_error = audit.error_message
-        rendered = f"{audit.human_summary} {audit.structured_payload} {audit.error_message}"
-
-    assert audit_summary.startswith("clinical text redacted")
-    assert payload["tool_call"]["arguments"]["patient_id"]["type"] == "identifier"
-    assert payload["tool_call"]["arguments"]["message"]["type"] == "clinical_text"
-    assert payload["tool_call"]["arguments"]["slot_label"] == "아침 08:00"
-    assert payload["advice"]["type"] == "clinical_text"
-    assert "secret-value" not in audit_error
-    assert "patient-redaction-001" not in rendered
-    assert "pytest private nausea" not in rendered
-    assert "pytest private advice" not in rendered
-    assert "pytest private summary" not in rendered
-
-
-def test_create_agent_decision_audit_redacts_direct_callers():
-    with build_session() as session:
-        audit = create_agent_decision_audit(
-            session,
-            trace_id="trace-direct-audit-redaction",
-            agent_name="agent_async_callback",
-            prompt_version_id="n/a",
-            decision_type="agent_async_chat_result",
-            structured_payload={
-                "notification_id": 123,
-                "patient_id": "patient-direct-001",
-                "result_message": "pytest direct private symptom text",
-            },
-            human_summary="pytest direct private summary",
-            applied=True,
-            error_message="Authorization: Bearer private-token-value",
-            source_event_type="agent_async_chat_result",
-            flush=True,
-        )
-        session.commit()
-
-        payload = parse_json_object(audit.structured_payload)
-        rendered = f"{audit.human_summary} {audit.structured_payload} {audit.error_message}"
-
-    assert payload["notification_id"] == 123
-    assert payload["patient_id"]["type"] == "identifier"
-    assert payload["result_message"]["type"] == "clinical_text"
-    assert audit.human_summary.startswith("clinical text redacted")
-    assert "private-token-value" not in audit.error_message
-    assert "patient-direct-001" not in rendered
-    assert "pytest direct private symptom" not in rendered
-    assert "pytest direct private summary" not in rendered
-
-
-def test_agent_notification_callback_redacts_audit_but_keeps_user_visible_message():
+def test_agent_notification_callback_keeps_only_minimal_idempotency_receipt():
     raw_body = "pytest callback private allergy body"
     with build_session() as session:
         result = process_agent_notification_callback(
@@ -325,53 +249,14 @@ def test_agent_notification_callback_redacts_audit_but_keeps_user_visible_messag
 
         notification = session.get(Notification, result["notification_id"])
         chat_message = session.query(ChatMessage).filter(ChatMessage.category == "side_effect").one()
-        audit = session.query(AgentDecisionAudit).filter(AgentDecisionAudit.trace_id == "pytest-callback-redaction-key").one()
-        audit_payload = parse_json_object(audit.structured_payload)
-        rendered_audit = f"{audit.human_summary} {audit.structured_payload}"
+        receipt = session.query(BackendApiRequest).filter(
+            BackendApiRequest.api_path == "/api/agent/notifications",
+            BackendApiRequest.request_id
+            == "pytest-callback-redaction-key",
+        ).one()
 
     assert notification is not None
     assert notification.body == raw_body
     assert chat_message.content == raw_body
-    assert audit_payload["notification_id"] == result["notification_id"]
-    assert audit.human_summary.startswith("clinical text redacted")
-    assert raw_body not in rendered_audit
-
-
-def test_eval_backlog_promotion_redacts_legacy_audit_summary(tmp_path, monkeypatch):
-    from system_app.services import observability_actions
-
-    raw_summary = "pytest legacy audit private peanut allergy summary"
-    backlog_path = tmp_path / "agent_eval_backlog.json"
-    monkeypatch.setattr(observability_actions, "EVAL_BACKLOG_PATH", backlog_path)
-
-    with build_session() as session:
-        audit = AgentDecisionAudit(
-            trace_id="trace-legacy-audit-redaction",
-            agent_name="legacy_agent",
-            prompt_version_id="legacy",
-            decision_type="legacy_tool_call",
-            structured_payload="{}",
-            human_summary=raw_summary,
-            applied=False,
-            error_message="",
-            source_event_type="legacy",
-        )
-        session.add(audit)
-        session.flush()
-        audit_id = audit.id
-
-        result = observability_actions.promote_observability_eval_case(
-            session,
-            source_type="audit",
-            source_id=str(audit_id),
-            reason="pytest legacy audit promotion",
-        )
-
-    cases = json.loads(backlog_path.read_text(encoding="utf-8"))
-    rendered = json.dumps(cases, ensure_ascii=False)
-
-    assert result["success"] is True
-    assert result["created"] is True
-    assert cases[0]["input"]["summary"].startswith("clinical text redacted")
-    assert raw_summary not in rendered
-    assert "pytest legacy audit private" not in rendered
+    assert receipt.request_hash
+    assert raw_body not in receipt.response_json

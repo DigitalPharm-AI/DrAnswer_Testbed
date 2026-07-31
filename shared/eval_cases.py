@@ -35,7 +35,7 @@ REQUIRED_EVAL_TAGS = {
     "nutrition",
     "observability",
     "patient_id",
-    "phr",
+    "patient_snapshot",
     "privacy",
     "safety",
     "side_effect",

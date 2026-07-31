@@ -4,14 +4,14 @@ from copy import deepcopy
 from typing import Any
 
 from shared.tool_names import (
-    BACKEND_V12_POLICY_WRITE_TOOLS,
-    BACKEND_V12_RECORD_WRITE_TOOLS,
+    BACKEND_V13_POLICY_WRITE_TOOLS,
+    BACKEND_V13_RECORD_WRITE_TOOLS,
     CHANGE_NOTIFICATION_POLICY,
     GET_NOTIFICATION_POLICIES,
     MODEL_VISIBLE_TOOL_METADATA,
+    RECORD_APPROVAL_ACTIONS,
+    REQUEST_RECORD_APPROVAL,
     UPSERT_NUTRITION_PREFERENCE_FACT,
-    canonical_tool_name,
-    replace_legacy_tool_names,
 )
 
 
@@ -20,35 +20,47 @@ class ToolCatalog:
     def available_tools_payload() -> list[dict[str, Any]]:
         tools = [
             {
-                "name": "AE_pro_ctcae",
+                "name": "get_pro_ctcae_questionnaire",
                 "title": "PRO-CTCAE Symptom Matcher",
-                "description": "PRO-CTCAE Korean workbook에서 환자가 말한 부작용/증상을 매칭하고 자기보고식 질문과 응답 선택지를 반환합니다.",
-                "required_arguments": ["symptom_text", "symptom_normalize"],
-                "optional_arguments": ["threshold"],
+                "description": (
+                    "환자가 말한 부작용/증상 원문만 입력받습니다. "
+                    "AI Server Tool이 증상 정규화와 서버 설정 임계값을 적용해 PRO-CTCAE Korean workbook을 매칭하고 "
+                    "자기보고식 질문과 응답 선택지를 반환합니다."
+                ),
+                "required_arguments": ["symptom_text"],
+                "optional_arguments": [],
                 "inputSchema": _object_schema(
                     {
                         "symptom_text": {"type": "string", "description": "환자가 말한 원문 증상"},
-                        "symptom_normalize": {"type": "string", "description": "정규화된 증상명"},
-                        "threshold": {"type": "number", "description": "매칭 임계값"},
                     },
-                    ["symptom_text", "symptom_normalize"],
+                    ["symptom_text"],
+                    additional_properties=False,
                 ),
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "lookup_side_effect_info",
-                "title": "PHR Side Effect Lookup",
-                "description": "PHR patient key로 복용 중인 품목의 주의사항을 조회해 증상/부작용 가능성을 평가합니다.",
+                "name": "get_medication_side_effect_assessment",
+                "title": "Medication Side Effect Assessment",
+                "description": (
+                    "환자가 표현한 증상과 약 이름·발생 시점만 입력받습니다. "
+                    "환자 식별자와 현재 복약정보는 AI Server가 신뢰 컨텍스트에서 주입하고, "
+                    "Tool이 약 후보 매칭과 의약품 부작용 기준정보 조회를 수행합니다."
+                ),
                 "required_arguments": ["symptom_text"],
-                "optional_arguments": ["medication_name", "recent_chat", "dose_event_id"],
+                "optional_arguments": ["medication_name", "symptom_onset_text"],
                 "inputSchema": _object_schema(
                     {
-                        "symptom_text": {"type": "string", "description": "환자가 말한 증상"},
-                        "medication_name": {"type": "string", "description": "선택적 복용 품목명"},
-                        "recent_chat": {"type": "array", "items": {"type": "object"}, "description": "최근 대화 맥락"},
-                        "dose_event_id": {
+                        "symptom_text": {
                             "type": "string",
-                            "description": "관련 복약 이벤트의 공개 opaque ID",
+                            "description": "환자가 말한 증상 원문",
+                        },
+                        "medication_name": {
+                            "type": "string",
+                            "description": "환자가 직접 언급했거나 대화에서 명확히 지칭한 약 이름",
+                        },
+                        "symptom_onset_text": {
+                            "type": "string",
+                            "description": "어제, 복용 30분 후 등 환자가 표현한 증상 발생 시점",
                         },
                     },
                     ["symptom_text"],
@@ -66,36 +78,28 @@ class ToolCatalog:
                     "idempotentHint": True,
                     "openWorldHint": False,
                 },
-                "required_arguments": ["symptom_text", "suspected"],
+                "required_arguments": ["symptom_text"],
                 "optional_arguments": [
-                    "phr_patient_key",
                     "medication_name",
-                    "severity",
-                    "matched_effects",
-                    "matched_items",
-                    "evidence",
-                    "recommendation",
-                    "related_dose_event_id",
-                    "metadata",
+                    "symptom_onset_text",
                 ],
                 "inputSchema": _object_schema(
                     {
-                        "phr_patient_key": {"type": "string", "description": "Current patient PHR key."},
-                        "medication_name": {"type": "string", "description": "Medication related to the assessment, when known."},
-                        "symptom_text": {"type": "string", "description": "Patient-reported symptom text."},
-                        "suspected": {"type": "boolean", "description": "Whether the medication assessment found a possible relationship."},
-                        "severity": {"type": "string", "enum": ["none", "low", "moderate", "high"]},
-                        "matched_effects": {"type": "array", "items": {"type": "string"}},
-                        "matched_items": {"type": "array", "items": {"type": "string"}},
-                        "evidence": {"type": "string"},
-                        "recommendation": {"type": "string"},
-                        "related_dose_event_id": {
+                        "symptom_text": {
                             "type": "string",
-                            "description": "관련 복약 이벤트의 공개 opaque ID",
+                            "description": "환자가 말한 증상 원문",
                         },
-                        "metadata": {"type": "object"},
+                        "medication_name": {
+                            "type": "string",
+                            "description": "환자가 직접 언급했거나 대화에서 명확히 지칭한 약 이름",
+                        },
+                        "symptom_onset_text": {
+                            "type": "string",
+                            "description": "환자가 표현한 증상 발생 시점",
+                        },
                     },
-                    ["symptom_text", "suspected"],
+                    ["symptom_text"],
+                    additional_properties=False,
                 ),
                 "outputSchema": _tool_result_schema(),
             },
@@ -110,7 +114,7 @@ class ToolCatalog:
                     "openWorldHint": False,
                 },
                 "required_arguments": [],
-                "optional_arguments": ["target_date", "start_date", "end_date", "limit", "suspected", "medication_name", "severity"],
+                "optional_arguments": ["target_date", "start_date", "end_date", "limit", "suspected", "medication_name"],
                 "inputSchema": _object_schema(
                     {
                         "target_date": {"type": "string", "description": "YYYY-MM-DD single-day filter using record created_at."},
@@ -119,7 +123,6 @@ class ToolCatalog:
                         "limit": {"type": "integer", "description": "Maximum records to return. Default 20, maximum 100."},
                         "suspected": {"type": "boolean", "description": "When provided, filter by suspected side-effect status."},
                         "medication_name": {"type": "string", "description": "Optional exact medication name filter."},
-                        "severity": {"type": "string", "enum": ["none", "low", "moderate", "high"], "description": "Optional severity filter."},
                     },
                     [],
                     additional_properties=False,
@@ -152,7 +155,7 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "mark_dose_taken",
+                "name": "update_medication_dose_event_status",
                 "title": "Mark Dose Taken",
                 "description": "환자가 이미 복용했음을 명확히 말했을 때 dose_event_id를 taken으로 표시합니다.",
                 "annotations": {
@@ -176,7 +179,7 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "search_food_nutrition",
+                "name": "search_nutrition_food_candidates",
                 "title": "Search Food Nutrition",
                 "description": "음식명으로 샘플 음식 영양 후보를 검색합니다. 식사 기록 전에 음식명이 불명확하거나 후보 확인이 필요할 때 사용합니다.",
                 "required_arguments": ["query"],
@@ -197,7 +200,7 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "record_meal",
+                "name": "create_nutrition_meal_record",
                 "title": "Record Nutrition Meal",
                 "description": ("환자가 먹은 음식이 충분히 명확할 때 식사 기록을 저장하고 오늘 영양 요약을 갱신합니다. meal_type은 breakfast, lunch, dinner, snack 중 하나입니다."),
                 "annotations": {
@@ -234,7 +237,7 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "update_nutrition_meal",
+                "name": "update_nutrition_meal_record",
                 "title": "Update Nutrition Meal",
                 "description": (
                     "Update an existing meal record while keeping the same meal_id. Use only when the target meal_id is clear. "
@@ -288,7 +291,7 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "delete_nutrition_meal",
+                "name": "delete_nutrition_meal_record",
                 "title": "Delete Nutrition Meal",
                 "description": "Delete an existing meal record by meal_id. Use only after the target meal is clear or confirmed.",
                 "annotations": {
@@ -320,7 +323,7 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "update_nutrition_food",
+                "name": "update_nutrition_food_record",
                 "title": "Update Nutrition Food",
                 "description": (
                     "Update or replace one food item inside an existing meal using meal_id and food_id. "
@@ -364,7 +367,7 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "delete_nutrition_food",
+                "name": "delete_nutrition_food_record",
                 "title": "Delete Nutrition Food",
                 "description": (
                     "Delete one food item from an existing meal using meal_id and food_id. "
@@ -403,7 +406,7 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "list_meals",
+                "name": "get_nutrition_meal_record_list",
                 "title": "List Nutrition Meals",
                 "description": "특정 날짜 또는 오늘 기록된 식사 목록을 조회합니다.",
                 "required_arguments": [],
@@ -418,7 +421,7 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "get_daily_nutrition_summary",
+                "name": "get_nutrition_daily_summary",
                 "title": "Get Daily Nutrition Summary",
                 "description": "오늘 또는 특정 날짜의 영양 섭취량, 기준치, 남은량, 초과 항목을 조회합니다.",
                 "required_arguments": [],
@@ -433,7 +436,7 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "record_nutrition_preference",
+                "name": "upsert_nutrition_preference_fact",
                 "title": "Record Nutrition Preference",
                 "description": (
                     "환자가 명시적으로 말한 음식 선호, 비선호, 알레르기, 의학적/종교적 제한을 ontology preference fact로 저장합니다. "
@@ -478,7 +481,7 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "get_nutrition_preferences",
+                "name": "get_nutrition_preference_summary",
                 "title": "Get Nutrition Preferences",
                 "description": "환자별 영양 선호도 ontology summary를 조회합니다. 추천 전 제한/선호 확인이 필요할 때 사용합니다.",
                 "annotations": {
@@ -497,7 +500,7 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "recommend_diet",
+                "name": "get_nutrition_recommendation_candidates",
                 "title": "Recommend Diet",
                 "description": (
                     "환자의 질환, CKD 위험도, 오늘 섭취 현황을 고려해 영양 제약 조건에 맞는 음식을 추천합니다. "
@@ -541,7 +544,7 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "apply_notification_policy",
+                "name": "propose_notification_policy",
                 "title": "Create Notification Policy Candidate",
                 "description": (
                     "복약 알림 정책 변경 후보를 생성합니다. 이 도구는 정책을 직접 적용하지 않고, "
@@ -591,7 +594,7 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
             {
-                "name": "apply_system_policy",
+                "name": "propose_system_policy",
                 "title": "Create System Policy Candidate",
                 "description": (
                     "복약 알림 정책이 아닌 시스템 운영 정책 변경 후보를 생성합니다. 이 도구는 정책을 직접 적용하지 않고, "
@@ -663,8 +666,9 @@ class ToolCatalog:
                 "name": CHANGE_NOTIFICATION_POLICY,
                 "title": "Change Notification Policy",
                 "description": (
-                    "사용자가 현재 메시지에서 알림 정책 적용 또는 유지 의사를 명확히 밝힌 경우에만 호출합니다. "
-                    "Tool 내부에서 Backend /agent/sync/notification-policy-change API를 동기로 호출합니다."
+                    "승인 카드에서 사용자가 적용 또는 유지 결정을 확인한 뒤 서버가 강제 실행합니다. "
+                    "모델은 이 Tool을 직접 호출하지 않고 승인 요청 Tool을 사용합니다. 승인 후 Tool 내부에서 "
+                    "Backend /agent/sync/notification-policy-change API를 동기로 호출합니다."
                 ),
                 "annotations": {
                     "readOnlyHint": False,
@@ -686,19 +690,113 @@ class ToolCatalog:
                 "outputSchema": _tool_result_schema(),
             },
         ]
-        return [_canonical_tool_payload(tool) for tool in tools]
+        canonical_tools = [_tool_payload(tool) for tool in tools]
+        write_argument_schemas = {
+            tool["name"]: deepcopy(tool["inputSchema"])
+            for tool in canonical_tools
+            if tool["name"] in RECORD_APPROVAL_ACTIONS
+        }
+        approval_tool = _tool_payload(
+            {
+                "name": REQUEST_RECORD_APPROVAL,
+                "title": "Request Record Approval",
+                "description": (
+                    "기록 생성·수정·삭제 또는 알림 정책 변경 전에 사용자 승인을 요청합니다. "
+                    "이 Tool은 데이터를 직접 변경하지 않으며 승인용 selection box만 준비합니다."
+                ),
+                "annotations": {
+                    "readOnlyHint": False,
+                    "destructiveHint": False,
+                    "idempotentHint": True,
+                    "openWorldHint": False,
+                },
+                "required_arguments": ["action_name", "record_arguments"],
+                "optional_arguments": [],
+                "inputSchema": _object_schema(
+                    {
+                        "action_name": {
+                            "type": "string",
+                            "enum": sorted(RECORD_APPROVAL_ACTIONS),
+                            "description": "승인 후 실행할 canonical write Tool 이름",
+                        },
+                        "record_arguments": _record_approval_arguments_schema(
+                            write_argument_schemas,
+                            RECORD_APPROVAL_ACTIONS,
+                        ),
+                    },
+                    ["action_name", "record_arguments"],
+                    additional_properties=False,
+                ),
+                "outputSchema": _tool_result_schema(),
+            }
+        )
+        return [*canonical_tools, approval_tool]
 
     @staticmethod
     def tools_for(*names: str) -> list[dict[str, Any]]:
         allowed = set(names)
         return [tool for tool in ToolCatalog.available_tools_payload() if tool["name"] in allowed]
 
+    @staticmethod
+    def model_tools_for(*names: str) -> list[dict[str, Any]]:
+        """Return the least-privilege Tool catalog exposed to an LLM.
+
+        Raw record-write Tools remain in ``tools_for`` for trusted, server-forced
+        execution after a confirmation. When an agent can request record
+        approval, however, the model sees only the approval wrapper and the
+        wrapper is limited to that agent's own write actions.
+        """
+
+        allowed = set(names)
+        scoped_actions = allowed.intersection(RECORD_APPROVAL_ACTIONS)
+        model_allowed = allowed.difference(RECORD_APPROVAL_ACTIONS)
+        if REQUEST_RECORD_APPROVAL not in allowed:
+            return ToolCatalog.tools_for(*model_allowed)
+
+        available_tools = ToolCatalog.available_tools_payload()
+        tools = [
+            tool
+            for tool in available_tools
+            if tool["name"] in model_allowed
+        ]
+        if not scoped_actions:
+            return [
+                tool
+                for tool in tools
+                if tool["name"] != REQUEST_RECORD_APPROVAL
+            ]
+
+        scoped_tools: list[dict[str, Any]] = []
+        for tool in tools:
+            if tool["name"] != REQUEST_RECORD_APPROVAL:
+                scoped_tools.append(tool)
+                continue
+
+            approval_tool = deepcopy(tool)
+            approval_schema = approval_tool["inputSchema"]
+            approval_schema["properties"]["action_name"]["enum"] = sorted(
+                scoped_actions
+            )
+            action_schemas = {
+                candidate["name"]: candidate["inputSchema"]
+                for candidate in available_tools
+                if candidate["name"] in scoped_actions
+            }
+            approval_schema["properties"][
+                "record_arguments"
+            ] = _record_approval_arguments_schema(
+                action_schemas,
+                scoped_actions,
+            )
+            scoped_tools.append(approval_tool)
+        return scoped_tools
+
 
 def _object_schema(
     properties: dict[str, Any],
     required: list[str],
     *,
-    additional_properties: bool = True,
+    additional_properties: bool = False,
 ) -> dict[str, Any]:
     return {
         "type": "object",
@@ -706,6 +804,45 @@ def _object_schema(
         "required": required,
         "additionalProperties": additional_properties,
     }
+
+
+def _record_approval_arguments_schema(
+    action_schemas: dict[str, dict[str, Any]],
+    action_names: set[str] | frozenset[str],
+) -> dict[str, Any]:
+    """Build a Bedrock-compatible union of the scoped action properties.
+
+    Bedrock Converse rejects ``oneOf``/``allOf``/``anyOf`` at a Tool
+    ``inputSchema`` root. The approval wrapper therefore advertises the
+    property union for the actions visible to that specialist. Individual
+    action required-field and semantic validation remains authoritative at
+    the server permission/execution boundary.
+    """
+
+    properties: dict[str, Any] = {}
+    for action_name in sorted(action_names):
+        action_schema = action_schemas.get(action_name)
+        if not isinstance(action_schema, dict):
+            continue
+        action_properties = action_schema.get("properties")
+        if not isinstance(action_properties, dict):
+            continue
+        for property_name, property_schema in action_properties.items():
+            properties.setdefault(
+                property_name,
+                deepcopy(property_schema),
+            )
+
+    schema = _object_schema(
+        properties,
+        [],
+        additional_properties=False,
+    )
+    schema["description"] = (
+        "action_name 대상 write Tool의 업무 인자. "
+        "action별 필수값과 의미 검증은 AI Server가 수행합니다."
+    )
+    return schema
 
 
 def _nutrient_schema() -> dict[str, Any]:
@@ -761,12 +898,13 @@ def _tool_result_schema() -> dict[str, Any]:
             "idempotency_key": {"type": "string"},
         },
         ["tool_name", "status"],
+        additional_properties=True,
     )
 
 
-def _canonical_tool_payload(tool: dict[str, Any]) -> dict[str, Any]:
-    payload = replace_legacy_tool_names(deepcopy(tool))
-    name = canonical_tool_name(str(tool.get("name") or ""))
+def _tool_payload(tool: dict[str, Any]) -> dict[str, Any]:
+    payload = deepcopy(tool)
+    name = str(payload.get("name") or "")
     payload["name"] = name
     if name == UPSERT_NUTRITION_PREFERENCE_FACT:
         payload["description"] = (
@@ -781,7 +919,7 @@ def _canonical_tool_payload(tool: dict[str, Any]) -> dict[str, Any]:
     args_schema = payload.get("inputSchema") if isinstance(payload.get("inputSchema"), dict) else _object_schema({}, [])
     payload["args_schema"] = args_schema
     metadata = MODEL_VISIBLE_TOOL_METADATA.get(name, {})
-    if name in BACKEND_V12_RECORD_WRITE_TOOLS:
+    if name in BACKEND_V13_RECORD_WRITE_TOOLS:
         metadata = {
             **metadata,
             "source_path": "agent_app/tools/backend_write.py",
@@ -790,7 +928,7 @@ def _canonical_tool_payload(tool: dict[str, Any]) -> dict[str, Any]:
             "backend_endpoint": "/agent/sync/record-change",
             "confirmation_policy": "explicit_user_message",
         }
-    elif name in BACKEND_V12_POLICY_WRITE_TOOLS:
+    elif name in BACKEND_V13_POLICY_WRITE_TOOLS:
         metadata = {
             **metadata,
             "execution_mode": "backend_sync",

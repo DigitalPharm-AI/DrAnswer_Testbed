@@ -188,21 +188,6 @@ def test_daily_pattern_conversation_time_rejects_invalid_values(tmp_path, value)
     assert "daily_pattern_conversation_time" in " ".join(exc_info.value.result.errors)
 
 
-def test_legacy_daily_pattern_analysis_time_key_is_renamed(tmp_path):
-    path = tmp_path / "default_notification_policies.xlsx"
-    write_policy_workbook(
-        path,
-        [policy_row(key="default_policy")],
-        boundary_rows=[boundary_row(policy_key="default_policy")],
-        system_policy_rows=[system_policy_row(key="daily_pattern_analysis_time", value="09:45")],
-    )
-    manager = PolicyWorkbookManager(path)
-
-    manager.reload()
-
-    assert manager.system_policy_value("daily_pattern_conversation_time", "00:00") == "09:45"
-
-
 def test_daily_pattern_conversation_time_can_use_patient_override(tmp_path, monkeypatch):
     path = tmp_path / "default_notification_policies.xlsx"
     write_policy_workbook(
@@ -446,14 +431,14 @@ def test_notifications_use_resolved_policy_templates_and_missed_delay(tmp_path, 
             instructions="테스트",
         )
 
-        early_payloads, _ = prepare_notification_window(
+        early_payloads = prepare_notification_window(
             session,
             datetime(2026, 4, 20, 8, 0),
             datetime(2026, 4, 20, 8, 44),
         )
         alerts = session.query(Notification).filter(Notification.notification_type == "medication_alert").order_by(Notification.visible_at).all()
         alert_views = [(alert.visible_at, alert.title, alert.body) for alert in alerts]
-        missed_payloads, _ = prepare_notification_window(
+        missed_payloads = prepare_notification_window(
             session,
             datetime(2026, 4, 20, 8, 44),
             datetime(2026, 4, 20, 8, 45),

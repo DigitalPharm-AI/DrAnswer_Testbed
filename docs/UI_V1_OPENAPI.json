@@ -1,0 +1,3406 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "React-Backend UI BFF v1 contract",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/ui/v1/dashboard": {
+      "get": {
+        "summary": "Get Dashboard",
+        "operationId": "get_dashboard_api_ui_v1_dashboard_get",
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiDashboardResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/status": {
+      "get": {
+        "summary": "Get System Status",
+        "operationId": "get_system_status_api_ui_v1_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiSystemStatusResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/medication-scenarios": {
+      "get": {
+        "summary": "Get Medication Scenarios",
+        "operationId": "get_medication_scenarios_api_ui_v1_medication_scenarios_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiMedicationScenarioListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/medication-scenarios/apply": {
+      "post": {
+        "summary": "Apply Medication Scenario",
+        "operationId": "apply_medication_scenario_api_ui_v1_medication_scenarios_apply_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyMedicationScenarioRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiMedicationScenarioApplyResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested UI resource was not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The UI request conflicts with the current or idempotent state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/testbed/reset": {
+      "post": {
+        "summary": "Reset Testbed",
+        "operationId": "reset_testbed_api_ui_v1_testbed_reset_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetTestbedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiTestbedResetResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The UI action is not available in this environment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The UI request conflicts with the current or idempotent state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/clock/advance": {
+      "post": {
+        "summary": "Advance Clock",
+        "operationId": "advance_clock_api_ui_v1_clock_advance_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdvanceClockRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiClockResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The UI request conflicts with the current or idempotent state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/clock/play": {
+      "post": {
+        "summary": "Play Clock",
+        "operationId": "play_clock_api_ui_v1_clock_play_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlayClockRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiClockResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The UI request conflicts with the current or idempotent state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/clock/pause": {
+      "post": {
+        "summary": "Pause Clock",
+        "operationId": "pause_clock_api_ui_v1_clock_pause_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/EmptyUiRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": " Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiClockResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/doses/{dose_event_id}/take": {
+      "post": {
+        "summary": "Take Dose",
+        "operationId": "take_dose_api_ui_v1_doses__dose_event_id__take_post",
+        "parameters": [
+          {
+            "name": "dose_event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^dose_[0-9a-f]{16}$",
+              "title": "Dose Event Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/EmptyUiRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": " Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiDoseResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested UI resource was not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/nutrition": {
+      "get": {
+        "summary": "Get Nutrition",
+        "operationId": "get_nutrition_api_ui_v1_nutrition_get",
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiNutritionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/policies": {
+      "get": {
+        "summary": "Get Policies",
+        "operationId": "get_policies_api_ui_v1_policies_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiPoliciesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/policies/{policy_key}": {
+      "put": {
+        "summary": "Update Policy",
+        "operationId": "update_policy_api_ui_v1_policies__policy_key__put",
+        "parameters": [
+          {
+            "name": "policy_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Policy Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUiPolicyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiPoliciesResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested UI resource was not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/notifications": {
+      "get": {
+        "summary": "Get Notifications",
+        "operationId": "get_notifications_api_ui_v1_notifications_get",
+        "parameters": [
+          {
+            "name": "after_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^notif_[0-9a-f]{32}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiNotificationListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/notifications/{notification_id}": {
+      "get": {
+        "summary": "Get Notification",
+        "operationId": "get_notification_api_ui_v1_notifications__notification_id__get",
+        "parameters": [
+          {
+            "name": "notification_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^notif_[0-9a-f]{32}$",
+              "title": "Notification Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiNotificationDetailResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested UI resource was not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/notifications/ack-all": {
+      "post": {
+        "summary": "Acknowledge Notifications",
+        "operationId": "acknowledge_notifications_api_ui_v1_notifications_ack_all_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/EmptyUiRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": " Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiNotificationAcknowledgementResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/chat/history": {
+      "get": {
+        "summary": "Get Chat History",
+        "operationId": "get_chat_history_api_ui_v1_chat_history_get",
+        "parameters": [
+          {
+            "name": "before_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before Date"
+            }
+          },
+          {
+            "name": "limit_days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 7,
+              "minimum": 1,
+              "default": 1,
+              "title": "Limit Days"
+            }
+          },
+          {
+            "name": "limit_turns",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit Turns"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiChatHistoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/chat/sync": {
+      "post": {
+        "summary": "Sync Chat",
+        "operationId": "sync_chat_api_ui_v1_chat_sync_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UiChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiChatSyncResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The UI request conflicts with the current or idempotent state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The UI request schema, path, or query value is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The AI Server returned an invalid response or was unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/chat/stream": {
+      "post": {
+        "summary": "Stream Chat",
+        "operationId": "stream_chat_api_ui_v1_chat_stream_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UiChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Synchronous final-answer stream.",
+            "content": {
+              "text/event-stream": {}
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/v1/chat/feedback": {
+      "post": {
+        "summary": "Submit Chat Opinion",
+        "operationId": "submit_chat_opinion_api_ui_v1_chat_feedback_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UiChatOpinionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiChatOpinionAcceptedResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The feedback request schema or required field is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiFeedbackErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The assistant message does not belong to the configured test patient.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiFeedbackErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request_id was already used with another feedback body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiFeedbackErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The Agent feedback boundary returned an invalid response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiFeedbackErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The Agent feedback boundary is temporarily unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiFeedbackErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The Backend could not complete the UI feedback request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UiFeedbackErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AdvanceClockRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Request Id"
+          },
+          "minutes": {
+            "type": "integer",
+            "enum": [
+              30,
+              180
+            ],
+            "title": "Minutes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "minutes"
+        ],
+        "title": "AdvanceClockRequest"
+      },
+      "ApplyMedicationScenarioRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Request Id"
+          },
+          "scenario_id": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Scenario Id"
+          },
+          "schedule_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Schedule Date"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "scenario_id",
+          "schedule_date"
+        ],
+        "title": "ApplyMedicationScenarioRequest"
+      },
+      "ChatInput": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "number",
+              "dropdown"
+            ],
+            "title": "Type"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Label"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "options": {
+            "$ref": "#/components/schemas/ChatInputOptions"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "label",
+          "options"
+        ],
+        "title": "ChatInput"
+      },
+      "ChatInputOptions": {
+        "properties": {
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "lower": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lower"
+          },
+          "upper": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upper"
+          },
+          "selections": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selections"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ChatInputOptions"
+      },
+      "ChatMessageContent": {
+        "properties": {
+          "message_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Title"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "tables": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatTable"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tables"
+          },
+          "selections": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selections"
+          },
+          "inputs": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatInput"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inputs"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "message_title",
+          "text",
+          "tables",
+          "selections",
+          "inputs"
+        ],
+        "title": "ChatMessageContent"
+      },
+      "ChatTable": {
+        "properties": {
+          "table_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Table Title"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ChatTableRow"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Rows"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "rows"
+        ],
+        "title": "ChatTable"
+      },
+      "ChatTableRow": {
+        "properties": {
+          "column": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Column"
+          },
+          "value": {
+            "type": "string",
+            "title": "Value"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "column",
+          "value"
+        ],
+        "title": "ChatTableRow"
+      },
+      "EmptyUiRequest": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "EmptyUiRequest"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "PlayClockRequest": {
+        "properties": {
+          "speed_multiplier": {
+            "type": "integer",
+            "enum": [
+              1,
+              5,
+              15,
+              30,
+              60
+            ],
+            "title": "Speed Multiplier"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "speed_multiplier"
+        ],
+        "title": "PlayClockRequest"
+      },
+      "ResetTestbedRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Request Id"
+          },
+          "confirm": {
+            "type": "boolean",
+            "const": true,
+            "title": "Confirm"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "confirm"
+        ],
+        "title": "ResetTestbedRequest"
+      },
+      "UiActiveScenario": {
+        "properties": {
+          "scenario_id": {
+            "type": "string",
+            "title": "Scenario Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "schedule_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Schedule Date"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "scenario_id",
+          "name",
+          "schedule_date"
+        ],
+        "title": "UiActiveScenario"
+      },
+      "UiAiServerStatus": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "not_ready",
+              "failed",
+              "timeout",
+              "unreachable",
+              "incompatible"
+            ],
+            "title": "Status"
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Checked At"
+          },
+          "evidence": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "checked_at",
+          "evidence"
+        ],
+        "title": "UiAiServerStatus"
+      },
+      "UiBackendServerStatus": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "failed",
+              "timeout",
+              "incompatible",
+              "not_ready",
+              "degraded"
+            ],
+            "title": "Status"
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Checked At"
+          },
+          "evidence": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "checked_at",
+          "evidence"
+        ],
+        "title": "UiBackendServerStatus"
+      },
+      "UiChatHistoryData": {
+        "properties": {
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/UiChatHistoryDay"
+            },
+            "type": "array",
+            "title": "Days"
+          },
+          "next_before_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before Date"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "days",
+          "next_before_date"
+        ],
+        "title": "UiChatHistoryData"
+      },
+      "UiChatHistoryDay": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "title": "Date"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/UiChatHistoryMessage"
+            },
+            "type": "array",
+            "title": "Messages"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "date",
+          "messages"
+        ],
+        "title": "UiChatHistoryDay"
+      },
+      "UiChatHistoryMessage": {
+        "properties": {
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^user_msg_[0-9a-f]{16}$"
+              },
+              {
+                "type": "string",
+                "pattern": "^assistant_msg_[0-9a-f]{16}$"
+              }
+            ],
+            "title": "Message Id"
+          },
+          "sort_sequence": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Sort Sequence"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "message_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "selection_box",
+                  "input_box"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Type"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatMessageContent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "processing_status": {
+            "type": "string",
+            "title": "Processing Status"
+          },
+          "response_message_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^user_msg_[0-9a-f]{16}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Message Id"
+          },
+          "source_message_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^assistant_msg_[0-9a-f]{16}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Message Id"
+          },
+          "reaction": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "like",
+                  "dislike"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reaction"
+          },
+          "opinion_submitted": {
+            "type": "boolean",
+            "title": "Opinion Submitted"
+          },
+          "opinion_submitted_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opinion Submitted At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "message_id",
+          "sort_sequence",
+          "role",
+          "message_type",
+          "message",
+          "content",
+          "created_at",
+          "processing_status",
+          "response_message_id",
+          "source_message_id",
+          "reaction",
+          "opinion_submitted",
+          "opinion_submitted_at"
+        ],
+        "title": "UiChatHistoryMessage"
+      },
+      "UiChatHistoryResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true,
+            "title": "Success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UiChatHistoryData"
+          },
+          "error": {
+            "type": "null",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiChatHistoryResponse"
+      },
+      "UiChatOpinionAccepted": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "accepted",
+            "title": "Status"
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Request Id"
+          },
+          "assistant_message_id": {
+            "type": "string",
+            "pattern": "^assistant_msg_[0-9a-f]{16}$",
+            "title": "Assistant Message Id"
+          },
+          "reaction": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "like",
+                  "dislike"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reaction"
+          },
+          "opinion_submitted": {
+            "type": "boolean",
+            "title": "Opinion Submitted"
+          },
+          "opinion_submitted_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opinion Submitted At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "request_id",
+          "assistant_message_id",
+          "reaction",
+          "opinion_submitted",
+          "opinion_submitted_at"
+        ],
+        "title": "UiChatOpinionAccepted"
+      },
+      "UiChatOpinionAcceptedResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true,
+            "title": "Success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UiChatOpinionAccepted"
+          },
+          "error": {
+            "type": "null",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiChatOpinionAcceptedResponse"
+      },
+      "UiChatOpinionRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Request Id"
+          },
+          "assistant_message_id": {
+            "type": "string",
+            "pattern": "^assistant_msg_[0-9a-f]{16}$",
+            "title": "Assistant Message Id"
+          },
+          "reaction": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "like",
+                  "dislike"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reaction"
+          },
+          "opinion_text": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opinion Text"
+          },
+          "feedback_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Feedback At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "assistant_message_id",
+          "feedback_at"
+        ],
+        "title": "UiChatOpinionRequest"
+      },
+      "UiChatRequest": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Message"
+          },
+          "requested_return_type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "selection_box",
+              "input_box"
+            ],
+            "title": "Requested Return Type"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^req_[0-9a-f]{16}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "source_message_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^assistant_msg_[0-9a-f]{16}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Message Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "message",
+          "requested_return_type"
+        ],
+        "title": "UiChatRequest"
+      },
+      "UiChatSyncData": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Request Id"
+          },
+          "user_message_id": {
+            "type": "string",
+            "pattern": "^user_msg_[0-9a-f]{16}$",
+            "title": "User Message Id"
+          },
+          "user_sort_sequence": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "User Sort Sequence"
+          },
+          "assistant_message_id": {
+            "type": "string",
+            "pattern": "^assistant_msg_[0-9a-f]{16}$",
+            "title": "Assistant Message Id"
+          },
+          "assistant_sort_sequence": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Assistant Sort Sequence"
+          },
+          "message_type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "selection_box",
+              "input_box"
+            ],
+            "title": "Message Type"
+          },
+          "message": {
+            "$ref": "#/components/schemas/ChatMessageContent"
+          },
+          "message_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Message At"
+          },
+          "display_message_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Display Message At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "user_message_id",
+          "user_sort_sequence",
+          "assistant_message_id",
+          "assistant_sort_sequence",
+          "message_type",
+          "message",
+          "message_at",
+          "display_message_at"
+        ],
+        "title": "UiChatSyncData"
+      },
+      "UiChatSyncResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true,
+            "title": "Success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UiChatSyncData"
+          },
+          "error": {
+            "type": "null",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiChatSyncResponse"
+      },
+      "UiClockData": {
+        "properties": {
+          "clock": {
+            "$ref": "#/components/schemas/UiSimulationClock"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "clock"
+        ],
+        "title": "UiClockData"
+      },
+      "UiClockResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true,
+            "title": "Success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UiClockData"
+          },
+          "error": {
+            "type": "null",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiClockResponse"
+      },
+      "UiDashboardData": {
+        "properties": {
+          "clock": {
+            "$ref": "#/components/schemas/UiSimulationClock"
+          },
+          "simulation_ready": {
+            "type": "boolean",
+            "title": "Simulation Ready"
+          },
+          "active_scenario": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UiActiveScenario"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "medications": {
+            "items": {
+              "$ref": "#/components/schemas/UiMedicationDose"
+            },
+            "type": "array",
+            "title": "Medications"
+          },
+          "nutrition": {
+            "$ref": "#/components/schemas/UiNutritionDashboard"
+          },
+          "policies": {
+            "$ref": "#/components/schemas/UiPolicies"
+          },
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/UiNotification"
+            },
+            "type": "array",
+            "title": "Notifications"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "clock",
+          "simulation_ready",
+          "active_scenario",
+          "medications",
+          "nutrition",
+          "policies",
+          "notifications"
+        ],
+        "title": "UiDashboardData"
+      },
+      "UiDashboardResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true,
+            "title": "Success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UiDashboardData"
+          },
+          "error": {
+            "type": "null",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiDashboardResponse"
+      },
+      "UiDoseData": {
+        "properties": {
+          "dose": {
+            "$ref": "#/components/schemas/UiMedicationDose"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dose"
+        ],
+        "title": "UiDoseData"
+      },
+      "UiDoseResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true,
+            "title": "Success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UiDoseData"
+          },
+          "error": {
+            "type": "null",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiDoseResponse"
+      },
+      "UiError": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "retryable": {
+            "type": "boolean",
+            "title": "Retryable"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "retryable",
+          "details"
+        ],
+        "title": "UiError"
+      },
+      "UiErrorResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": false,
+            "title": "Success"
+          },
+          "data": {
+            "type": "null",
+            "title": "Data"
+          },
+          "error": {
+            "$ref": "#/components/schemas/UiError"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiErrorResponse"
+      },
+      "UiFeedbackError": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "retryable": {
+            "type": "boolean",
+            "title": "Retryable"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "retryable",
+          "details"
+        ],
+        "title": "UiFeedbackError"
+      },
+      "UiFeedbackErrorResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": false,
+            "title": "Success"
+          },
+          "data": {
+            "type": "null",
+            "title": "Data"
+          },
+          "error": {
+            "$ref": "#/components/schemas/UiFeedbackError"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiFeedbackErrorResponse"
+      },
+      "UiMedicationDose": {
+        "properties": {
+          "dose_event_id": {
+            "type": "string",
+            "pattern": "^dose_[0-9a-f]{16}$",
+            "title": "Dose Event Id"
+          },
+          "medication_name": {
+            "type": "string",
+            "title": "Medication Name"
+          },
+          "treatment_area": {
+            "type": "string",
+            "title": "Treatment Area"
+          },
+          "slot_label": {
+            "type": "string",
+            "title": "Slot Label"
+          },
+          "scheduled_for": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Scheduled For"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "scheduled",
+              "taken",
+              "missed"
+            ],
+            "title": "Status"
+          },
+          "taken_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Taken At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dose_event_id",
+          "medication_name",
+          "treatment_area",
+          "slot_label",
+          "scheduled_for",
+          "status",
+          "taken_at"
+        ],
+        "title": "UiMedicationDose"
+      },
+      "UiMedicationScenario": {
+        "properties": {
+          "scenario_id": {
+            "type": "string",
+            "title": "Scenario Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "medications": {
+            "items": {
+              "$ref": "#/components/schemas/UiMedicationScenarioItem"
+            },
+            "type": "array",
+            "title": "Medications"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "scenario_id",
+          "name",
+          "medications"
+        ],
+        "title": "UiMedicationScenario"
+      },
+      "UiMedicationScenarioApplyData": {
+        "properties": {
+          "scenario": {
+            "$ref": "#/components/schemas/UiActiveScenario"
+          },
+          "medications": {
+            "items": {
+              "$ref": "#/components/schemas/UiMedicationDose"
+            },
+            "type": "array",
+            "title": "Medications"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "scenario",
+          "medications"
+        ],
+        "title": "UiMedicationScenarioApplyData"
+      },
+      "UiMedicationScenarioApplyResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true,
+            "title": "Success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UiMedicationScenarioApplyData"
+          },
+          "error": {
+            "type": "null",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiMedicationScenarioApplyResponse"
+      },
+      "UiMedicationScenarioItem": {
+        "properties": {
+          "medication_id": {
+            "type": "string",
+            "title": "Medication Id"
+          },
+          "medication_name": {
+            "type": "string",
+            "title": "Medication Name"
+          },
+          "dosage": {
+            "type": "string",
+            "title": "Dosage"
+          },
+          "treatment_area": {
+            "type": "string",
+            "title": "Treatment Area"
+          },
+          "slot_label": {
+            "type": "string",
+            "title": "Slot Label"
+          },
+          "scheduled_time": {
+            "type": "string",
+            "title": "Scheduled Time"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "medication_id",
+          "medication_name",
+          "dosage",
+          "treatment_area",
+          "slot_label",
+          "scheduled_time"
+        ],
+        "title": "UiMedicationScenarioItem"
+      },
+      "UiMedicationScenarioListData": {
+        "properties": {
+          "scenarios": {
+            "items": {
+              "$ref": "#/components/schemas/UiMedicationScenario"
+            },
+            "type": "array",
+            "title": "Scenarios"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "scenarios"
+        ],
+        "title": "UiMedicationScenarioListData"
+      },
+      "UiMedicationScenarioListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true,
+            "title": "Success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UiMedicationScenarioListData"
+          },
+          "error": {
+            "type": "null",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiMedicationScenarioListResponse"
+      },
+      "UiNotification": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^notif_[0-9a-f]{32}$",
+            "title": "Id"
+          },
+          "notification_type": {
+            "type": "string",
+            "title": "Notification Type"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          },
+          "visible_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Visible At"
+          },
+          "visible_at_label": {
+            "type": "string",
+            "title": "Visible At Label"
+          },
+          "acknowledged": {
+            "type": "boolean",
+            "title": "Acknowledged"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/UiNotificationMetadata"
+          },
+          "interaction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UiNotificationInteraction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dose_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dose Status"
+          },
+          "related_dose_event_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^dose_[0-9a-f]{16}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Related Dose Event Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "notification_type",
+          "title",
+          "body",
+          "visible_at",
+          "visible_at_label",
+          "acknowledged",
+          "metadata",
+          "interaction",
+          "dose_status",
+          "related_dose_event_id"
+        ],
+        "title": "UiNotification"
+      },
+      "UiNotificationAcknowledgementData": {
+        "properties": {
+          "acknowledged_count": {
+            "type": "integer",
+            "title": "Acknowledged Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "acknowledged_count"
+        ],
+        "title": "UiNotificationAcknowledgementData"
+      },
+      "UiNotificationAcknowledgementResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true,
+            "title": "Success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UiNotificationAcknowledgementData"
+          },
+          "error": {
+            "type": "null",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiNotificationAcknowledgementResponse"
+      },
+      "UiNotificationDetailData": {
+        "properties": {
+          "notification": {
+            "$ref": "#/components/schemas/UiNotification"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "notification"
+        ],
+        "title": "UiNotificationDetailData"
+      },
+      "UiNotificationDetailResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true,
+            "title": "Success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UiNotificationDetailData"
+          },
+          "error": {
+            "type": "null",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiNotificationDetailResponse"
+      },
+      "UiNotificationInteraction": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "open_chat",
+            "title": "Kind"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "ready",
+              "failed"
+            ],
+            "title": "State"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^assistant_msg_[0-9a-f]{16}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "state",
+          "message_id"
+        ],
+        "title": "UiNotificationInteraction"
+      },
+      "UiNotificationListData": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/UiNotification"
+            },
+            "type": "array",
+            "title": "Notifications"
+          },
+          "last_seen_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^notif_[0-9a-f]{32}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen Id"
+          },
+          "current_time": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Current Time"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "notifications",
+          "last_seen_id",
+          "current_time"
+        ],
+        "title": "UiNotificationListData"
+      },
+      "UiNotificationListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true,
+            "title": "Success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UiNotificationListData"
+          },
+          "error": {
+            "type": "null",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiNotificationListResponse"
+      },
+      "UiNotificationMetadata": {
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "info",
+              "reminder",
+              "warning",
+              "critical"
+            ],
+            "title": "Severity"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "severity"
+        ],
+        "title": "UiNotificationMetadata"
+      },
+      "UiNutritionDashboard": {
+        "properties": {
+          "profile": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Profile"
+          },
+          "summary": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Summary"
+          },
+          "preferences": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Preferences"
+          },
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/UiNutritionMetric"
+            },
+            "type": "array",
+            "title": "Metrics"
+          },
+          "meals": {
+            "items": {
+              "$ref": "#/components/schemas/UiNutritionMeal"
+            },
+            "type": "array",
+            "title": "Meals"
+          },
+          "scenarios": {
+            "items": {
+              "$ref": "#/components/schemas/UiNutritionScenario"
+            },
+            "type": "array",
+            "title": "Scenarios"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "profile",
+          "summary",
+          "preferences",
+          "metrics",
+          "meals",
+          "scenarios"
+        ],
+        "title": "UiNutritionDashboard"
+      },
+      "UiNutritionData": {
+        "properties": {
+          "profile": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Profile"
+          },
+          "summary": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Summary"
+          },
+          "preferences": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Preferences"
+          },
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/UiNutritionMetric"
+            },
+            "type": "array",
+            "title": "Metrics"
+          },
+          "meals": {
+            "items": {
+              "$ref": "#/components/schemas/UiNutritionMeal"
+            },
+            "type": "array",
+            "title": "Meals"
+          },
+          "scenarios": {
+            "items": {
+              "$ref": "#/components/schemas/UiNutritionScenario"
+            },
+            "type": "array",
+            "title": "Scenarios"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "profile",
+          "summary",
+          "preferences",
+          "metrics",
+          "meals",
+          "scenarios"
+        ],
+        "title": "UiNutritionData"
+      },
+      "UiNutritionMeal": {
+        "properties": {
+          "meal_type": {
+            "type": "string",
+            "title": "Meal Type"
+          },
+          "meal_label": {
+            "type": "string",
+            "title": "Meal Label"
+          },
+          "meal_date": {
+            "type": "string",
+            "format": "date",
+            "title": "Meal Date"
+          },
+          "meal_time": {
+            "type": "string",
+            "title": "Meal Time"
+          },
+          "scenario_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario Key"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "foods": {
+            "items": {
+              "$ref": "#/components/schemas/UiNutritionMealFood"
+            },
+            "type": "array",
+            "title": "Foods"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "meal_type",
+          "meal_label",
+          "meal_date",
+          "meal_time",
+          "scenario_key",
+          "description",
+          "foods"
+        ],
+        "title": "UiNutritionMeal"
+      },
+      "UiNutritionMealFood": {
+        "properties": {
+          "food_ref_id": {
+            "type": "string",
+            "title": "Food Ref Id"
+          },
+          "food_name": {
+            "type": "string",
+            "title": "Food Name"
+          },
+          "portion": {
+            "type": "string",
+            "title": "Portion"
+          },
+          "nutrients": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/UiNutritionNutrientValue"
+            },
+            "type": "object",
+            "title": "Nutrients"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "food_ref_id",
+          "food_name",
+          "portion",
+          "nutrients"
+        ],
+        "title": "UiNutritionMealFood"
+      },
+      "UiNutritionMetric": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "intake": {
+            "type": "number",
+            "title": "Intake"
+          },
+          "threshold": {
+            "type": "number",
+            "title": "Threshold"
+          },
+          "unit": {
+            "type": "string",
+            "title": "Unit"
+          },
+          "remaining": {
+            "type": "number",
+            "title": "Remaining"
+          },
+          "percent": {
+            "type": "number",
+            "title": "Percent"
+          },
+          "bar_percent": {
+            "type": "number",
+            "title": "Bar Percent"
+          },
+          "daily_exceeded": {
+            "type": "boolean",
+            "title": "Daily Exceeded"
+          },
+          "meal_exceeded": {
+            "type": "boolean",
+            "title": "Meal Exceeded"
+          },
+          "is_warning": {
+            "type": "boolean",
+            "title": "Is Warning"
+          },
+          "basis_label": {
+            "type": "string",
+            "title": "Basis Label"
+          },
+          "risk_rank": {
+            "type": "integer",
+            "title": "Risk Rank"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "intake",
+          "threshold",
+          "unit",
+          "remaining",
+          "percent",
+          "bar_percent",
+          "daily_exceeded",
+          "meal_exceeded",
+          "is_warning",
+          "basis_label",
+          "risk_rank"
+        ],
+        "title": "UiNutritionMetric"
+      },
+      "UiNutritionNutrientValue": {
+        "properties": {
+          "value": {
+            "type": "number",
+            "title": "Value"
+          },
+          "unit": {
+            "type": "string",
+            "title": "Unit"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "value",
+          "unit"
+        ],
+        "title": "UiNutritionNutrientValue"
+      },
+      "UiNutritionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true,
+            "title": "Success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UiNutritionData"
+          },
+          "error": {
+            "type": "null",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiNutritionResponse"
+      },
+      "UiNutritionScenario": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "result_label": {
+            "type": "string",
+            "title": "Result Label"
+          },
+          "is_recorded": {
+            "type": "boolean",
+            "title": "Is Recorded"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "key",
+          "label",
+          "description",
+          "result_label",
+          "is_recorded"
+        ],
+        "title": "UiNutritionScenario"
+      },
+      "UiPolicies": {
+        "properties": {
+          "medication_schedule_alert": {
+            "type": "boolean",
+            "title": "Medication Schedule Alert"
+          },
+          "missed_dose_conversation": {
+            "type": "boolean",
+            "title": "Missed Dose Conversation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "medication_schedule_alert",
+          "missed_dose_conversation"
+        ],
+        "title": "UiPolicies"
+      },
+      "UiPoliciesData": {
+        "properties": {
+          "policies": {
+            "$ref": "#/components/schemas/UiPolicies"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "policies"
+        ],
+        "title": "UiPoliciesData"
+      },
+      "UiPoliciesResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true,
+            "title": "Success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UiPoliciesData"
+          },
+          "error": {
+            "type": "null",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiPoliciesResponse"
+      },
+      "UiSimulationClock": {
+        "properties": {
+          "current_time": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Current Time"
+          },
+          "is_running": {
+            "type": "boolean",
+            "title": "Is Running"
+          },
+          "speed_multiplier": {
+            "type": "integer",
+            "enum": [
+              0,
+              1,
+              5,
+              15,
+              30,
+              60
+            ],
+            "title": "Speed Multiplier"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "current_time",
+          "is_running",
+          "speed_multiplier"
+        ],
+        "title": "UiSimulationClock"
+      },
+      "UiSystemStatusData": {
+        "properties": {
+          "backend_server": {
+            "$ref": "#/components/schemas/UiBackendServerStatus"
+          },
+          "ai_server": {
+            "$ref": "#/components/schemas/UiAiServerStatus"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "backend_server",
+          "ai_server"
+        ],
+        "title": "UiSystemStatusData"
+      },
+      "UiSystemStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true,
+            "title": "Success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UiSystemStatusData"
+          },
+          "error": {
+            "type": "null",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiSystemStatusResponse"
+      },
+      "UiTestbedResetData": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Request Id"
+          },
+          "reset_applied": {
+            "type": "boolean",
+            "const": true,
+            "title": "Reset Applied"
+          },
+          "reset_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Reset At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "reset_applied",
+          "reset_at"
+        ],
+        "title": "UiTestbedResetData"
+      },
+      "UiTestbedResetResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true,
+            "title": "Success"
+          },
+          "data": {
+            "$ref": "#/components/schemas/UiTestbedResetData"
+          },
+          "error": {
+            "type": "null",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error"
+        ],
+        "title": "UiTestbedResetResponse"
+      },
+      "UpdateUiPolicyRequest": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "UpdateUiPolicyRequest"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

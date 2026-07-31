@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_app.tools.names import (
+from shared.tool_names import (
     DELEGATE_TO_MEDICATION_AGENT,
     DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT,
     DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT,
@@ -56,7 +56,7 @@ def _delegation_tool(name: str, description: str) -> dict[str, Any]:
             "reason": {"type": "string", "description": "Why the supervisor chose this specialist."},
         },
         "required": ["task"],
-        "additionalProperties": True,
+        "additionalProperties": False,
     }
     metadata = MODEL_VISIBLE_TOOL_METADATA[name]
     return {

@@ -62,52 +62,8 @@ class ProCtcaeWorkbook:
     other_questions: tuple[ProCtcaeQuestionRow, ...]
 
 
-def _fallback_question_rows() -> tuple[ProCtcaeQuestionRow, ...]:
-    return (
-        ProCtcaeQuestionRow(
-            symptom_term="Nausea",
-            korean_symptom_name="메스꺼움",
-            item_code="PROCTCAE_NAUSEA_FREQUENCY",
-            question="지난 7일 동안 메스꺼움이 얼마나 자주 있었나요?",
-            response_type="frequency",
-            response_options=("전혀 없음", "가끔", "자주", "거의 항상"),
-            pdf_page=None,
-            sheet_name=PARSED_ITEMS_SHEET,
-        ),
-        ProCtcaeQuestionRow(
-            symptom_term="Nausea",
-            korean_symptom_name="메스꺼움",
-            item_code="PROCTCAE_NAUSEA_SEVERITY",
-            question="지난 7일 동안 메스꺼움이 가장 심할 때는 어느 정도였나요?",
-            response_type="severity",
-            response_options=("없음", "경함", "중등도", "심함", "매우 심함"),
-            pdf_page=None,
-            sheet_name=PARSED_ITEMS_SHEET,
-        ),
-    )
-
-
-def _fallback_other_rows() -> tuple[ProCtcaeQuestionRow, ...]:
-    return (
-        ProCtcaeQuestionRow(
-            symptom_term="Other Symptoms",
-            korean_symptom_name="그 외 증상",
-            item_code="PROCTCAE_OTHER_SYMPTOM",
-            question="지난 7일 동안 해당 증상이 있었나요?",
-            response_type="presence",
-            response_options=("없음", "있음"),
-            pdf_page=None,
-            sheet_name=OTHER_SYMPTOMS_SHEET,
-        ),
-    )
-
-
-@lru_cache(maxsize=1)
-def _fallback_workbook() -> ProCtcaeWorkbook:
-    return ProCtcaeWorkbook(
-        parsed_entries=_group_entries(_fallback_question_rows()),
-        other_questions=_fallback_other_rows(),
-    )
+class ProCtcaeReferenceUnavailable(RuntimeError):
+    """Raised when the configured clinical questionnaire cannot be used."""
 
 
 def _text(value: object) -> str:
@@ -268,9 +224,16 @@ def _load_workbook_cached(path_text: str, modified_time: float) -> ProCtcaeWorkb
 def load_workbook(path: Path | None = None) -> ProCtcaeWorkbook:
     resolved_path = Path(path or get_settings().pro_ctcae_workbook_path)
     if not resolved_path.exists():
-        return _fallback_workbook()
+        raise ProCtcaeReferenceUnavailable(
+            "pro_ctcae_reference_workbook_missing"
+        )
     modified_time = resolved_path.stat().st_mtime
-    return _load_workbook_cached(str(resolved_path), modified_time)
+    workbook = _load_workbook_cached(str(resolved_path), modified_time)
+    if not workbook.parsed_entries:
+        raise ProCtcaeReferenceUnavailable(
+            "pro_ctcae_reference_workbook_invalid"
+        )
+    return workbook
 
 
 def match_pro_ctcae_symptom(symptom_text: str, *, threshold: float | None = None, workbook_path: Path | None = None) -> AEProCtcaeAssessmentResult:

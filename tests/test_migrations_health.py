@@ -1,110 +1,149 @@
+from __future__ import annotations
+
 import asyncio
+import os
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import inspect, text
 
+from shared.backend_read_contract import BACKEND_READ_VIEW_DEFINITIONS
+from shared.public_ids import is_public_id
 from system_app.main import app
-from system_app.migrations import run_migrations
+from system_app.migrations import (
+    ensure_agent_job_request_ids,
+    required_migration_versions,
+)
+from system_app.schema import (
+    migrate_system_schema,
+    verify_system_schema_current,
+)
 from system_app.services import health as health_service
+from tests.helpers import build_system_engine
+
+SYSTEM_POSTGRES_TESTS_CONFIGURED = bool(
+    os.getenv("SYSTEM_POSTGRES_TEST_DATABASE_URL", "").strip()
+)
+requires_system_postgresql = pytest.mark.skipif(
+    not SYSTEM_POSTGRES_TESTS_CONFIGURED,
+    reason="SYSTEM_POSTGRES_TEST_DATABASE_URL is required",
+)
 
 
-def test_run_migrations_tracks_agent_jobs_version():
-    engine = create_engine("sqlite:///:memory:", future=True)
-
-    applied = run_migrations(engine)
-    second_run = run_migrations(engine)
-
-    inspector = inspect(engine)
-    assert "agent_jobs" in inspector.get_table_names()
-    assert "nutrition_ontology_nodes" in inspector.get_table_names()
-    assert "nutrition_ontology_triples" in inspector.get_table_names()
-    assert "nutrition_patient_preference_triples" in inspector.get_table_names()
-    assert "schema_migrations" in inspector.get_table_names()
-    assert applied == [
-        "20260429_0001_agent_jobs",
-        "20260430_0001_simulation_patient_profiles",
-        "20260518_0001_system_policy_overrides",
-        "20260602_0001_missed_dose_flags",
-        "20260618_0001_nutrition_profiles",
-        "20260618_0002_nutrition_meals",
-        "20260618_0003_nutrition_foods",
-        "20260618_0004_daily_nutrition_checks",
-        "20260618_0005_nutrition_meal_index",
-        "20260618_0006_nutrition_food_index",
-        "20260618_0007_daily_nutrition_index",
-        "20260619_0001_agent_run_traces",
-        "20260619_0002_agent_run_steps",
-        "20260619_0003_agent_trace_indexes",
-        "20260619_0004_agent_run_steps_trace",
-        "20260622_0001_nutrition_ontology_nodes",
-        "20260622_0002_nutrition_ontology_triples",
-        "20260622_0003_nutrition_patient_preference_triples",
-        "20260622_0004_nutrition_ontology_indexes",
-        "20260622_0005_nutrition_patient_preference_indexes",
-        "20260701_0001_nutrition_food_ref",
-        "20260701_0002_nutrition_food_ref_index",
-            "20260710_0001_side_effect_records",
-            "20260710_0002_side_effect_records_patient_created",
-            "20260710_0003_side_effect_records_suspected_medication",
-            "20260715_0001_mutation_confirmations",
-            "20260715_0002_mutation_confirmations_patient_status",
-            "20260715_0003_mutation_confirmations_fingerprint",
-            "20260725_0001_backend_api_requests",
-            "20260725_0002_backend_api_request_lookup",
-            "20260725_0003_chat_conversation_lookup",
-            "20260725_0004_chat_assistant_request_unique",
-            "20260725_0005_external_public_ids",
-            "20260726_0001_medication_plan_submission_id",
-        ]
-    assert second_run == []
-
-    Session = sessionmaker(bind=engine, future=True)
-    with Session() as session:
-        versions = session.execute(text("SELECT version FROM schema_migrations")).scalars().all()
-        assert versions == [
-            "20260429_0001_agent_jobs",
-            "20260430_0001_simulation_patient_profiles",
-            "20260518_0001_system_policy_overrides",
-            "20260602_0001_missed_dose_flags",
-            "20260618_0001_nutrition_profiles",
-            "20260618_0002_nutrition_meals",
-            "20260618_0003_nutrition_foods",
-            "20260618_0004_daily_nutrition_checks",
-            "20260618_0005_nutrition_meal_index",
-            "20260618_0006_nutrition_food_index",
-            "20260618_0007_daily_nutrition_index",
-            "20260619_0001_agent_run_traces",
-            "20260619_0002_agent_run_steps",
-            "20260619_0003_agent_trace_indexes",
-            "20260619_0004_agent_run_steps_trace",
-            "20260622_0001_nutrition_ontology_nodes",
-            "20260622_0002_nutrition_ontology_triples",
-            "20260622_0003_nutrition_patient_preference_triples",
-            "20260622_0004_nutrition_ontology_indexes",
-            "20260622_0005_nutrition_patient_preference_indexes",
-            "20260701_0001_nutrition_food_ref",
-            "20260701_0002_nutrition_food_ref_index",
-        "20260710_0001_side_effect_records",
-        "20260710_0002_side_effect_records_patient_created",
-        "20260710_0003_side_effect_records_suspected_medication",
-            "20260715_0001_mutation_confirmations",
-            "20260715_0002_mutation_confirmations_patient_status",
-            "20260715_0003_mutation_confirmations_fingerprint",
-            "20260725_0001_backend_api_requests",
-            "20260725_0002_backend_api_request_lookup",
-            "20260725_0003_chat_conversation_lookup",
-            "20260725_0004_chat_assistant_request_unique",
-            "20260725_0005_external_public_ids",
-            "20260726_0001_medication_plan_submission_id",
-        ]
+class _NonPostgresqlEngine:
+    class dialect:
+        name = "sqlite"
 
 
+def test_system_schema_migration_and_runtime_verifier_reject_non_postgresql():
+    with pytest.raises(
+        RuntimeError,
+        match="system_database_postgresql_required",
+    ):
+        migrate_system_schema(_NonPostgresqlEngine())
+    with pytest.raises(
+        RuntimeError,
+        match="system_database_postgresql_required",
+    ):
+        verify_system_schema_current(_NonPostgresqlEngine())
+
+
+@requires_system_postgresql
+def test_dedicated_system_migration_is_idempotent_and_publishes_read_contract():
+    database_engine, cleanup = build_system_engine(
+        "system_migration",
+        create_models=False,
+    )
+    try:
+        first = migrate_system_schema(database_engine)
+        second = migrate_system_schema(database_engine)
+        verified = verify_system_schema_current(database_engine)
+
+        inspector = inspect(database_engine)
+        assert first["schema_current"] is True
+        assert set(first["applied_now"]) == set(
+            required_migration_versions()
+        )
+        assert second["applied_now"] == []
+        assert verified["current"] is True
+        assert set(BACKEND_READ_VIEW_DEFINITIONS).issubset(
+            set(inspector.get_view_names())
+        )
+        assert "chat_messages" in inspector.get_table_names()
+        assert "ai_v13_chat_messages" in inspector.get_view_names()
+        assert "simulation_patient_profiles" not in inspector.get_table_names()
+        assert "agent_run_traces" not in inspector.get_table_names()
+        assert "agent_run_steps" not in inspector.get_table_names()
+    finally:
+        cleanup()
+
+
+@requires_system_postgresql
+def test_agent_job_request_id_is_backfilled_for_legacy_schema():
+    database_engine, cleanup = build_system_engine(
+        "legacy_agent_job",
+        create_models=False,
+    )
+    try:
+        with database_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE TABLE agent_jobs ("
+                    "id INTEGER PRIMARY KEY, "
+                    "job_type VARCHAR(40) NOT NULL, "
+                    "status VARCHAR(20) NOT NULL, "
+                    "payload_json TEXT NOT NULL"
+                    ")"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO agent_jobs "
+                    "(id, job_type, status, payload_json) "
+                    "VALUES (1, 'daily_pattern', 'pending', '{}')"
+                )
+            )
+
+        ensure_agent_job_request_ids(database_engine)
+
+        with database_engine.connect() as connection:
+            request_id = connection.execute(
+                text("SELECT request_id FROM agent_jobs WHERE id = 1")
+            ).scalar_one()
+        assert is_public_id(request_id, "request")
+    finally:
+        cleanup()
+
+
+@requires_system_postgresql
+def test_system_schema_rejects_retired_owned_data_tables():
+    database_engine, cleanup = build_system_engine(
+        "retired_schema_guard",
+    )
+    try:
+        migrate_system_schema(database_engine)
+        with database_engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE TABLE phr_patients "
+                    "(id INTEGER PRIMARY KEY)"
+                )
+            )
+
+        with pytest.raises(
+            RuntimeError,
+            match="system_database_retired_schema_present",
+        ):
+            verify_system_schema_current(database_engine)
+    finally:
+        cleanup()
+
+
+@requires_system_postgresql
 def test_health_details_returns_operational_shape():
-    client = TestClient(app)
-
-    response = client.get("/health/details")
+    with TestClient(app) as client:
+        response = client.get("/health/details")
 
     assert response.status_code == 200
     payload = response.json()
@@ -114,37 +153,15 @@ def test_health_details_returns_operational_shape():
     assert "agent_server" in payload
     assert "agent_async" in payload
     assert "worker_available" in payload["agent_async"]
-    assert "api_key_configured" in payload["llm"]
-    assert "status" in payload["llm"]
+    assert payload["llm"]["owner"] == "agent_server"
+    assert payload["llm"]["status"] == "delegated"
+    assert payload["llm"]["readiness_endpoint"].endswith(
+        "/health/generation/ready"
+    )
     assert "required" in payload["internal_api"]
     assert "applied_versions" in payload["migrations"]
     assert payload["budgets"]["load"]["concurrency_target"] >= 1
     assert "token_prices_configured" in payload["budgets"]["cost"]
-
-
-def test_rule_based_provider_is_not_runtime_supported():
-    class DummySettings:
-        llm_provider = "rule_based"
-        app_env = "development"
-
-    assert health_service._llm_provider_supported(DummySettings()) is False
-    assert health_service._llm_credentials_required(DummySettings()) is False
-
-
-def test_rule_based_provider_is_supported_without_credentials_in_testbed():
-    class DummySettings:
-        llm_provider = "rule_based"
-        app_env = "testbed"
-
-    assert health_service._llm_provider_supported(DummySettings()) is True
-    assert health_service._llm_credentials_required(DummySettings()) is False
-
-
-def test_bedrock_provider_requires_credentials():
-    class DummySettings:
-        llm_provider = "bedrock_anthropic"
-
-    assert health_service._llm_credentials_required(DummySettings()) is True
 
 
 def test_agent_async_health_summarizes_worker_queue(monkeypatch):
@@ -161,7 +178,13 @@ def test_agent_async_health_summarizes_worker_queue(monkeypatch):
             return None
 
         async def get(self, url: str, *, headers=None):
-            captured.update({"url": url, "headers": headers, "timeout": self.timeout})
+            captured.update(
+                {
+                    "url": url,
+                    "headers": headers,
+                    "timeout": self.timeout,
+                }
+            )
             return httpx.Response(
                 200,
                 json={
@@ -172,7 +195,10 @@ def test_agent_async_health_summarizes_worker_queue(monkeypatch):
                         {
                             "worker_id": "worker-a",
                             "status": "running",
-                            "last_error": "pytest private async worker error peanut allergy token=secret-value",
+                            "last_error": (
+                                "pytest private async worker error "
+                                "peanut allergy token=secret-value"
+                            ),
                         },
                         {"worker_id": "worker-b", "status": "stale"},
                     ],
@@ -180,12 +206,25 @@ def test_agent_async_health_summarizes_worker_queue(monkeypatch):
                 request=httpx.Request("GET", url),
             )
 
-    monkeypatch.setattr(health_service.httpx, "AsyncClient", DummyAsyncClient)
+    monkeypatch.setattr(
+        health_service.httpx,
+        "AsyncClient",
+        DummyAsyncClient,
+    )
 
-    payload = asyncio.run(health_service._agent_async_health("http://agent.test/", "agent-token"))
+    payload = asyncio.run(
+        health_service._agent_async_health(
+            "http://agent.test/",
+            "agent-token",
+        )
+    )
 
-    assert captured["url"] == "http://agent.test/agent/async/tasks/status"
-    assert captured["headers"] == {"X-Internal-Api-Token": "agent-token"}
+    assert captured["url"] == (
+        "http://agent.test/agent/async/tasks/status"
+    )
+    assert captured["headers"] == {
+        "X-Internal-Api-Token": "agent-token"
+    }
     assert captured["timeout"] == 1.0
     assert payload["reachable"] is True
     assert payload["pending_count"] == 2
@@ -195,6 +234,8 @@ def test_agent_async_health_summarizes_worker_queue(monkeypatch):
     assert payload["stale_worker_count"] == 1
     assert payload["worker_available"] is True
     assert payload["warnings"] == ["dead_tasks_present"]
-    assert payload["workers"][0]["last_error"].startswith("clinical text redacted")
+    assert payload["workers"][0]["last_error"].startswith(
+        "clinical text redacted"
+    )
     assert "pytest private async worker error" not in str(payload)
     assert "secret-value" not in str(payload)

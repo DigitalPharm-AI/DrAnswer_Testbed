@@ -136,9 +136,9 @@ function Render-Overview([string]$Path) {
     Draw-Title $G "Agent & Tool Structure" "요청 종류별 Agent 라우팅과 Tool 호출 흐름"
     Draw-Legend $G 6.65 6.72
     $Apis = @(
-        @("/agent/async/daily-patterns", 0.35, 1.25),
-        @("/agent/async/missed-dose-events", 0.35, 2.15),
-        @("/agent/multiturn-chat", 0.35, 3.05)
+        @("/agent/async/medication-events`ndaily_pattern", 0.35, 1.25),
+        @("/agent/async/medication-events`nmissed_dose", 0.35, 2.15),
+        @("/agent/sync/chat", 0.35, 3.05)
     )
     foreach ($Api in $Apis) {
         Draw-Box $G ($Api[0]) ($Api[1]) ($Api[2]) 2.05 0.48 "api" 7 $false
@@ -173,27 +173,27 @@ function Render-Overview([string]$Path) {
     )
     foreach ($L in $Lines) { Draw-Arrow $G ($L[0]) ($L[1]) ($L[2]) ($L[3]) }
     Draw-Box $G "policy_change_intent`n구조화" 8.25 4.85 1.95 0.45 "heuristic" 6 $false
-    Draw-Box $G "Tools`napply_notification_policy`nAE_pro_ctcae`nlookup_side_effect_info`nmark_dose_taken" 10.60 2.25 2.10 1.35 "tool" 6 $true
+    Draw-Box $G "Tools`npropose_notification_policy`nget_pro_ctcae_questionnaire`nget_medication_side_effect_assessment`nupdate_medication_dose_event_status" 10.60 2.25 2.10 1.35 "tool" 6 $true
     Save-Canvas $C $Path
 }
 
 function Render-Tools([string]$Path) {
     $C = New-Canvas
     $G = $C.Graphics
-    Draw-Title $G "Agent별 Tool 접근 권한" "정책 변경은 후보 생성, 부작용은 PHR 조회, 복약 체크는 system_app action"
+    Draw-Title $G "Agent별 Tool 접근 권한" "정책 변경은 후보 생성, 부작용은 Backend Snapshot·AI 기준정보 조회, 복약 체크는 Backend action"
     Draw-Legend $G 7.0 0.93
     $Agents = @(
         @("policy_planner`nDaily / Multiturn 정책 전문", 0.55, 1.35),
         @("missed_dose_coach`n미복용 최초 알림", 0.55, 2.25),
         @("multiturn_chat_agent`n자유 대화, 미복용 후속 답변", 0.55, 3.60),
-        @("side_effect_response_writer`nPHR 결과 환자 답변화", 0.55, 4.95)
+        @("side_effect_response_writer`nTool 결과 환자 답변화", 0.55, 4.95)
     )
     foreach ($Agent in $Agents) { Draw-Box $G ($Agent[0]) ($Agent[1]) ($Agent[2]) 2.75 0.58 "llm" 7 $true }
-    Draw-Box $G "apply_notification_policy`n정책 변경 후보 생성`n확인 알림으로 이어짐" 5.05 1.35 2.65 0.78 "tool" 7 $true
-    Draw-Box $G "lookup_side_effect_info`nPHR 주의사항/부작용 조회" 5.05 2.95 2.65 0.78 "tool" 7 $true
-    Draw-Box $G "mark_dose_taken`n복약 완료 체크 요청" 5.05 4.35 2.65 0.78 "tool" 7 $true
+    Draw-Box $G "propose_notification_policy`n정책 변경 후보 생성`n확인 알림으로 이어짐" 5.05 1.35 2.65 0.78 "tool" 7 $true
+    Draw-Box $G "get_medication_side_effect_assessment`n환자 Snapshot/부작용 기준정보 조회" 5.05 2.95 2.65 0.78 "tool" 7 $true
+    Draw-Box $G "update_medication_dose_event_status`n복약 완료 체크 요청" 5.05 4.35 2.65 0.78 "tool" 7 $true
     Draw-Box $G "system_app`n정책 확인 알림`nDB override 저장" 9.30 1.35 2.65 0.78 "system" 7 $true
-    Draw-Box $G "PHR service`n/phr/side-effects/assess" 9.30 2.95 2.65 0.78 "system" 7 $true
+    Draw-Box $G "Backend Snapshot`n+ AI 기준정보" 9.30 2.95 2.65 0.78 "system" 7 $true
     Draw-Box $G "system_app`nDoseEvent taken 처리" 9.30 4.35 2.65 0.78 "system" 7 $true
     $Lines = @(
         @(3.30, 1.64, 5.05, 1.74), @(3.30, 2.54, 5.05, 3.34),
@@ -215,7 +215,7 @@ function Render-Handoff([string]$Path) {
     Draw-Box $G "SystemPolicyRequestService`n정책 요청 여부 감지" 0.55 2.25 2.55 0.78 "service" 7 $true
     Draw-Box $G "policy_change_intent`nrequested_changes 리스트 생성`nneeds_clarification 포함" 3.65 2.25 2.55 0.78 "heuristic" 7 $true
     Draw-Box $G "policy_planner`n정책 전문 LLM`ntool_calls[] 표준 출력" 6.75 2.25 2.55 0.78 "llm" 7 $true
-    Draw-Box $G "apply_notification_policy`nslot별 정책 후보 리스트" 9.85 2.25 2.55 0.78 "tool" 7 $true
+    Draw-Box $G "propose_notification_policy`nslot별 정책 후보 리스트" 9.85 2.25 2.55 0.78 "tool" 7 $true
     Draw-Box $G "정책 변경 확인 알림`n1. 변경 / 2. 현행 유지" 9.85 3.65 2.55 0.78 "system" 7 $true
     $Lines = @(
         @(1.82, 2.03, 1.82, 2.25), @(3.10, 2.64, 3.65, 2.64),
@@ -224,7 +224,7 @@ function Render-Handoff([string]$Path) {
     )
     foreach ($L in $Lines) { Draw-Arrow $G ($L[0]) ($L[1]) ($L[2]) ($L[3]) }
     Draw-Box $G "policy_change_intent 예시`nrequested_changes: [`n  {slot_hint: 아침, direction: increase},`n  {slot_hint: 점심, direction: keep},`n  {slot_hint: 저녁, direction: decrease}`n]`nneeds_clarification: [저녁=야간 21:00인지, 구체 횟수/간격]" 0.65 4.35 5.25 1.30 "white" 6 $false $true
-    Draw-Box $G "policy_planner output 표준`n{`n  tool_calls: [`n    {name: apply_notification_policy, arguments: {...}}`n  ],`n  unchanged_slots: [...],`n  needs_clarification: [...]`n}" 6.25 4.35 5.70 1.30 "white" 6 $false $true
+    Draw-Box $G "policy_planner output 표준`n{`n  tool_calls: [`n    {name: propose_notification_policy, arguments: {...}}`n  ],`n  unchanged_slots: [...],`n  needs_clarification: [...]`n}" 6.25 4.35 5.70 1.30 "white" 6 $false $true
     Save-Canvas $C $Path
 }
 

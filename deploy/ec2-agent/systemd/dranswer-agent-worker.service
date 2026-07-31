@@ -1,0 +1,33 @@
+[Unit]
+Description=DRAnswer Agent async worker
+Requires=dranswer-agent-api.service
+After=network-online.target dranswer-agent-api.service
+Wants=network-online.target
+ConditionPathExists=/opt/dranswer-agent/current/agent_app/worker_main.py
+ConditionPathExists=/opt/dranswer-agent/current/release.env
+ConditionPathExists=/etc/dranswer-agent/agent.env
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/opt/dranswer-agent/current
+EnvironmentFile=/etc/dranswer-agent/agent.env
+EnvironmentFile=/opt/dranswer-agent/current/release.env
+EnvironmentFile=-/etc/dranswer-agent/bedrock.env
+Environment=DA_DRUG_SERVICE=agent_app
+Environment=AGENT_STARTUP_MIGRATIONS_ENABLED=false
+Environment=AGENT_EMBEDDED_WORKER_ENABLED=false
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/dranswer-agent/current/venv/bin/python -m agent_app.worker_main
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

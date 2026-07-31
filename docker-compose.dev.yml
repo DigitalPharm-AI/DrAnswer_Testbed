@@ -1,16 +1,4 @@
 services:
-  phr-app:
-    command: uvicorn phr_app.main:app --host 0.0.0.0 --port 8002 --reload
-    volumes:
-      - type: bind
-        source: ./phr_app
-        target: /app/phr_app
-        read_only: true
-      - type: bind
-        source: ./shared
-        target: /app/shared
-        read_only: true
-
   agent-app:
     command: uvicorn agent_app.main:app --host 0.0.0.0 --port 8001 --reload
     volumes:

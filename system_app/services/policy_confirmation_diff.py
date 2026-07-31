@@ -103,34 +103,3 @@ def policy_confirmation_actions(recommended_action: str | None) -> list[str]:
     if recommended_action == POLICY_ACTION_KEEP:
         return [POLICY_ACTION_KEEP]
     return [POLICY_ACTION_INCREASE, POLICY_ACTION_DECREASE, POLICY_ACTION_KEEP]
-
-
-def adjusted_policy_delta_for_confirmation(
-    delta: NotificationPolicyDelta,
-    action: str,
-    *,
-    recommended_action: str | None,
-) -> NotificationPolicyDelta:
-    if action != POLICY_ACTION_DECREASE or recommended_action == POLICY_ACTION_DECREASE:
-        return delta
-    payload = delta.model_dump(mode="json")
-    payload["extra_reminders"] = max(delta.extra_reminders - 1, 0)
-    payload["reason"] = f"{delta.reason} / 사용자 확인: 줄이기 선택"
-    return NotificationPolicyDelta.model_validate(payload)
-
-
-def selected_policy_deltas_for_confirmation(
-    session: Session,
-    deltas: list[NotificationPolicyDelta],
-    action: str,
-    *,
-    recommended_action: str | None,
-) -> list[NotificationPolicyDelta]:
-    if recommended_action is None and action in {POLICY_ACTION_INCREASE, POLICY_ACTION_DECREASE}:
-        matching_deltas = [delta for delta in deltas if policy_delta_direction(session, delta) == action]
-        if matching_deltas:
-            return matching_deltas
-    return [
-        adjusted_policy_delta_for_confirmation(delta, action, recommended_action=recommended_action)
-        for delta in deltas
-    ]

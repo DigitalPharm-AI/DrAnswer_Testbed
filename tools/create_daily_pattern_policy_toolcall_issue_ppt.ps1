@@ -132,7 +132,7 @@ function Add-Slide1($Presentation) {
   $metrics = @(
     @("복약 기록", "3회 미복용", "아침 08:00 / 점심 13:00 / 야간 21:00", $Accent),
     @("분석 결과", "후보 3개 생성", "schema recovery 후 suggested_policies 정상 생성", $Green),
-    @("누락 지점", "Tool call 0개", "apply_notification_policy가 반환되지 않음", $Red),
+    @("누락 지점", "Tool call 0개", "propose_notification_policy가 반환되지 않음", $Red),
     @("사용자 영향", "알림 미생성", "자동 정책 조정 확인 흐름 중단", $Amber)
   )
   for ($i = 0; $i -lt $metrics.Count; $i++) {
@@ -171,7 +171,7 @@ function Add-Slide3($Presentation) {
     @("01", "패턴 분석", "pattern_analyzer"),
     @("02", "후보 생성", "suggested_policies"),
     @("03", "정책 판단", "policy_planner"),
-    @("04", "Tool 추출", "apply_notification_policy"),
+    @("04", "Tool 추출", "propose_notification_policy"),
     @("05", "확인 알림", "환자 확인용 후보")
   )
   for ($i = 0; $i -lt $steps.Count; $i++) {
@@ -185,7 +185,7 @@ function Add-Slide3($Presentation) {
   }
   Add-Box $slide "Break" 550 300 235 70 "단절점`rTool call이 비어 5번 단계로 넘어가지 못함" "FEF2F2" "FECACA" 11 $Text $true 2 | Out-Null
   Add-Arrow $slide 610 244 635 300 $Red | Out-Null
-  Add-Box $slide "Condition" 82 410 796 54 "정책 확인 알림은 policy_planner가 apply_notification_policy Tool call을 반환해야만 생성된다." $Panel $Line 13 $Text $true 2 | Out-Null
+  Add-Box $slide "Condition" 82 410 796 54 "정책 확인 알림은 policy_planner가 propose_notification_policy Tool call을 반환해야만 생성된다." $Panel $Line 13 $Text $true 2 | Out-Null
   Add-Footer $slide "해결 초점: 후보 생성 로직보다 policy_planner의 의사결정 기준" 3
 }
 

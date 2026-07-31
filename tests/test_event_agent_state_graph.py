@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
+
+from agent_app.errors import AgentExecutionError
 from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
-from agent_app.tools.names import (
-    GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+from shared.tool_names import (
     GET_PRO_CTCAE_QUESTIONNAIRE,
     PROPOSE_NOTIFICATION_POLICY,
 )
@@ -41,13 +43,11 @@ class EventToolFinalizingProvider(NativeChatProvider):
                     },
                 },
             }
-        if response_mode == "missed_dose_coaching":
+        if response_mode == "missed_dose_message_generation":
             return {
-                "patient_message": "증상을 확인해볼게요.",
-                "tool_call": {
-                    "name": GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
-                    "arguments": {"symptom_text": "메스꺼움"},
-                },
+                "generated_message": (
+                    "오늘 복약이 어려우셨나요? 현재 상태를 알려주세요."
+                )
             }
         raise AssertionError(f"unexpected_response_mode:{response_mode}")
 
@@ -82,9 +82,9 @@ class NoToolEventProvider(NativeChatProvider):
 
     async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         return {
-            "patient_message": "현재 복용 가능한 상태인지 알려주세요.",
-            "likely_reason": "unknown",
-            "follow_up_questions": ["현재 복용 가능한가요?"],
+            "generated_message": (
+                "오늘 복약이 어려우셨나요? 현재 상태를 알려주세요."
+            ),
         }
 
 
@@ -94,13 +94,38 @@ class HybridOnlyMissedDoseProvider(NativeChatProvider):
 
     async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         return {
-            "missed_dose_hybrid": {
-                "reason": "routine_support",
-                "generated_message": "\uc810\uc2ec \uc2dc\uac04\uc5d0 \ub193\uce58\uc2e0 \uac83 \uac19\uc544\uc694. \ud3b8\ud558\uc2e4 \ub54c \ud655\uc778\ud574\ubcf4\uc138\uc694.",
-                "tone_key": "",
-                "safety_notes": ["no_medication_name", "no_diagnosis", "non_directive"],
-            }
+            "generated_message": (
+                "\uc810\uc2ec \uc2dc\uac04\uc5d0 \ub193\uce58\uc2e0 \uac83 \uac19\uc544\uc694. "
+                "\uc5b4\ub5a4 \uc5b4\ub824\uc6c0\uc774 \uc788\uc5c8\ub098\uc694?"
+            )
         }
+
+
+class BlankDailyPatternFinalizingProvider(NativeChatProvider):
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "summary": "아침 복약 누락 패턴을 확인했습니다.",
+            "tool_call": {
+                "name": PROPOSE_NOTIFICATION_POLICY,
+                "arguments": {
+                    "slot_label": "아침 08:00",
+                    "extra_reminders": 2,
+                    "interval_minutes": 10,
+                    "effective_start_date": "2026-04-20",
+                    "effective_end_date": "2026-04-27",
+                    "reason": "아침 복약 누락 반복",
+                    "source": "pattern_analysis",
+                },
+            },
+        }
+
+    async def finalize_tool_results(
+        self,
+        system_prompt: str,
+        user_payload: dict[str, Any],
+        tool_results: list[ToolCallResult],
+    ) -> dict[str, Any]:
+        return {"summary": "   "}
 
 
 def test_daily_pattern_state_graph_uses_one_tool_round_and_unbound_finalizer():
@@ -122,44 +147,61 @@ def test_daily_pattern_state_graph_uses_one_tool_round_and_unbound_finalizer():
     ]
 
 
-def test_missed_dose_state_graph_iterates_and_preserves_required_patient_payload():
+def test_daily_pattern_without_final_llm_answer_fails_closed():
+    orchestrator = AgentLangGraphNativeOrchestrator(
+        BlankDailyPatternFinalizingProvider(),
+        NativeFakeToolExecutor(),
+    )
+
+    with pytest.raises(AgentExecutionError) as exc_info:
+        asyncio.run(
+            orchestrator.invoke(
+                "daily_pattern",
+                build_daily_pattern().model_dump(mode="json"),
+            )
+        )
+
+    assert exc_info.value.error_type == "llm_final_answer_missing"
+
+
+def test_missed_dose_uses_one_tool_free_llm_generation():
     provider = EventToolFinalizingProvider()
     executor = NativeFakeToolExecutor()
     orchestrator = AgentLangGraphNativeOrchestrator(provider, executor)
 
     response = asyncio.run(orchestrator.invoke("missed_dose", build_missed_payload().model_dump(mode="json")))
 
-    assert provider.chat_model_bound_tool_history[0] == [GET_MEDICATION_SIDE_EFFECT_ASSESSMENT]
-    assert provider.chat_model_bound_tool_history[1] == [GET_MEDICATION_SIDE_EFFECT_ASSESSMENT]
-    assert provider.finalized_tool_names == [
-        [
-            GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
-            GET_PRO_CTCAE_QUESTIONNAIRE,
-        ]
-    ]
-    assert [call["name"] for call in executor.calls] == [
-        GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
-        GET_PRO_CTCAE_QUESTIONNAIRE,
-    ]
-    assert response.structured_payload["side_effect_signal"] is True
+    assert provider.chat_model_bound_tool_history == [[]]
+    assert provider.finalized_tool_names == []
+    assert executor.calls == []
     assert response.structured_payload["missed_dose_hybrid"]["generated_message"]
-    assert response.structured_payload["tool_loop_mode"] == "langgraph_state_graph"
-    assert response.structured_payload["tool_execution_mode"] == "iterative"
+    assert (
+        response.structured_payload["agent_graph_mode"]
+        == "llm_policy_bounded_generation"
+    )
+    assert response.structured_payload["tool_execution_mode"] == "none"
     assert response.structured_payload["iterations"] == 1
-    assert response.structured_payload["finalization_mode"] == "llm_without_tool_calls"
+    assert response.structured_payload["tools_executed"] is False
+    assert (
+        response.structured_payload["final_answer_source"]
+        == "llm_structured_output"
+    )
 
 
-def test_missed_dose_uses_validated_hybrid_message_as_chat_summary():
+def test_missed_dose_uses_llm_message_instead_of_predefined_policy_message():
     provider = HybridOnlyMissedDoseProvider()
     orchestrator = AgentLangGraphNativeOrchestrator(provider, NativeFakeToolExecutor())
 
     response = asyncio.run(orchestrator.invoke("missed_dose", build_missed_payload().model_dump(mode="json")))
 
-    expected = "\uc810\uc2ec \uc2dc\uac04\uc5d0 \ub193\uce58\uc2e0 \uac83 \uac19\uc544\uc694. \ud3b8\ud558\uc2e4 \ub54c \ud655\uc778\ud574\ubcf4\uc138\uc694."
+    expected = "점심 시간에 놓치신 것 같아요. 어떤 어려움이 있었나요?"
     assert response.human_summary == expected
     assert response.structured_payload["missed_dose_hybrid"]["generated_message"] == expected
-    assert response.structured_payload["final_answer_source"] == "missed_dose_hybrid.generated_message"
-    assert provider.chat_model_bound_tool_history == [[GET_MEDICATION_SIDE_EFFECT_ASSESSMENT]]
+    assert response.human_summary != (
+        build_missed_payload().tone_policy_context["message"]
+    )
+    assert response.structured_payload["final_answer_source"] == "llm_structured_output"
+    assert provider.chat_model_bound_tool_history == [[]]
 
 
 def test_reused_event_graph_keeps_concurrent_invocation_state_isolated():
@@ -167,7 +209,7 @@ def test_reused_event_graph_keeps_concurrent_invocation_state_isolated():
     orchestrator = AgentLangGraphNativeOrchestrator(provider, NativeFakeToolExecutor())
     first = build_missed_payload().model_copy(update={"dose_event_id": 101})
     second = build_missed_payload().model_copy(update={"dose_event_id": 202})
-    graph_id = id(orchestrator.missed_dose_agent.graph_runner.graph)
+    agent_id = id(orchestrator.missed_dose_agent)
 
     async def invoke_both():
         return await asyncio.gather(
@@ -177,9 +219,8 @@ def test_reused_event_graph_keeps_concurrent_invocation_state_isolated():
 
     first_response, second_response = asyncio.run(invoke_both())
 
-    assert id(orchestrator.missed_dose_agent.graph_runner.graph) == graph_id
+    assert id(orchestrator.missed_dose_agent) == agent_id
     assert first_response.trace_id != second_response.trace_id
     assert first_response.structured_payload["dose_event_id"] == 101
     assert second_response.structured_payload["dose_event_id"] == 202
-    assert len(provider.chat_model_bound_tool_history) == 2
-    assert all(history for history in provider.chat_model_bound_tool_history)
+    assert provider.chat_model_bound_tool_history == [[], []]

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from agent_app.persistence.models import AgentAsyncTask
@@ -31,23 +32,76 @@ def enqueue_async_task(
     payload: dict[str, Any],
     callback_context: dict[str, Any] | None = None,
     max_attempts: int | None = None,
+    run_after: datetime | None = None,
+    deduplication_key: str | None = None,
 ) -> tuple[AgentAsyncTask, bool]:
-    existing = session.scalar(select(AgentAsyncTask).where(AgentAsyncTask.request_id == request_id))
-    if existing is not None:
-        return existing, False
+    if deduplication_key is not None and not deduplication_key.strip():
+        raise ValueError("async_task_deduplication_key_empty")
+    existing_by_request = session.scalar(
+        select(AgentAsyncTask).where(
+            AgentAsyncTask.request_id == request_id,
+        ),
+    )
+    if existing_by_request is not None:
+        if existing_by_request.deduplication_key != deduplication_key:
+            raise ValueError("async_task_identity_collision")
+        return existing_by_request, False
+    if deduplication_key is not None:
+        existing_by_deduplication = session.scalar(
+            select(AgentAsyncTask).where(
+                AgentAsyncTask.deduplication_key == deduplication_key,
+            ),
+        )
+        if existing_by_deduplication is not None:
+            # The first request_id remains canonical. A later scheduler
+            # invocation is a duplicate by its durable business key.
+            return existing_by_deduplication, False
     accepted_at = utc_now()
     task = AgentAsyncTask(
         request_id=request_id,
+        deduplication_key=deduplication_key,
         task_type=task_type,
         status=PENDING,
         payload_json=json.dumps(payload, ensure_ascii=False),
         callback_context_json=dump_json(callback_context or {}),
         accepted_at=accepted_at,
-        run_after=accepted_at,
+        run_after=run_after or accepted_at,
         max_attempts=max_attempts or get_settings().agent_task_max_attempts,
+        expires_at=accepted_at
+        + timedelta(
+            seconds=get_settings().agent_async_task_retention_seconds
+        ),
     )
-    session.add(task)
-    session.flush()
+    try:
+        # The unique request_id constraint is the cross-process arbiter. The
+        # savepoint lets the losing concurrent submit recover as a duplicate
+        # without poisoning the caller's outer transaction.
+        with session.begin_nested():
+            session.add(task)
+            session.flush()
+    except IntegrityError:
+        existing_by_request = session.scalar(
+            select(AgentAsyncTask).where(
+                AgentAsyncTask.request_id == request_id,
+            ),
+        )
+        if existing_by_request is not None:
+            if existing_by_request.deduplication_key != deduplication_key:
+                raise ValueError("async_task_identity_collision")
+            return existing_by_request, False
+        existing_by_deduplication = (
+            session.scalar(
+                select(AgentAsyncTask).where(
+                    AgentAsyncTask.deduplication_key
+                    == deduplication_key,
+                ),
+            )
+            if deduplication_key is not None
+            else None
+        )
+        if existing_by_deduplication is None:
+            raise
+        return existing_by_deduplication, False
     return task, True
 
 
@@ -140,6 +194,62 @@ def mark_async_task_failed(session: Session, task_id: int, message: str) -> tupl
     task.run_after = now + timedelta(seconds=_retry_delay_seconds(task.attempts))
     session.flush()
     return task, False
+
+
+def mark_async_task_terminal_failure(
+    session: Session,
+    task_id: int,
+    message: str,
+) -> AgentAsyncTask | None:
+    """Fail without automatic retry when an in-flight provider call is uncertain."""
+
+    task = session.get(AgentAsyncTask, task_id)
+    if task is None:
+        return None
+    task.status = DEAD
+    task.last_error = message
+    task.completed_at = utc_now()
+    task.locked_by = ""
+    task.locked_until = None
+    task.run_after = None
+    session.flush()
+    return task
+
+
+def stage_async_task_callback_delivery(
+    session: Session,
+    task_id: int,
+    *,
+    callback_payload: dict[str, Any],
+    callback_path: str,
+    callback_bearer: bool,
+    processing_error: str,
+) -> AgentAsyncTask | None:
+    """Persist a terminal failure callback and give delivery its own retries."""
+
+    task = session.get(AgentAsyncTask, task_id)
+    if task is None:
+        return None
+    payload = task_payload(task)
+    if not isinstance(payload.get("_callback_payload"), dict):
+        payload["_callback_payload"] = callback_payload
+        payload["_callback_path"] = callback_path
+        payload["_callback_bearer"] = callback_bearer
+        payload["_processing_failure"] = redact_inline_secrets(
+            processing_error,
+        )
+        task.payload_json = json.dumps(payload, ensure_ascii=False)
+    now = utc_now()
+    task.status = PENDING
+    task.attempts = 0
+    task.completed_at = None
+    task.started_at = None
+    task.locked_by = ""
+    task.locked_until = None
+    task.run_after = now
+    task.last_error = "terminal_result_callback_delivery_pending"
+    session.flush()
+    return task
 
 
 def reset_running_async_tasks(session: Session) -> int:

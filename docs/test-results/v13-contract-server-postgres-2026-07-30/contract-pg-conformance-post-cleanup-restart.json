@@ -1,0 +1,95 @@
+{
+  "schema_version": "1",
+  "suite": "DRAnswer AI v1.3 live HTTP conformance",
+  "phase": "post_restart",
+  "release": "20260730T002607Z",
+  "started_at": "2026-07-30T00:35:39.422818+00:00",
+  "completed_at": "2026-07-30T00:35:39.460618+00:00",
+  "summary": {
+    "total": 6,
+    "passed": 6,
+    "failed": 0
+  },
+  "results": [
+    {
+      "case_id": "RESTART-001",
+      "area": "restart persistence",
+      "expected": "same release becomes ready after systemd restart",
+      "passed": true,
+      "duration_ms": 6.7,
+      "evidence": {
+        "release": "20260730T002607Z",
+        "ready": "ready"
+      },
+      "error": null
+    },
+    {
+      "case_id": "RESTART-002",
+      "area": "restart persistence",
+      "expected": "chat terminal replay survives PostgreSQL reconnect",
+      "passed": true,
+      "duration_ms": 11.62,
+      "evidence": {
+        "events": 1,
+        "sequence": 0,
+        "stored_terminal_exact": true
+      },
+      "error": null
+    },
+    {
+      "case_id": "RESTART-003",
+      "area": "restart persistence",
+      "expected": "feedback accepted_at and reaction replay exactly",
+      "passed": true,
+      "duration_ms": 4.77,
+      "evidence": {
+        "status": 202,
+        "exact_response_replay": true
+      },
+      "error": null
+    },
+    {
+      "case_id": "RESTART-004",
+      "area": "restart persistence",
+      "expected": "missed-dose idempotency survives restart",
+      "passed": true,
+      "duration_ms": 4.94,
+      "evidence": {
+        "request_id": "req_f6b5e0ad58b4c303",
+        "status": "duplicate"
+      },
+      "error": null
+    },
+    {
+      "case_id": "RESTART-005",
+      "area": "restart persistence",
+      "expected": "daily-analysis idempotency survives restart",
+      "passed": true,
+      "duration_ms": 5.08,
+      "evidence": {
+        "request_id": "req_829f5b038550fec4",
+        "status": "duplicate"
+      },
+      "error": null
+    },
+    {
+      "case_id": "RESTART-006",
+      "area": "restart persistence",
+      "expected": "held callbacks remain held with attempts 0",
+      "passed": true,
+      "duration_ms": 4.61,
+      "evidence": {
+        "callbacks": 3,
+        "status": "held",
+        "attempts": 0
+      },
+      "error": null
+    }
+  ],
+  "not_exercised": [
+    "404 ownership/not-found branches require a real Backend read view",
+    "500/503/504 fault injection was not performed on the shared test endpoint",
+    "Outbound callback delivery requires the future Backend URL and token",
+    "Medical/LLM answer quality is outside this deterministic contract stub"
+  ]
+}

@@ -1,0 +1,32 @@
+[Unit]
+Description=DRAnswer Agent Langfuse durable exporter
+Requires=dranswer-agent-api.service
+After=network-online.target dranswer-agent-api.service
+Wants=network-online.target
+ConditionPathExists=/opt/dranswer-agent/current/agent_app/langfuse_exporter_main.py
+ConditionPathExists=/opt/dranswer-agent/current/release.env
+ConditionPathExists=/etc/dranswer-agent/agent.env
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/opt/dranswer-agent/current
+EnvironmentFile=/etc/dranswer-agent/agent.env
+EnvironmentFile=/opt/dranswer-agent/current/release.env
+UnsetEnvironment=AWS_BEARER_TOKEN_BEDROCK
+Environment=DA_DRUG_SERVICE=agent_app
+Environment=AGENT_STARTUP_MIGRATIONS_ENABLED=false
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/dranswer-agent/current/venv/bin/python -m agent_app.langfuse_exporter_main
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

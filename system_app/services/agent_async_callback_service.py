@@ -1,143 +1,438 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from shared.async_v13_contracts import (
+    AsyncResultCallbackAck,
+    MissedDoseResultCallback,
+    NotificationPolicyChangeProposalRequest,
+    NotificationPolicyProposalAck,
+)
+from shared.backend_v13_contracts import ContractError
 from shared.json_utils import dump_json, parse_json_object
 from shared.schemas import (
-    AgentAsyncChatResultRequest,
     AgentAsyncClinicianAlertRequest,
-    AgentAsyncFailureRequest,
-    AgentAsyncJobResultRequest,
-    AgentAsyncPolicyChangeRequest,
     AgentAsyncPushMessageRequest,
     AgentNotificationRequest,
+    AgentResponse,
 )
-from system_app.models import AgentDecisionAudit, AgentJob, Notification
+from shared.time_utils import utc_now
+from system_app.models import (
+    AgentAsyncCallbackReceipt,
+    AgentJob,
+    DoseEvent,
+    Notification,
+    NotificationPolicyChangeProposal,
+    ReminderPolicy,
+)
 from system_app.services.adherence_pattern_service import CLINICIAN_ESCALATION_CATEGORY, CLINICIAN_ESCALATION_TYPE
 from system_app.services.agent_callback_service import process_agent_notification_callback
 from system_app.services.agent_client import AgentServiceError
 from system_app.services.agent_error_service import present_agent_error
-from system_app.services.agent_jobs import PENDING, RUNNING, deserialize_agent_job_payload, mark_agent_job_done, mark_agent_job_failed
-from system_app.services.agent_response_service import maybe_apply_policy_response, persist_agent_summary, tool_results_have_error
-from system_app.services.agent_trace_store import record_agent_run_failure, upsert_agent_run_trace
-from system_app.services.audit_service import create_agent_decision_audit, record_agent_audit
+from system_app.services.agent_jobs import (
+    PENDING,
+    RUNNING,
+    mark_agent_job_done,
+    mark_agent_job_failed,
+)
+from system_app.services.agent_response_service import persist_agent_summary
+from system_app.services.backend_v13_service import BackendRequestGate
 from system_app.services.clock_service import ensure_clock
 from system_app.services.failure_copy import copy_for_async_task
 from system_app.services.notification_service import create_notification
-from system_app.services.system_request_service import apply_system_event_response, mark_system_event_request_failed
+from system_app.services.timeline_service import add_chat_message
 from system_app.services.workers import mark_awaiting_conversation_alert_failed
 
 
-class AgentAsyncCallbackError(AgentServiceError):
-    def __init__(self, payload: AgentAsyncFailureRequest) -> None:
-        super().__init__(
-            payload.message,
-            error_type=payload.error_type,
-            trace_id=payload.trace_id,
-            agent_name=payload.agent_name,
-            decision_type=payload.decision_type,
+class AsyncCallbackContractError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        code: str,
+        message: str,
+        retryable: bool = False,
+        details: dict | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error = ContractError(
+            code=code,
+            message=message,
+            retryable=retryable,
+            details=details,
         )
 
 
-def process_async_job_result_callback(session: Session, payload: AgentAsyncJobResultRequest) -> dict:
-    if _is_duplicate(session, payload.idempotency_key, "agent_async_job_result"):
-        return {"status": "duplicate", "request_id": payload.request_id}
-    job = _resolve_job(session, payload.job_id, payload.request_id)
-    if job is None:
-        return {"status": "not_found", "request_id": payload.request_id}
-    if job.status not in {PENDING, RUNNING}:
-        return {"status": "stale", "request_id": payload.request_id, "job_id": job.id, "job_status": job.status}
+def process_missed_dose_result_callback(
+    session: Session,
+    payload: MissedDoseResultCallback,
+) -> AsyncResultCallbackAck:
+    callback_hash = _minimal_callback_body_hash(payload)
+    existing_receipt = session.get(
+        AgentAsyncCallbackReceipt,
+        payload.request_id,
+    )
+    if existing_receipt is not None:
+        return _resolve_missed_dose_receipt(
+            existing_receipt,
+            callback_hash,
+        )
 
-    if payload.task_type == "missed_dose":
-        source_payload = deserialize_agent_job_payload(job)
-        persist_agent_summary(session, payload.response, category="missed_dose", related_dose_event_id=getattr(source_payload, "dose_event_id", None))
-        record_agent_audit(session, payload.response, "missed_dose", applied=False, error_message="")
+    job = session.scalar(
+        select(AgentJob).where(AgentJob.request_id == payload.request_id)
+    )
+    if job is None:
+        raise _callback_error(
+            404,
+            "ASYNC_REQUEST_NOT_FOUND",
+            "The original asynchronous request was not found.",
+            details={"request_id": payload.request_id},
+        )
+    if job.job_type != "missed_dose" or job.status not in {PENDING, RUNNING}:
+        raise _callback_error(
+            409,
+            "CALLBACK_STATE_CONFLICT",
+            "The asynchronous request is already in a conflicting terminal state.",
+            details={"request_id": payload.request_id},
+        )
+    if job.related_dose_event_id is None:
+        raise _callback_error(
+            409,
+            "CALLBACK_STATE_CONFLICT",
+            "The asynchronous request is already in a conflicting terminal state.",
+            details={"request_id": payload.request_id},
+        )
+    event = session.scalar(
+        select(DoseEvent)
+        .where(DoseEvent.id == job.related_dose_event_id)
+        .with_for_update()
+    )
+    if event is None:
+        raise _callback_error(
+            409,
+            "CALLBACK_STATE_CONFLICT",
+            "The asynchronous request is already in a conflicting terminal state.",
+            details={"request_id": payload.request_id},
+        )
+
+    receipt = AgentAsyncCallbackReceipt(
+        request_id=payload.request_id,
+        callback_hash=callback_hash,
+        event_type="missed_dose",
+        result_status=payload.status,
+        processed_at=utc_now(),
+    )
+    session.add(receipt)
+    try:
+        session.flush()
+    except IntegrityError:
+        session.rollback()
+        winner = session.get(
+            AgentAsyncCallbackReceipt,
+            payload.request_id,
+        )
+        if winner is None:
+            raise
+        return _resolve_missed_dose_receipt(winner, callback_hash)
+
+    if payload.status == "completed":
+        if payload.result is None:
+            raise ValueError("completed_callback_result_missing")
+        if event.status != "missed":
+            _suppress_stale_missed_dose_alert(
+                session,
+                event=event,
+                request_id=payload.request_id,
+            )
+            mark_agent_job_done(session, job.id)
+            session.commit()
+            return AsyncResultCallbackAck(
+                request_id=payload.request_id,
+                status="processed",
+            )
+        persist_agent_summary(
+            session,
+            AgentResponse(
+                trace_id="",
+                agent_name="",
+                prompt_version_id="",
+                decision_type="missed_dose_result",
+                structured_payload={
+                    "missed_dose_hybrid": {
+                        "generated_message": payload.result.message,
+                    }
+                },
+                human_summary=payload.result.message,
+                requires_conversation_alert=payload.result.requires_reply,
+            ),
+            category="missed_dose",
+            related_dose_event_id=event.id,
+        )
         mark_agent_job_done(session, job.id)
     else:
-        persist_agent_summary(session, payload.response, category="pattern_analysis")
-        _applied, result_message = maybe_apply_policy_response(session, payload.response, "daily_pattern")
-        if tool_results_have_error(payload.response):
-            failure_copy = copy_for_async_task("daily_pattern")
-            mark_agent_job_failed(session, job.id, result_message or payload.response.human_summary or "일일 패턴 분석 결과를 적용하지 못했습니다.")
-            present_agent_error(
-                session,
-                "daily_pattern",
-                RuntimeError(result_message or payload.response.human_summary or "agent tool failed"),
-                user_message=failure_copy.body,
-                metadata={"agent_job_id": job.id, "trace_id": payload.response.trace_id},
-            )
-        else:
-            mark_agent_job_done(session, job.id)
-    upsert_agent_run_trace(
-        session,
-        payload.response,
-        workflow_name=payload.task_type,
-        source_event_type="agent_async_job_result",
-        status="completed",
+        if payload.error is None:
+            raise ValueError("failed_callback_error_missing")
+        error = AgentServiceError(
+            payload.error.message,
+            status_code=None,
+            error_type=payload.error.code,
+            retryable=payload.error.retryable,
+            details=None,
+        )
+        mark_agent_job_failed(session, job.id, payload.error.message)
+        mark_awaiting_conversation_alert_failed(
+            session,
+            "missed_dose",
+            event.id,
+            job.id,
+            error,
+        )
+        present_agent_error(
+            session,
+            "missed_dose",
+            error,
+            user_message=copy_for_async_task("missed_dose").body,
+            related_dose_event_id=event.id,
+            metadata={
+                "agent_job_id": job.id,
+                "request_id": payload.request_id,
+            },
+        )
+
+    session.commit()
+    return AsyncResultCallbackAck(
         request_id=payload.request_id,
-        job_id=job.id,
-        related_dose_event_id=payload.related_dose_event_id,
+        status="processed",
     )
-    _record_idempotency(session, payload.idempotency_key, "agent_async_job_result", {"job_id": job.id}, payload.response.human_summary)
-    session.commit()
-    return {"status": "ok", "request_id": payload.request_id, "job_id": job.id}
 
 
-def process_async_chat_result_callback(session: Session, payload: AgentAsyncChatResultRequest) -> dict:
-    if _is_duplicate(session, payload.idempotency_key, "agent_async_chat_result"):
-        return {"status": "duplicate", "request_id": payload.request_id}
-    follow_up: dict | None = None
-    if payload.notification_id is not None:
-        follow_up = apply_system_event_response(
-            session,
-            payload.event_type,
-            payload.message,
-            payload.notification_id,
-            payload.response,
+def _suppress_stale_missed_dose_alert(
+    session: Session,
+    *,
+    event: DoseEvent,
+    request_id: str,
+) -> None:
+    resolved_at = utc_now()
+    rows = session.scalars(
+        select(Notification).where(
+            Notification.notification_type == "conversation_alert",
+            Notification.related_dose_event_id == event.id,
+            Notification.acknowledged.is_(False),
         )
-        _mark_async_continuation_status(session, payload.notification_id, "done")
-    else:
-        persist_agent_summary(session, payload.response, category="multiturn_chat")
-        upsert_agent_run_trace(
-            session,
-            payload.response,
-            workflow_name=payload.event_type,
-            source_event_type="agent_async_chat_result",
-            status="completed",
+    ).all()
+    for notification in rows:
+        metadata = parse_json_object(notification.metadata_json)
+        if metadata.get("category") != "missed_dose":
+            continue
+        metadata.update(
+            {
+                "status": "superseded",
+                "superseded_reason": (
+                    f"dose_status_changed_to_{event.status}"
+                ),
+                "resolved_at": resolved_at.isoformat(),
+                "request_id": request_id,
+            }
+        )
+        notification.metadata_json = dump_json(metadata)
+        notification.acknowledged = True
+    session.flush()
+
+
+def process_notification_policy_change_proposal(
+    session: Session,
+    payload: NotificationPolicyChangeProposalRequest,
+) -> tuple[NotificationPolicyProposalAck, bool]:
+    callback_hash = _minimal_callback_body_hash(payload)
+    existing = session.get(
+        NotificationPolicyChangeProposal,
+        payload.request_id,
+    )
+    if existing is not None:
+        return (
+            _resolve_policy_proposal(existing, callback_hash),
+            False,
+        )
+
+    clock = ensure_clock(session)
+    target_date = clock.current_time.date()
+    active_policy = session.scalar(
+        select(ReminderPolicy.id).where(
+            ReminderPolicy.patient_id == payload.patient_id,
+            ReminderPolicy.active.is_(True),
+            ReminderPolicy.effective_start_date <= target_date,
+            ReminderPolicy.effective_end_date >= target_date,
+        ).limit(1)
+    )
+    if active_policy is None:
+        raise _callback_error(
+            422,
+            "INVALID_POLICY_PROPOSAL",
+            "The notification policy proposal is invalid.",
+            details={
+                "patient_id": payload.patient_id,
+                "reason": "active_notification_policy_not_found",
+            },
+        )
+
+    proposal = NotificationPolicyChangeProposal(
+        request_id=payload.request_id,
+        callback_hash=callback_hash,
+        patient_id=payload.patient_id,
+        proposed_policy_json=dump_json(
+            payload.proposed_policy.model_dump(mode="json")
+        ),
+        reason=payload.reason,
+        status="pending_user_confirmation",
+    )
+    try:
+        with session.begin_nested():
+            session.add(proposal)
+            session.flush()
+    except IntegrityError:
+        winner = session.get(
+            NotificationPolicyChangeProposal,
+            payload.request_id,
+        )
+        if winner is None:
+            raise
+        return (
+            _resolve_policy_proposal(winner, callback_hash),
+            False,
+        )
+
+    proposed_policy = payload.proposed_policy.model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+    message = (
+        f"{payload.reason}\n"
+        "알림 정책 변경 제안을 확인해 주세요. "
+        "수락 후 대화에서 적용 대상을 확인합니다."
+    )
+    notification = create_notification(
+        session,
+        notification_type="conversation_alert",
+        title="복약 알림 정책 변경 제안",
+        body=message,
+        visible_at=clock.current_time,
+        patient_id=payload.patient_id,
+        metadata={
+            "category": "policy_confirmation",
+            "status": "agent_ready",
+            "source_event_type": "daily_pattern_policy_proposal",
+            "proposal_request_id": payload.request_id,
+            "proposed_policy": proposed_policy,
+            "reason": payload.reason,
+            "target_scope": "patient",
+            "policy_applied": False,
+        },
+    )
+    add_chat_message(
+        session,
+        role="assistant",
+        content=message,
+        sender_type="assistant",
+        category="policy_confirmation",
+        patient_id=payload.patient_id,
+        ai_request_id=payload.request_id,
+        metadata={
+            "conversation_alert": {
+                "notification_id": notification.public_id,
+                "category": "policy_confirmation",
+                "status": "agent_ready",
+                "reply_mode": "chat",
+            },
+            "policy_confirmation": {
+                "proposal_request_id": payload.request_id,
+                "proposed_policy": proposed_policy,
+                "reason": payload.reason,
+                "target_scope": "patient",
+                "policy_applied": False,
+            },
+        },
+    )
+    proposal.notification_id = notification.id
+    session.commit()
+    return (
+        NotificationPolicyProposalAck(
             request_id=payload.request_id,
-            request_message=payload.message,
+            status="accepted",
+        ),
+        True,
+    )
+
+
+def _resolve_missed_dose_receipt(
+    receipt: AgentAsyncCallbackReceipt,
+    callback_hash: str,
+) -> AsyncResultCallbackAck:
+    if (
+        receipt.event_type == "missed_dose"
+        and receipt.callback_hash == callback_hash
+    ):
+        return AsyncResultCallbackAck(
+            request_id=receipt.request_id,
+            status="duplicate",
         )
-    _record_idempotency(session, payload.idempotency_key, "agent_async_chat_result", {"notification_id": payload.notification_id}, payload.response.human_summary)
-    session.commit()
-    result = {"status": "ok", "request_id": payload.request_id, "notification_id": payload.notification_id}
-    if follow_up:
-        result.update(follow_up)
-    return result
+    raise _callback_error(
+        409,
+        "CALLBACK_STATE_CONFLICT",
+        "The asynchronous request is already in a conflicting terminal state.",
+        details={"request_id": receipt.request_id},
+    )
 
 
-def process_async_policy_change_callback(session: Session, payload: AgentAsyncPolicyChangeRequest) -> dict:
-    if _is_duplicate(session, payload.idempotency_key, "agent_async_policy_change"):
-        return {"status": "duplicate", "request_id": payload.request_id}
-    if payload.notification_id is not None:
-        notification = session.get(Notification, payload.notification_id)
-        metadata = parse_json_object(notification.metadata_json) if notification is not None else {}
-        request_message = str(metadata.get("request_message") or "")
-        apply_system_event_response(session, payload.source_event_type, request_message, payload.notification_id, payload.response)
-        _mark_async_continuation_status(session, payload.notification_id, "done")
-    else:
-        maybe_apply_policy_response(session, payload.response, payload.source_event_type)
-        upsert_agent_run_trace(
-            session,
-            payload.response,
-            workflow_name=payload.source_event_type,
-            source_event_type="agent_async_policy_change",
-            status="completed",
-            request_id=payload.request_id,
+def _resolve_policy_proposal(
+    proposal: NotificationPolicyChangeProposal,
+    callback_hash: str,
+) -> NotificationPolicyProposalAck:
+    if proposal.callback_hash == callback_hash:
+        return NotificationPolicyProposalAck(
+            request_id=proposal.request_id,
+            status="duplicate",
         )
-    _record_idempotency(session, payload.idempotency_key, "agent_async_policy_change", {"notification_id": payload.notification_id}, payload.response.human_summary)
-    session.commit()
-    return {"status": "ok", "request_id": payload.request_id, "notification_id": payload.notification_id}
+    raise _callback_error(
+        409,
+        "IDEMPOTENCY_CONFLICT",
+        "The request_id was reused with a different request body.",
+        details={"request_id": proposal.request_id},
+    )
 
+
+def _minimal_callback_body_hash(
+    payload: MissedDoseResultCallback
+    | NotificationPolicyChangeProposalRequest,
+) -> str:
+    encoded = json.dumps(
+        payload.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _callback_error(
+    status_code: int,
+    code: str,
+    message: str,
+    *,
+    details: dict | None = None,
+) -> AsyncCallbackContractError:
+    return AsyncCallbackContractError(
+        status_code=status_code,
+        code=code,
+        message=message,
+        retryable=status_code >= 500,
+        details=details,
+    )
 
 def process_async_push_message_callback(session: Session, payload: AgentAsyncPushMessageRequest) -> dict:
     idempotency_key = payload.idempotency_key or payload.request_id
@@ -158,20 +453,34 @@ def process_async_push_message_callback(session: Session, payload: AgentAsyncPus
 
 def process_async_clinician_alert_callback(session: Session, payload: AgentAsyncClinicianAlertRequest) -> dict:
     idempotency_key = payload.idempotency_key or payload.request_id
-    if _is_duplicate(session, idempotency_key, "agent_async_clinician_alert"):
-        return {"status": "duplicate", "request_id": payload.request_id}
+    request_gate = BackendRequestGate()
+    replay = request_gate.begin(
+        session,
+        api_path="/agent/async/clinician-alerts",
+        request_id=idempotency_key,
+        payload=payload,
+    )
+    if replay is not None:
+        result = dict(replay.body)
+        result["status"] = "duplicate"
+        return result
 
     existing = _existing_clinician_alert(session, payload.related_dose_event_id, payload.pattern_code)
     if existing is not None:
-        _record_idempotency(
+        result = {
+            "status": "duplicate",
+            "request_id": payload.request_id,
+            "notification_id": existing.id,
+        }
+        request_gate.complete(
             session,
-            idempotency_key,
-            "agent_async_clinician_alert",
-            {"notification_id": existing.id, "deduped_by": "dose_event_pattern"},
-            payload.message,
+            api_path="/agent/async/clinician-alerts",
+            request_id=idempotency_key,
+            status_code=200,
+            body=result,
         )
         session.commit()
-        return {"status": "duplicate", "request_id": payload.request_id, "notification_id": existing.id}
+        return result
 
     clock = ensure_clock(session)
     metadata = {
@@ -203,108 +512,20 @@ def process_async_clinician_alert_callback(session: Session, payload: AgentAsync
         related_dose_event_id=payload.related_dose_event_id,
         metadata=metadata,
     )
-    _record_idempotency(
+    result = {
+        "status": "ok",
+        "request_id": payload.request_id,
+        "notification_id": notification.id,
+    }
+    request_gate.complete(
         session,
-        idempotency_key,
-        "agent_async_clinician_alert",
-        {"notification_id": notification.id},
-        payload.message,
+        api_path="/agent/async/clinician-alerts",
+        request_id=idempotency_key,
+        status_code=200,
+        body=result,
     )
     session.commit()
-    return {"status": "ok", "request_id": payload.request_id, "notification_id": notification.id}
-
-
-def process_async_failure_callback(session: Session, payload: AgentAsyncFailureRequest) -> dict:
-    if _is_duplicate(session, payload.idempotency_key, "agent_async_failure"):
-        return {"status": "duplicate", "request_id": payload.request_id}
-    job = _resolve_job(session, payload.job_id, payload.request_id)
-    error = AgentAsyncCallbackError(payload)
-    failure_copy = copy_for_async_task(payload.task_type, error_type=payload.error_type)
-    if job is not None:
-        mark_agent_job_failed(session, job.id, payload.message)
-        mark_awaiting_conversation_alert_failed(session, payload.task_type, payload.related_dose_event_id or job.related_dose_event_id, job.id, error)
-        present_agent_error(
-            session,
-            payload.task_type,
-            error,
-            user_message=failure_copy.body,
-            related_dose_event_id=payload.related_dose_event_id or job.related_dose_event_id,
-            metadata={"agent_job_id": job.id, "request_id": payload.request_id},
-        )
-    elif payload.notification_id is not None:
-        mark_system_event_request_failed(session, "multiturn_chat", "", payload.notification_id, error)
-        _mark_async_continuation_status(session, payload.notification_id, "failed")
-    else:
-        present_agent_error(
-            session,
-            payload.task_type,
-            error,
-            user_message=failure_copy.body,
-            related_dose_event_id=payload.related_dose_event_id,
-            metadata={"request_id": payload.request_id},
-        )
-    record_agent_run_failure(
-        session,
-        trace_id=payload.trace_id,
-        workflow_name=payload.task_type,
-        source_event_type="agent_async_failure",
-        request_id=payload.request_id,
-        agent_name=payload.agent_name,
-        decision_type=payload.decision_type,
-        error_message=payload.message,
-        job_id=job.id if job is not None else payload.job_id,
-        notification_id=payload.notification_id,
-        related_dose_event_id=payload.related_dose_event_id,
-    )
-    _record_idempotency(session, payload.idempotency_key, "agent_async_failure", {"job_id": job.id if job is not None else None}, payload.message)
-    session.commit()
-    return {"status": "ok", "request_id": payload.request_id, "job_id": job.id if job is not None else None}
-
-
-def _resolve_job(session: Session, job_id: int | None, request_id: str) -> AgentJob | None:
-    if job_id is not None:
-        return session.get(AgentJob, job_id)
-    parts = request_id.split(":")
-    if len(parts) >= 3 and parts[-2] == "job":
-        try:
-            return session.get(AgentJob, int(parts[-1]))
-        except ValueError:
-            return None
-    return None
-
-
-def _is_duplicate(session: Session, idempotency_key: str | None, source_event_type: str) -> bool:
-    if not idempotency_key:
-        return False
-    existing = (
-        session.query(AgentDecisionAudit)
-        .filter(AgentDecisionAudit.trace_id == idempotency_key, AgentDecisionAudit.source_event_type == source_event_type)
-        .first()
-    )
-    return existing is not None
-
-
-def _record_idempotency(
-    session: Session,
-    idempotency_key: str | None,
-    source_event_type: str,
-    payload: dict,
-    summary: str,
-) -> None:
-    if not idempotency_key:
-        return
-    create_agent_decision_audit(
-        session,
-        trace_id=idempotency_key,
-        agent_name="agent_async_callback",
-        prompt_version_id="n/a",
-        decision_type=source_event_type,
-        structured_payload=payload,
-        human_summary=summary,
-        applied=True,
-        error_message="",
-        source_event_type=source_event_type,
-    )
+    return result
 
 
 def _existing_clinician_alert(
@@ -329,13 +550,3 @@ def _existing_clinician_alert(
         if metadata.get("category") == CLINICIAN_ESCALATION_CATEGORY and metadata.get("pattern_code") == pattern_code:
             return row
     return None
-
-
-def _mark_async_continuation_status(session: Session, notification_id: int, status: str) -> None:
-    notification = session.get(Notification, notification_id)
-    if notification is None:
-        return
-    metadata = parse_json_object(notification.metadata_json)
-    metadata["async_continuation_status"] = status
-    notification.metadata_json = dump_json(metadata)
-    session.flush()

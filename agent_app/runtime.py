@@ -25,10 +25,6 @@ def create_tool_executor(tool_server: AgentMcpToolServer | None = None) -> McpAg
     return McpAgentToolExecutor(server=tool_server or create_mcp_tool_server())
 
 
-def create_orchestrator() -> AgentLangGraphNativeOrchestrator:
-    return create_runtime_components().orchestrator
-
-
 def create_runtime_components() -> AgentRuntimeComponents:
     provider = create_llm_provider()
     tool_server = create_mcp_tool_server()

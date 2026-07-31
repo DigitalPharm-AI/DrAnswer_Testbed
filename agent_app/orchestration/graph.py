@@ -13,6 +13,10 @@ from agent_app.orchestration.state import AgentGraphState
 from agent_app.tools.protocol import AgentToolExecutorProtocol
 from agent_app.tools.runtime import ToolRuntime
 from shared.schemas import AgentResponse
+from shared.tool_names import (
+    CREATE_NUTRITION_MEAL_RECORD,
+    REQUEST_RECORD_APPROVAL,
+)
 
 
 class AgentLangGraphNativeOrchestrator:
@@ -97,4 +101,56 @@ class AgentLangGraphNativeOrchestrator:
             ) from exc
         response = final_state["response"]
         response.structured_payload.setdefault("elapsed_ms", round((perf_counter() - started) * 1000))
+        return response
+
+    async def continue_nutrition_food_selection(
+        self,
+        *,
+        trace_id: str,
+        payload: dict[str, Any],
+        record_arguments: dict[str, Any],
+        selection_id: str,
+        origin_message_id: str,
+    ) -> AgentResponse:
+        """Continue a Backend-validated food card without another LLM lookup."""
+
+        response = await (
+            self.multiturn_chat_agent
+            .nutrition_management_agent
+            .continue_with_tool_calls(
+                trace_id,
+                payload,
+                tool_calls=[
+                    {
+                        "id": (
+                            "trusted_food_selection_approval"
+                        ),
+                        "name": REQUEST_RECORD_APPROVAL,
+                        "arguments": {
+                            "action_name": (
+                                CREATE_NUTRITION_MEAL_RECORD
+                            ),
+                            "record_arguments": record_arguments,
+                        },
+                    }
+                ],
+            )
+        )
+        response.structured_payload[
+            "selection_state_resolution"
+        ] = {
+            "reason_code": (
+                "TRUSTED_FOOD_SELECTION_STATE_REUSED"
+            ),
+            "selection_id": selection_id,
+            "origin_message_id": origin_message_id,
+            "candidate_reused": True,
+            "search_repeated": False,
+        }
+        response.structured_payload["routing_mode"] = (
+            "trusted_food_selection_continuation"
+        )
+        response.structured_payload["final_answer_source"] = (
+            "deterministic_selection_state"
+        )
         return response

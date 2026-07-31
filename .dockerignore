@@ -12,9 +12,13 @@ node_modules/
 .git/
 agent_app_legacy/
 agent_app_old_legacy/
-data/
+data/*
+!data/pro_ctcae_korean_parsed.xlsx
 artifacts/
-docs/
+docs/*
+!docs/AI_V13_CHAT_OPENAPI.json
+!docs/AI_V13_ASYNC_MEDICATION_OPENAPI.json
+!docs/BACKEND_V13_ASYNC_CALLBACK_OPENAPI.json
 tests/
 tools/
 OpenData_ItemPermitDetail*.xls

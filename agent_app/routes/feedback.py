@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, sessionmaker
 
 from agent_app import trace_logging
-from agent_app.integration.chat_contracts import (
+from shared.chat_contracts import (
     ChatErrorResponse,
     chat_error,
 )
@@ -110,7 +110,7 @@ async def chat_feedback(
         path=FEEDBACK_API_PATH,
         request_id=payload.request_id,
         message_id=payload.message_id,
-        conversation_id=payload.conversation_id,
+        patient_id=payload.patient_id,
         feedback_text_present=bool(payload.feedback_text),
     )
     try:
@@ -123,6 +123,7 @@ async def chat_feedback(
         )
         return _feedback_error(
             status_code=503,
+            request_id=payload.request_id,
             code="FEEDBACK_ENCRYPTION_UNAVAILABLE",
             message="Feedback encryption is temporarily unavailable.",
             retryable=True,
@@ -132,6 +133,7 @@ async def chat_feedback(
     except FeedbackIdempotencyConflict:
         return _feedback_error(
             status_code=409,
+            request_id=payload.request_id,
             code="IDEMPOTENCY_CONFLICT",
             message="The request_id was reused with a different request body.",
             retryable=False,
@@ -146,22 +148,26 @@ async def chat_feedback(
     if backend_queries is None:
         return _feedback_error(
             status_code=503,
+            request_id=payload.request_id,
             code="BACKEND_DB_UNAVAILABLE",
-            message="The Backend read database is temporarily unavailable.",
+            message=(
+                "The read-only Backend DB connection is unavailable or "
+                "incompatible."
+            ),
             retryable=True,
         )
     try:
         verified_target = await asyncio.to_thread(
             backend_queries.validate_feedback_target,
             message_id=payload.message_id,
-            conversation_id=payload.conversation_id,
             patient_id=payload.patient_id,
         )
     except BackendChatMessageNotFound:
         return _feedback_error(
             status_code=404,
+            request_id=payload.request_id,
             code="BACKEND_MESSAGE_NOT_FOUND",
-            message="The AI answer message could not be verified.",
+            message="The verified AI answer message was not found.",
             retryable=False,
         )
     except Exception as exc:
@@ -172,8 +178,12 @@ async def chat_feedback(
         )
         return _feedback_error(
             status_code=503,
+            request_id=payload.request_id,
             code="BACKEND_DB_UNAVAILABLE",
-            message="The Backend read database is temporarily unavailable.",
+            message=(
+                "The read-only Backend DB connection is unavailable or "
+                "incompatible."
+            ),
             retryable=True,
         )
 
@@ -185,6 +195,7 @@ async def chat_feedback(
     except FeedbackIdempotencyConflict:
         return _feedback_error(
             status_code=409,
+            request_id=payload.request_id,
             code="IDEMPOTENCY_CONFLICT",
             message="The request_id was reused with a different request body.",
             retryable=False,
@@ -192,8 +203,9 @@ async def chat_feedback(
     except FeedbackTargetMismatch:
         return _feedback_error(
             status_code=404,
+            request_id=payload.request_id,
             code="BACKEND_MESSAGE_NOT_FOUND",
-            message="The AI answer message could not be verified.",
+            message="The verified AI answer message was not found.",
             retryable=False,
         )
     except Exception as exc:
@@ -204,6 +216,7 @@ async def chat_feedback(
         )
         return _feedback_error(
             status_code=500,
+            request_id=payload.request_id,
             code="FEEDBACK_ACCEPT_FAILED",
             message="The feedback request could not be accepted.",
             retryable=True,
@@ -223,6 +236,7 @@ async def chat_feedback(
 def _feedback_error(
     *,
     status_code: int,
+    request_id: str | None,
     code: str,
     message: str,
     retryable: bool,
@@ -230,6 +244,7 @@ def _feedback_error(
     body = chat_error(
         code,
         message,
+        request_id=request_id,
         retryable=retryable,
         details=None,
     ).model_dump(mode="json")

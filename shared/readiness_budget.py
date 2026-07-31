@@ -10,7 +10,7 @@ class LoadBudget:
     max_error_rate: float
     p95_health_ms: int
     p95_async_accept_ms: int
-    p95_phr_register_ms: int
+    p95_ui_status_ms: int
 
 
 @dataclass(frozen=True)
@@ -94,8 +94,7 @@ def evaluate_load_budget(summary: dict[str, Any], budget: LoadBudget) -> dict[st
         "system_health": budget.p95_health_ms,
         "agent_health": budget.p95_health_ms,
         "agent_readiness": budget.p95_async_accept_ms,
-        "phr_health": budget.p95_health_ms,
-        "phr_register": budget.p95_phr_register_ms,
+        "ui_status": budget.p95_ui_status_ms,
     }
     workflows = summary.get("workflows") if isinstance(summary.get("workflows"), dict) else {}
     for workflow, threshold_ms in workflow_budgets.items():

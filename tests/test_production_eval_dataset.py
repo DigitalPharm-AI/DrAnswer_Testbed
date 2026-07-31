@@ -32,7 +32,7 @@ REQUIRED_TAGS = {
     "nutrition",
     "observability",
     "patient_id",
-    "phr",
+    "patient_snapshot",
     "privacy",
     "safety",
     "side_effect",
@@ -62,6 +62,16 @@ def test_production_readiness_eval_dataset_has_schema_and_required_coverage():
 
     assert REQUIRED_TAGS <= observed_tags
     assert critical_count >= 15
+
+
+def test_production_readiness_eval_dataset_has_no_separate_phr_registration_flow():
+    cases = json.loads(DATASET_PATH.read_text(encoding="utf-8"))
+    serialized = json.dumps(cases, ensure_ascii=False).lower()
+
+    assert "phr registration" not in serialized
+    assert "phr 등록" not in serialized
+    assert "phr not synced" not in serialized
+    assert "phr_read_only" not in serialized
 
 
 def test_production_readiness_eval_dataset_does_not_embed_real_sensitive_markers():

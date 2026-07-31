@@ -6,11 +6,18 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from shared.schemas import DailyMedicationPattern, MissedDoseEventPayload
+from shared.async_v13_contracts import (
+    DailyMedicationPatternAnalysisRequest,
+)
+from shared.schemas import MissedDoseEventPayload
 from shared.time_utils import utc_now
 from system_app.models import AgentJob
 
-AgentJobType = Literal["missed_dose", "daily_pattern"]
+AgentJobType = Literal["missed_dose"]
+DAILY_PATTERN_JOB_TYPE = "daily_pattern_analysis"
+EXTERNAL_AGENT_JOB_TYPES = frozenset(
+    {"missed_dose", DAILY_PATTERN_JOB_TYPE}
+)
 
 PENDING = "pending"
 RUNNING = "running"
@@ -19,9 +26,15 @@ DONE = "done"
 RETRY_REQUESTED = "retry_requested"
 
 
-def create_agent_job(session: Session, job_type: AgentJobType, payload: MissedDoseEventPayload | DailyMedicationPattern) -> AgentJob:
+def create_agent_job(
+    session: Session,
+    job_type: AgentJobType,
+    payload: MissedDoseEventPayload,
+) -> AgentJob:
+    if job_type != "missed_dose":
+        raise ValueError("unsupported_external_agent_job_type")
     related_dose_event_id = getattr(payload, "dose_event_id", None)
-    if job_type == "missed_dose" and related_dose_event_id is not None:
+    if related_dose_event_id is not None:
         existing = session.scalar(
             select(AgentJob)
             .where(
@@ -47,7 +60,10 @@ def create_agent_job(session: Session, job_type: AgentJobType, payload: MissedDo
 def claim_next_agent_job(session: Session) -> AgentJob | None:
     job = session.scalar(
         select(AgentJob)
-        .where(AgentJob.status == PENDING)
+        .where(
+            AgentJob.status == PENDING,
+            AgentJob.job_type.in_(EXTERNAL_AGENT_JOB_TYPES),
+        )
         .order_by(AgentJob.created_at.asc(), AgentJob.id.asc())
         .limit(1)
     )
@@ -115,58 +131,12 @@ def agent_job_runtime_metadata(job: AgentJob | None) -> dict[str, object]:
     }
 
 
-def retry_agent_job(session: Session, job_id: int) -> AgentJob | None:
-    job = session.get(AgentJob, job_id)
-    if job is None or job.status != FAILED:
-        return job
-    job.status = PENDING
-    job.updated_at = utc_now()
-    job.started_at = None
-    job.completed_at = None
-    job.error_message = ""
-    session.flush()
-    return job
-
-
-def mark_agent_job_retry_requested(session: Session, job_id: int) -> AgentJob | None:
-    job = session.get(AgentJob, job_id)
-    if job is None or job.status != FAILED:
-        return job
-    job.status = RETRY_REQUESTED
-    job.updated_at = utc_now()
-    session.flush()
-    return job
-
-
-def complete_agent_job_retry_request(session: Session, job_id: int) -> AgentJob | None:
-    job = session.get(AgentJob, job_id)
-    if job is None or job.status != RETRY_REQUESTED:
-        return job
-    job.status = PENDING
-    job.updated_at = utc_now()
-    job.started_at = None
-    job.completed_at = None
-    job.error_message = ""
-    session.flush()
-    return job
-
-
-def restore_agent_job_retry_failure(session: Session, job_id: int) -> AgentJob | None:
-    job = session.get(AgentJob, job_id)
-    if job is None or job.status != RETRY_REQUESTED:
-        return job
-    job.status = FAILED
-    job.updated_at = utc_now()
-    job.started_at = None
-    job.completed_at = None
-    session.flush()
-    return job
-
-
-def deserialize_agent_job_payload(job: AgentJob) -> MissedDoseEventPayload | DailyMedicationPattern:
+def deserialize_agent_job_payload(
+    job: AgentJob,
+) -> MissedDoseEventPayload | DailyMedicationPatternAnalysisRequest:
     payload = json.loads(job.payload_json)
     if job.job_type == "missed_dose":
         return MissedDoseEventPayload.model_validate(payload)
-    if job.job_type == "daily_pattern":
-        return DailyMedicationPattern.model_validate(payload)
+    if job.job_type == DAILY_PATTERN_JOB_TYPE:
+        return DailyMedicationPatternAnalysisRequest.model_validate(payload)
     raise ValueError(f"unsupported agent job type: {job.job_type}")

@@ -1,6 +1,8 @@
 import json
 from datetime import date, datetime, timedelta
 
+import pytest
+
 from shared.schemas import AgentResponse
 from system_app.models import ChatMessage, DoseEvent, DoseSchedule, MedicationPlan, Notification
 from system_app.services.adherence_pattern_service import (
@@ -99,6 +101,7 @@ def test_pattern_c_side_effect_keep_has_highest_priority():
                 "status": "reply_completed",
                 "action": "keep",
             },
+            patient_id=current.patient_id,
         )
 
         decision = evaluate_adherence_pattern(session, current)
@@ -122,6 +125,7 @@ def test_pattern_c_requires_keep_state_not_suppression():
                 "status": "reply_completed",
                 "action": "keep",
             },
+            patient_id=current.patient_id,
         )
         set_reminder_suppressed_after_side_effect(session, True)
 
@@ -198,7 +202,7 @@ def test_validate_pattern_message_rejects_unsafe_text():
     assert "too_many_punctuation_marks" in errors
 
 
-def test_missed_dose_agent_ready_chat_uses_pattern_message_and_metadata():
+def test_missed_dose_agent_ready_chat_uses_llm_message_and_backend_policy_metadata():
     with build_session() as session:
         current = seed_slot_events(session, ["missed", "missed", "missed"], medication_name="혈압약")[-1]
         create_missed_dose_conversation_alert(session, current, current.missed_detected_at)
@@ -208,7 +212,7 @@ def test_missed_dose_agent_ready_chat_uses_pattern_message_and_metadata():
             prompt_version_id="v1",
             decision_type="missed_dose_assessment",
             structured_payload={},
-            human_summary="아침 08:00 혈압약 복약을 놓친 이유를 알려주세요.",
+            human_summary="복약을 놓친 상황을 확인하고 싶어요. 어떤 어려움이 있었나요?",
             requires_conversation_alert=True,
         )
 
@@ -219,21 +223,25 @@ def test_missed_dose_agent_ready_chat_uses_pattern_message_and_metadata():
         alert = session.query(Notification).filter(Notification.notification_type == "conversation_alert").one()
         alert_metadata = json.loads(alert.metadata_json)
         stubs = session.query(Notification).filter(Notification.notification_type == CLINICIAN_ESCALATION_TYPE).all()
-        assert message.content == PATTERN_MESSAGES["D"]
-        assert alert_metadata["agent_response_preview"] == PATTERN_MESSAGES["D"]
-        assert "혈압약" not in message.content
+        assert message.content == response.human_summary
+        assert alert.body == message.content
+        assert alert_metadata["agent_response_preview"] == response.human_summary
+        assert alert_metadata["feedback_message_source"] == "llm_generated"
         assert metadata["adherence_pattern"]["pattern_code"] == "D"
+        assert metadata["adherence_pattern"]["message"] == response.human_summary
         assert metadata["tone_policy"]["pattern_code"] == "D"
         assert metadata["tone_policy"]["tone_key"] == "warning_soft"
         assert metadata["tone_policy"]["policy_variant"] == "missed_dose.warning_soft.v1"
+        assert metadata["tone_policy"]["delivered_message_source"] == "llm_generated"
+        assert "message" not in metadata["tone_policy"]
         assert metadata["adherence_pattern"]["message_validation"]["passed"] is True
         assert metadata["tone_policy"]["message_validation"]["passed"] is True
-        assert metadata["llm_personalization"]["adjudication_source"] == "rule"
-        assert metadata["llm_personalization"]["message_source"] == "csv_fallback"
+        assert metadata["llm_personalization"]["adjudication_source"] == "backend_policy"
+        assert metadata["llm_personalization"]["message_source"] == "llm_generated"
         assert len(stubs) == 1
 
 
-def test_ambiguous_pattern_can_use_llm_adjudication_and_generated_message():
+def test_backend_policy_is_authoritative_while_llm_message_is_delivered():
     with build_session() as session:
         current = seed_slot_events(session, ["taken"] * 10 + ["missed"], medication_name="혈압약")[-1]
         create_missed_dose_conversation_alert(session, current, current.missed_detected_at)
@@ -253,7 +261,7 @@ def test_ambiguous_pattern_can_use_llm_adjudication_and_generated_message():
                     "safety_notes": ["no_medication_name", "no_diagnosis", "non_directive"],
                 }
             },
-            human_summary="혈압약을 놓친 이유를 알려주세요.",
+            human_summary="괜찮아요. 지금 상태를 알려주세요.",
             requires_conversation_alert=True,
         )
 
@@ -263,18 +271,16 @@ def test_ambiguous_pattern_can_use_llm_adjudication_and_generated_message():
         metadata = json.loads(message.metadata_json)
         assert message.content == "괜찮아요. 지금 상태를 알려주세요."
         assert "공감형 톤에 맞춰" not in message.content
-        assert metadata["adherence_pattern"]["pattern_code"] == "A"
-        assert metadata["tone_policy"]["tone_key"] == "empathy"
+        assert metadata["adherence_pattern"]["pattern_code"] == "B"
+        assert metadata["tone_policy"]["tone_key"] == "persuasion"
         assert metadata["llm_personalization"]["rule_pattern_code"] == "B"
-        assert metadata["llm_personalization"]["final_pattern_code"] == "A"
-        assert metadata["llm_personalization"]["adjudication_source"] == "llm_adjudication"
+        assert metadata["llm_personalization"]["final_pattern_code"] == "B"
+        assert metadata["llm_personalization"]["adjudication_source"] == "backend_policy"
         assert metadata["llm_personalization"]["message_source"] == "llm_generated"
-        assert metadata["llm_personalization"]["llm_generation_reason"] == "공감형 톤에 맞춰 부담을 낮추는 표현을 생성했습니다."
-        assert metadata["llm_personalization"]["llm_safety_notes"] == ["no_medication_name", "no_diagnosis", "non_directive"]
         assert metadata["adherence_pattern"]["message_validation"]["passed"] is True
 
 
-def test_missed_dose_pro_card_keeps_validated_hybrid_message_as_chat_body():
+def test_missed_dose_pro_card_keeps_card_metadata_and_uses_llm_chat_body():
     with build_session() as session:
         current = seed_slot_events(session, ["missed"], medication_name="\ud608\uc555\uc57d")[-1]
         create_missed_dose_conversation_alert(session, current, current.missed_detected_at)
@@ -303,7 +309,7 @@ def test_missed_dose_pro_card_keeps_validated_hybrid_message_as_chat_body():
                     }
                 ],
             },
-            human_summary="```json\n{\"missed_dose_hybrid\": {}}\n```",
+            human_summary=generated_message,
             requires_conversation_alert=True,
         )
 
@@ -313,12 +319,12 @@ def test_missed_dose_pro_card_keeps_validated_hybrid_message_as_chat_body():
         metadata = json.loads(message.metadata_json)
         alert = session.query(Notification).filter(Notification.notification_type == "conversation_alert").one()
         assert message.content == generated_message
-        assert alert.body == generated_message
+        assert alert.body == message.content
         assert metadata["ae_pro_ctcae"]["input_symptom"] == "\uba54\uc2a4\uaebc\uc6c0"
         assert "```json" not in message.content
 
 
-def test_clear_escalation_pattern_ignores_llm_downgrade_candidate():
+def test_clear_escalation_pattern_keeps_backend_policy_and_uses_llm_message():
     with build_session() as session:
         current = seed_slot_events(session, ["missed", "missed", "missed"], medication_name="혈압약")[-1]
         create_missed_dose_conversation_alert(session, current, current.missed_detected_at)
@@ -336,7 +342,7 @@ def test_clear_escalation_pattern_ignores_llm_downgrade_candidate():
                     "message": "혈압약은 반드시 복용하세요.",
                 }
             },
-            human_summary="혈압약을 놓친 이유를 알려주세요.",
+            human_summary="복약을 놓친 이유를 알려주세요.",
             requires_conversation_alert=True,
         )
 
@@ -344,15 +350,14 @@ def test_clear_escalation_pattern_ignores_llm_downgrade_candidate():
 
         message = session.query(ChatMessage).filter(ChatMessage.category == "missed_dose").one()
         metadata = json.loads(message.metadata_json)
-        assert message.content == PATTERN_MESSAGES["D"]
-        assert "혈압약" not in message.content
+        assert message.content == response.human_summary
         assert metadata["adherence_pattern"]["pattern_code"] == "D"
-        assert metadata["llm_personalization"]["adjudication_source"] == "rule"
-        assert metadata["llm_personalization"]["message_source"] == "csv_fallback"
+        assert metadata["llm_personalization"]["adjudication_source"] == "backend_policy"
+        assert metadata["llm_personalization"]["message_source"] == "llm_generated"
         assert session.query(Notification).filter(Notification.notification_type == CLINICIAN_ESCALATION_TYPE).count() == 1
 
 
-def test_llm_generated_message_falls_back_when_safety_validation_fails():
+def test_unsafe_llm_message_is_rejected_without_fallback():
     with build_session() as session:
         current = seed_slot_events(session, ["missed"], medication_name="혈압약")[-1]
         create_missed_dose_conversation_alert(session, current, current.missed_detected_at)
@@ -370,22 +375,25 @@ def test_llm_generated_message_falls_back_when_safety_validation_fails():
                     "generated_message": "혈압약은 반드시 복용하세요.",
                 }
             },
-            human_summary="혈압약을 놓친 이유를 알려주세요.",
+            human_summary="혈압약은 반드시 복용하세요.",
             requires_conversation_alert=True,
         )
 
-        persist_agent_summary(session, response, category="missed_dose", related_dose_event_id=current.id)
+        with pytest.raises(
+            ValueError,
+            match="missed_dose_llm_message_invalid",
+        ):
+            persist_agent_summary(
+                session,
+                response,
+                category="missed_dose",
+                related_dose_event_id=current.id,
+            )
 
-        message = session.query(ChatMessage).filter(ChatMessage.category == "missed_dose").one()
-        metadata = json.loads(message.metadata_json)
-        assert message.content == PATTERN_MESSAGES["B"]
-        assert metadata["llm_personalization"]["message_source"] == "csv_fallback"
-        assert metadata["llm_personalization"]["llm_generation_reason"] == "설득형 문구를 만들었지만 금지 표현이 포함되었습니다."
-        assert metadata["llm_personalization"]["fallback_reason"] == "llm_message_failed_safety_validation"
-        assert "forbidden_term:혈압약" in metadata["llm_personalization"]["llm_message_validation"]["errors"]
+        assert session.query(ChatMessage).filter(ChatMessage.category == "missed_dose").count() == 0
 
 
-def test_general_llm_message_fields_are_not_used_as_missed_dose_generated_message():
+def test_verified_human_summary_is_the_only_missed_dose_delivery_message():
     with build_session() as session:
         current = seed_slot_events(session, ["missed"], medication_name="혈압약")[-1]
         create_missed_dose_conversation_alert(session, current, current.missed_detected_at)
@@ -407,7 +415,7 @@ def test_general_llm_message_fields_are_not_used_as_missed_dose_generated_messag
                     "patient_message": "혈압약을 지금 확인해주세요.",
                 },
             },
-            human_summary="혈압약을 놓친 이유를 알려주세요.",
+            human_summary="복용하지 못한 이유를 알려주세요.",
             requires_conversation_alert=True,
         )
 
@@ -415,11 +423,10 @@ def test_general_llm_message_fields_are_not_used_as_missed_dose_generated_messag
 
         message = session.query(ChatMessage).filter(ChatMessage.category == "missed_dose").one()
         metadata = json.loads(message.metadata_json)
-        assert message.content == PATTERN_MESSAGES["B"]
-        assert metadata["llm_personalization"]["message_source"] == "csv_fallback"
-        assert metadata["llm_personalization"]["fallback_reason"] == "llm_message_missing"
-        assert metadata["llm_personalization"]["llm_message_candidate"] == ""
-        assert metadata["llm_personalization"]["llm_message_validation"]["errors"] == ["message_empty"]
+        assert message.content == response.human_summary
+        assert metadata["llm_personalization"]["message_source"] == "llm_generated"
+        assert metadata["llm_personalization"]["llm_message_candidate"] == response.human_summary
+        assert metadata["llm_personalization"]["llm_message_validation"]["errors"] == []
 
 
 def add_persona_reaction_history(
@@ -575,6 +582,7 @@ def test_tone_policy_c_overrides_persona_history():
                 "status": "reply_completed",
                 "action": "keep",
             },
+            patient_id=current.patient_id,
         )
         pattern = evaluate_adherence_pattern(session, current)
 

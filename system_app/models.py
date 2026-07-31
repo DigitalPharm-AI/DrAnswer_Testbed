@@ -3,38 +3,68 @@ from __future__ import annotations
 from datetime import date, datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, event, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from shared.public_ids import PublicIdKind, new_public_id, require_public_id
+from shared.retention_policy import agent_observability_expires_at
 from shared.time_utils import utc_now
+
+PUBLIC_ID_ALLOCATION_ATTEMPTS = 8
 
 
 def utcnow() -> datetime:
     return utc_now()
 
 
-def new_reminder_policy_public_id() -> str:
-    return f"npol_{uuid4().hex}"
+def observability_expires_at() -> datetime:
+    return agent_observability_expires_at(utc_now())
 
 
-def new_message_public_id(role: str | None = None) -> str:
-    prefix = {
-        "user": "user_msg",
-        "assistant": "assistant_msg",
-    }.get((role or "").strip().lower(), "msg")
-    return f"{prefix}_{uuid4().hex}"
+def new_message_public_id(role: str) -> str:
+    normalized_role = str(role).strip().lower()
+    if normalized_role == "user":
+        return new_public_id("user_message")
+    if normalized_role == "assistant":
+        return new_public_id("assistant_message")
+    raise ValueError("message_public_id_role_must_be_user_or_assistant")
 
 
-def new_dose_event_public_id() -> str:
-    return f"dose_{uuid4().hex}"
+def new_notification_public_id() -> str:
+    return f"notif_{uuid4().hex}"
 
 
-def new_nutrition_meal_public_id() -> str:
-    return f"meal_{uuid4().hex}"
+def _allocate_contract_id(
+    connection,
+    *,
+    table_name: str,
+    column_name: str,
+    kind: PublicIdKind,
+) -> str:
+    """Allocate a collision-safe public ID inside the current transaction."""
 
-
-def new_nutrition_food_public_id() -> str:
-    return f"food_{uuid4().hex}"
+    for _attempt in range(PUBLIC_ID_ALLOCATION_ATTEMPTS):
+        candidate = new_public_id(kind)
+        if connection.dialect.name == "postgresql":
+            connection.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtextextended(:candidate, 0))"
+                ),
+                {"candidate": candidate},
+            )
+        exists = connection.execute(
+            text(
+                f"SELECT 1 FROM {table_name} "
+                f"WHERE {column_name} = :candidate LIMIT 1"
+            ),
+            {"candidate": candidate},
+        ).first()
+        if exists is None:
+            return candidate
+    raise RuntimeError(
+        f"public_id_collision_retry_exhausted:{table_name}:{kind}"
+    )
 
 
 class Base(DeclarativeBase):
@@ -43,36 +73,54 @@ class Base(DeclarativeBase):
 
 class MedicationPlan(Base):
     __tablename__ = "medication_plans"
-    __table_args__ = (
-        UniqueConstraint(
-            "patient_id",
-            "submission_id",
-            name="uq_medication_plan_patient_submission",
-        ),
-    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
-    submission_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="patient_0000000000000001")
     medication_name: Mapped[str] = mapped_column(String(255))
     dosage: Mapped[str] = mapped_column(String(255), default="")
     instructions: Mapped[str] = mapped_column(Text, default="")
+    treatment_area: Mapped[str] = mapped_column(String(80), default="")
+    source_type: Mapped[str] = mapped_column(String(40), default="manual", index=True)
+    source_key: Mapped[str] = mapped_column(String(120), default="", index=True)
     start_date: Mapped[date] = mapped_column(Date)
     end_date: Mapped[date] = mapped_column(Date)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
-class SimulationPatientProfile(Base):
-    __tablename__ = "simulation_patient_profiles"
+class TestMedicationScenario(Base):
+    __tablename__ = "test_medication_scenarios"
+
+    scenario_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class TestMedicationScenarioItem(Base):
+    __tablename__ = "test_medication_scenario_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "scenario_id",
+            "medication_id",
+            name="uq_test_medication_scenario_item",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    local_patient_id: Mapped[str] = mapped_column(String(100), unique=True, index=True)
-    phr_patient_key: Mapped[str] = mapped_column(String(160), default="")
-    sync_status: Mapped[str] = mapped_column(String(40), default="unregistered")
-    error_message: Mapped[str] = mapped_column(Text, default="")
-    registered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    scenario_id: Mapped[str] = mapped_column(
+        ForeignKey("test_medication_scenarios.scenario_id"),
+        index=True,
+    )
+    medication_id: Mapped[str] = mapped_column(String(80))
+    medication_name: Mapped[str] = mapped_column(String(255))
+    dosage: Mapped[str] = mapped_column(String(255), default="")
+    treatment_area: Mapped[str] = mapped_column(String(80))
+    slot_label: Mapped[str] = mapped_column(String(120))
+    scheduled_time: Mapped[str] = mapped_column(String(8))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -80,7 +128,7 @@ class NutritionProfile(Base):
     __tablename__ = "nutrition_profiles"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    patient_id: Mapped[str] = mapped_column(String(100), unique=True, index=True, default="demo-patient")
+    patient_id: Mapped[str] = mapped_column(String(100), unique=True, index=True, default="patient_0000000000000001")
     name: Mapped[str] = mapped_column(String(120), default="데모 환자")
     age: Mapped[int] = mapped_column(Integer, default=55)
     gender: Mapped[str] = mapped_column(String(20), default="male")
@@ -103,9 +151,8 @@ class NutritionMeal(Base):
         String(80),
         unique=True,
         index=True,
-        default=new_nutrition_meal_public_id,
     )
-    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
+    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="patient_0000000000000001")
     meal_type: Mapped[str] = mapped_column(String(20), index=True)
     meal_date: Mapped[date] = mapped_column(Date, index=True)
     meal_time: Mapped[str] = mapped_column(String(8), default="")
@@ -124,7 +171,6 @@ class NutritionFood(Base):
         String(80),
         unique=True,
         index=True,
-        default=new_nutrition_food_public_id,
     )
     meal_id: Mapped[int] = mapped_column(ForeignKey("nutrition_meals.id"), index=True)
     food_ref_id: Mapped[str] = mapped_column(String(120), default="")
@@ -145,7 +191,7 @@ class DailyNutritionCheck(Base):
     __table_args__ = (UniqueConstraint("patient_id", "check_date", name="uq_daily_nutrition_patient_date"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
+    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="patient_0000000000000001")
     check_date: Mapped[date] = mapped_column(Date, index=True)
     total_meals: Mapped[int] = mapped_column(Integer, default=0)
     threshold_calories: Mapped[float] = mapped_column(Float, default=0.0)
@@ -205,7 +251,7 @@ class NutritionPatientPreferenceTriple(Base):
     __table_args__ = (UniqueConstraint("patient_id", "predicate", "object_node_id", name="uq_nutrition_patient_preference_triple"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
+    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="patient_0000000000000001")
     predicate: Mapped[str] = mapped_column(String(80), index=True)
     object_node_id: Mapped[int] = mapped_column(ForeignKey("nutrition_ontology_nodes.id"), index=True)
     strength: Mapped[float] = mapped_column(Float, default=1.0)
@@ -213,7 +259,6 @@ class NutritionPatientPreferenceTriple(Base):
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     source: Mapped[str] = mapped_column(String(80), default="agent_tool")
     evidence_text: Mapped[str] = mapped_column(Text, default="")
-    source_trace_id: Mapped[str] = mapped_column(String(120), default="")
     status: Mapped[str] = mapped_column(String(20), default="active", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
@@ -257,9 +302,8 @@ class DoseEvent(Base):
         String(80),
         unique=True,
         index=True,
-        default=new_dose_event_public_id,
     )
-    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
+    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="patient_0000000000000001")
     plan_id: Mapped[int] = mapped_column(ForeignKey("medication_plans.id"), index=True)
     schedule_id: Mapped[int] = mapped_column(ForeignKey("dose_schedules.id"), index=True)
     medication_name: Mapped[str] = mapped_column(String(255))
@@ -280,21 +324,30 @@ class SideEffectRecord(Base):
     __tablename__ = "side_effect_records"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
-    phr_patient_key: Mapped[str] = mapped_column(String(160), index=True, default="")
+    public_id: Mapped[str] = mapped_column(
+        String(80),
+        unique=True,
+        index=True,
+    )
+    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="patient_0000000000000001")
     medication_name: Mapped[str] = mapped_column(String(255), index=True, default="")
     symptom_text: Mapped[str] = mapped_column(Text, default="")
+    symptom_onset_text: Mapped[str] = mapped_column(Text, default="")
     suspected: Mapped[bool] = mapped_column(Boolean, index=True, default=False)
-    severity: Mapped[str] = mapped_column(String(40), default="none")
+    severity_result_json: Mapped[str] = mapped_column(
+        Text,
+        default='{"questions":[],"responses":[]}',
+    )
     matched_effects_json: Mapped[str] = mapped_column(Text, default="[]")
     matched_items_json: Mapped[str] = mapped_column(Text, default="[]")
     evidence: Mapped[str] = mapped_column(Text, default="")
     recommendation: Mapped[str] = mapped_column(Text, default="")
-    source_trace_id: Mapped[str] = mapped_column(String(120), index=True, default="")
     source_event_type: Mapped[str] = mapped_column(String(80), default="agent_tool")
     related_dose_event_id: Mapped[int | None] = mapped_column(ForeignKey("dose_events.id"), nullable=True)
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class MissedDoseFlag(Base):
@@ -302,7 +355,7 @@ class MissedDoseFlag(Base):
     __table_args__ = (UniqueConstraint("patient_id", "flag_date", name="uq_missed_dose_flag_patient_date"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
+    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="patient_0000000000000001")
     flag_date: Mapped[date] = mapped_column(Date, index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     trigger_slot_label: Mapped[str] = mapped_column(String(120), default="")
@@ -323,9 +376,8 @@ class ReminderPolicy(Base):
         String(80),
         unique=True,
         index=True,
-        default=new_reminder_policy_public_id,
     )
-    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
+    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="patient_0000000000000001")
     policy_key: Mapped[str] = mapped_column(String(120), default="custom")
     slot_label: Mapped[str] = mapped_column(String(120), index=True)
     extra_reminders: Mapped[int] = mapped_column(Integer, default=0)
@@ -356,7 +408,7 @@ class SystemPolicyOverride(Base):
     __tablename__ = "system_policy_overrides"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
+    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="patient_0000000000000001")
     policy_key: Mapped[str] = mapped_column(String(120), index=True)
     value: Mapped[str] = mapped_column(String(120))
     reason: Mapped[str] = mapped_column(Text, default="")
@@ -370,7 +422,13 @@ class Notification(Base):
     __tablename__ = "notifications"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
+    public_id: Mapped[str] = mapped_column(
+        String(80),
+        unique=True,
+        index=True,
+        default=new_notification_public_id,
+    )
+    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="patient_0000000000000001")
     notification_type: Mapped[str] = mapped_column(String(40), index=True)
     title: Mapped[str] = mapped_column(String(255))
     body: Mapped[str] = mapped_column(Text)
@@ -383,16 +441,22 @@ class Notification(Base):
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
+    __table_args__ = (
+        Index(
+            "ix_chat_messages_patient_display_at",
+            "patient_id",
+            "display_at",
+            "id",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(
         String(80),
         unique=True,
         index=True,
-        default=new_message_public_id,
     )
-    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="demo-patient")
-    conversation_id: Mapped[str] = mapped_column(String(180), index=True, default="")
+    patient_id: Mapped[str] = mapped_column(String(100), index=True, default="patient_0000000000000001")
     ai_request_id: Mapped[str] = mapped_column(String(180), index=True, default="")
     role: Mapped[str] = mapped_column(String(20))
     sender_type: Mapped[str] = mapped_column(String(20), default="user")
@@ -405,6 +469,40 @@ class ChatMessage(Base):
     related_dose_event_id: Mapped[int | None] = mapped_column(ForeignKey("dose_events.id"), nullable=True)
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    display_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+    )
+
+
+@event.listens_for(ChatMessage, "before_insert")
+def _set_chat_message_display_at(
+    _mapper,
+    connection,
+    target: ChatMessage,
+) -> None:
+    role = str(target.role or "").strip().lower()
+    kind: PublicIdKind
+    if role == "user":
+        kind = "user_message"
+    elif role == "assistant":
+        kind = "assistant_message"
+    else:
+        raise ValueError(
+            "message_public_id_role_must_be_user_or_assistant"
+        )
+    if target.public_id:
+        require_public_id(target.public_id, kind)
+    else:
+        target.public_id = _allocate_contract_id(
+            connection,
+            table_name="chat_messages",
+            column_name="public_id",
+            kind=kind,
+        )
+    if target.display_at is not None:
+        return
+    target.display_at = target.created_at or utcnow()
 
 
 class BackendApiRequest(Base):
@@ -423,37 +521,6 @@ class BackendApiRequest(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
-class MutationConfirmation(Base):
-    __tablename__ = "mutation_confirmations"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    public_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    patient_id: Mapped[str] = mapped_column(String(100), index=True)
-    origin_request_notification_id: Mapped[int | None] = mapped_column(ForeignKey("notifications.id"), nullable=True, index=True)
-    conversation_id: Mapped[str] = mapped_column(String(180), default="", index=True)
-    origin_trace_id: Mapped[str] = mapped_column(String(120), default="", index=True)
-    origin_agent: Mapped[str] = mapped_column(String(120), default="")
-    source_event_type: Mapped[str] = mapped_column(String(80), default="")
-    action_type: Mapped[str] = mapped_column(String(40))
-    action_name: Mapped[str] = mapped_column(String(160), index=True)
-    tool_call_id: Mapped[str] = mapped_column(String(180), default="")
-    arguments_json: Mapped[str] = mapped_column(Text, default="{}")
-    action_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
-    target_snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
-    target_snapshot_hash: Mapped[str] = mapped_column(String(64))
-    display_json: Mapped[str] = mapped_column(Text, default="{}")
-    continuation_json: Mapped[str] = mapped_column(Text, default="{}")
-    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
-    result_json: Mapped[str] = mapped_column(Text, default="{}")
-    error_message: Mapped[str] = mapped_column(Text, default="")
-    chat_message_id: Mapped[int | None] = mapped_column(ForeignKey("chat_messages.id"), nullable=True)
-    execution_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
-
-
 class SimulationClock(Base):
     __tablename__ = "simulation_clock"
 
@@ -463,76 +530,72 @@ class SimulationClock(Base):
     speed_multiplier: Mapped[int] = mapped_column(Integer, default=0)
     last_tick_real_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     last_processed_sim_time: Mapped[datetime] = mapped_column(DateTime)
-    last_daily_pattern_sent_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
-class AgentDecisionAudit(Base):
-    __tablename__ = "agent_decision_audits"
+class AgentAsyncCallbackReceipt(Base):
+    """DB-level idempotency receipt for the external async result callback."""
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    trace_id: Mapped[str] = mapped_column(String(120), index=True)
-    agent_name: Mapped[str] = mapped_column(String(120))
-    prompt_version_id: Mapped[str] = mapped_column(String(120))
-    decision_type: Mapped[str] = mapped_column(String(80))
-    structured_payload: Mapped[str] = mapped_column(Text, default="{}")
-    human_summary: Mapped[str] = mapped_column(Text, default="")
-    applied: Mapped[bool] = mapped_column(Boolean, default=False)
-    error_message: Mapped[str] = mapped_column(Text, default="")
-    source_event_type: Mapped[str] = mapped_column(String(60))
+    __tablename__ = "agent_async_callback_receipts"
+
+    request_id: Mapped[str] = mapped_column(
+        String(180),
+        primary_key=True,
+    )
+    callback_hash: Mapped[str] = mapped_column(String(64))
+    event_type: Mapped[str] = mapped_column(String(60))
+    result_status: Mapped[str] = mapped_column(String(24))
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=utcnow,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=observability_expires_at,
+        index=True,
+    )
+
+
+class NotificationPolicyChangeProposal(Base):
+    """Patient-scoped proposal receipt; it never represents an applied policy."""
+
+    __tablename__ = "notification_policy_change_proposals"
+
+    request_id: Mapped[str] = mapped_column(
+        String(180),
+        primary_key=True,
+    )
+    callback_hash: Mapped[str] = mapped_column(String(64))
+    patient_id: Mapped[str] = mapped_column(String(100), index=True)
+    proposed_policy_json: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="pending_user_confirmation",
+        index=True,
+    )
+    notification_id: Mapped[int | None] = mapped_column(
+        ForeignKey("notifications.id"),
+        nullable=True,
+        unique=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-
-
-class AgentRunTrace(Base):
-    __tablename__ = "agent_run_traces"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    trace_id: Mapped[str] = mapped_column(String(120), unique=True, index=True)
-    request_id: Mapped[str] = mapped_column(String(180), default="", index=True)
-    patient_id_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
-    workflow_name: Mapped[str] = mapped_column(String(120), index=True)
-    source_event_type: Mapped[str] = mapped_column(String(80), default="")
-    status: Mapped[str] = mapped_column(String(40), default="completed", index=True)
-    agent_name: Mapped[str] = mapped_column(String(120), default="")
-    decision_type: Mapped[str] = mapped_column(String(80), default="")
-    prompt_version_id: Mapped[str] = mapped_column(String(120), default="")
-    provider: Mapped[str] = mapped_column(String(80), default="")
-    model_tier: Mapped[str] = mapped_column(String(40), default="")
-    model_id: Mapped[str] = mapped_column(String(255), default="")
-    input_hash: Mapped[str] = mapped_column(String(64), default="")
-    output_hash: Mapped[str] = mapped_column(String(64), default="")
-    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    estimated_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
-    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
-    tool_count: Mapped[int] = mapped_column(Integer, default=0)
-    error_message: Mapped[str] = mapped_column(Text, default="")
-    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
-    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
-
-
-class AgentRunStep(Base):
-    __tablename__ = "agent_run_steps"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    trace_id: Mapped[str] = mapped_column(String(120), index=True)
-    step_type: Mapped[str] = mapped_column(String(60), index=True)
-    step_name: Mapped[str] = mapped_column(String(120), default="")
-    status: Mapped[str] = mapped_column(String(40), default="")
-    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
-    tool_name: Mapped[str] = mapped_column(String(120), default="")
-    side_effect_level: Mapped[str] = mapped_column(String(40), default="")
-    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=utcnow,
+        onupdate=utcnow,
+    )
 
 
 class AgentJob(Base):
     __tablename__ = "agent_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str] = mapped_column(
+        String(32),
+        unique=True,
+        index=True,
+    )
     job_type: Mapped[str] = mapped_column(String(40), index=True)
     status: Mapped[str] = mapped_column(String(20), index=True, default="pending")
     payload_json: Mapped[str] = mapped_column(Text)
@@ -543,3 +606,84 @@ class AgentJob(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+def _contract_id_before_insert(
+    *,
+    table_name: str,
+    column_name: str,
+    kind: PublicIdKind,
+):
+    def assign(_mapper, connection, target) -> None:
+        current = getattr(target, column_name, None)
+        if current:
+            require_public_id(str(current), kind)
+            return
+        setattr(
+            target,
+            column_name,
+            _allocate_contract_id(
+                connection,
+                table_name=table_name,
+                column_name=column_name,
+                kind=kind,
+            ),
+        )
+
+    return assign
+
+
+event.listen(
+    NutritionMeal,
+    "before_insert",
+    _contract_id_before_insert(
+        table_name="nutrition_meals",
+        column_name="public_id",
+        kind="meal",
+    ),
+)
+event.listen(
+    NutritionFood,
+    "before_insert",
+    _contract_id_before_insert(
+        table_name="nutrition_foods",
+        column_name="public_id",
+        kind="food",
+    ),
+)
+event.listen(
+    DoseEvent,
+    "before_insert",
+    _contract_id_before_insert(
+        table_name="dose_events",
+        column_name="public_id",
+        kind="dose_event",
+    ),
+)
+event.listen(
+    SideEffectRecord,
+    "before_insert",
+    _contract_id_before_insert(
+        table_name="side_effect_records",
+        column_name="public_id",
+        kind="side_effect",
+    ),
+)
+event.listen(
+    ReminderPolicy,
+    "before_insert",
+    _contract_id_before_insert(
+        table_name="reminder_policies",
+        column_name="public_id",
+        kind="notification_policy",
+    ),
+)
+event.listen(
+    AgentJob,
+    "before_insert",
+    _contract_id_before_insert(
+        table_name="agent_jobs",
+        column_name="request_id",
+        kind="request",
+    ),
+)

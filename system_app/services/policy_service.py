@@ -18,7 +18,6 @@ from system_app.services.policy_workbook import (
 from system_app.services.policy_workbook_schema import (
     DAILY_PATTERN_CONVERSATION_TIME_KEY,
     DEFAULT_DAILY_PATTERN_CONVERSATION_TIME,
-    LEGACY_DAILY_PATTERN_ANALYSIS_TIME_KEY,
 )
 
 settings = get_settings()
@@ -74,24 +73,17 @@ def reload_policy_workbook() -> PolicyWorkbookLoadResult:
     return policy_workbook_manager.reload()
 
 
-def normalize_system_policy_key(policy_key: str) -> str:
-    if policy_key == LEGACY_DAILY_PATTERN_ANALYSIS_TIME_KEY:
-        return DAILY_PATTERN_CONVERSATION_TIME_KEY
-    return policy_key
-
-
 def get_active_system_policy_override(
     session: Session,
     policy_key: str,
     *,
     patient_id: str | None = None,
 ) -> SystemPolicyOverride | None:
-    normalized_key = normalize_system_policy_key(policy_key)
     stmt = (
         select(SystemPolicyOverride)
         .where(
             SystemPolicyOverride.patient_id == (patient_id or settings.patient_id),
-            SystemPolicyOverride.policy_key == normalized_key,
+            SystemPolicyOverride.policy_key == policy_key,
             SystemPolicyOverride.active.is_(True),
         )
         .order_by(desc(SystemPolicyOverride.updated_at), desc(SystemPolicyOverride.created_at), desc(SystemPolicyOverride.id))
@@ -106,12 +98,11 @@ def system_policy_value(
     *,
     patient_id: str | None = None,
 ) -> str:
-    normalized_key = normalize_system_policy_key(policy_key)
     if session is not None:
-        override = get_active_system_policy_override(session, normalized_key, patient_id=patient_id)
+        override = get_active_system_policy_override(session, policy_key, patient_id=patient_id)
         if override is not None:
             return override.value
-    return policy_workbook_manager.system_policy_value(normalized_key, default)
+    return policy_workbook_manager.system_policy_value(policy_key, default)
 
 
 def daily_pattern_conversation_time(session: Session | None = None) -> time:
@@ -146,8 +137,7 @@ def daily_pattern_conversation_time_view(session: Session) -> dict[str, Any]:
 
 
 def validate_system_policy_delta(delta: SystemPolicyDelta) -> tuple[bool, str]:
-    policy_key = normalize_system_policy_key(delta.policy_key)
-    if policy_key != DAILY_PATTERN_CONVERSATION_TIME_KEY:
+    if delta.policy_key != DAILY_PATTERN_CONVERSATION_TIME_KEY:
         return False, f"지원하지 않는 시스템 정책입니다: {delta.policy_key}"
     try:
         time.fromisoformat(delta.value)
@@ -161,7 +151,6 @@ def validate_system_policy_delta(delta: SystemPolicyDelta) -> tuple[bool, str]:
 
 
 def apply_system_policy_delta(session: Session, delta: SystemPolicyDelta) -> tuple[bool, str]:
-    delta.policy_key = normalize_system_policy_key(delta.policy_key)
     delta.value = delta.value.strip()
     delta.reason = delta.reason.strip()
     is_valid, message = validate_system_policy_delta(delta)
@@ -305,66 +294,6 @@ def completed_policy_values(delta: NotificationPolicyDelta, base: ResolvedNotifi
             else base.primary_reminder_offset_minutes
         ),
     }
-
-
-def complete_policy_delta_for_storage(session: Session, delta: NotificationPolicyDelta) -> dict[str, Any]:
-    base = resolve_policy_for_slot(session, settings.patient_id, delta.slot_label, delta.effective_start_date)
-    default_policy = policy_workbook_manager.resolve_default(delta.slot_label)
-    payload = delta.model_dump()
-    completed = completed_policy_values(delta, base)
-    payload["policy_key"] = delta.policy_key or default_policy.policy_key
-    payload["missed_dose_after_minutes"] = completed["missed_dose_after_minutes"]
-    payload["primary_reminder_timing"] = completed["primary_reminder_timing"]
-    payload["primary_reminder_offset_minutes"] = completed["primary_reminder_offset_minutes"]
-    for field_name in POLICY_TEMPLATE_FIELDS:
-        payload[field_name] = getattr(delta, field_name) or getattr(base, field_name)
-    return payload
-
-
-def apply_policy_delta(session: Session, delta: NotificationPolicyDelta) -> tuple[bool, str]:
-    is_valid, message = validate_policy_delta(delta, session=session)
-    if not is_valid:
-        return False, message
-
-    payload = complete_policy_delta_for_storage(session, delta)
-    with session.begin_nested():
-        overlapping = session.scalars(
-            select(ReminderPolicy).where(
-                ReminderPolicy.patient_id == settings.patient_id,
-                ReminderPolicy.slot_label == delta.slot_label,
-                ReminderPolicy.active.is_(True),
-                ReminderPolicy.effective_end_date >= delta.effective_start_date,
-                ReminderPolicy.effective_start_date <= delta.effective_end_date,
-            )
-        ).all()
-        for row in overlapping:
-            row.active = False
-            row.updated_at = utc_now()
-
-        policy = ReminderPolicy(
-            patient_id=settings.patient_id,
-            policy_key=payload["policy_key"],
-            slot_label=delta.slot_label,
-            extra_reminders=payload["extra_reminders"],
-            interval_minutes=payload["interval_minutes"],
-            missed_dose_after_minutes=payload["missed_dose_after_minutes"],
-            primary_reminder_timing=payload["primary_reminder_timing"],
-            primary_reminder_offset_minutes=payload["primary_reminder_offset_minutes"],
-            medication_title_template=payload["medication_title_template"],
-            medication_body_template=payload["medication_body_template"],
-            extra_title_template=payload["extra_title_template"],
-            extra_body_template=payload["extra_body_template"],
-            missed_dose_title_template=payload["missed_dose_title_template"],
-            missed_dose_body_template=payload["missed_dose_body_template"],
-            effective_start_date=delta.effective_start_date,
-            effective_end_date=delta.effective_end_date,
-            reason=delta.reason,
-            source=delta.source,
-            active=True,
-        )
-        session.add(policy)
-    session.flush()
-    return True, "정책이 적용되었습니다."
 
 
 def policy_boundary_violations(values: dict[str, Any], boundary: ResolvedPolicyBoundary) -> list[str]:

@@ -1,0 +1,34 @@
+[Unit]
+Description=DRAnswer Agent API
+Requires=dranswer-agent-migrate.service
+After=network-online.target dranswer-agent-migrate.service
+Wants=network-online.target
+ConditionPathExists=/opt/dranswer-agent/current/agent_app/main.py
+ConditionPathExists=/opt/dranswer-agent/current/release.env
+ConditionPathExists=/etc/dranswer-agent/agent.env
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/opt/dranswer-agent/current
+EnvironmentFile=/etc/dranswer-agent/agent.env
+EnvironmentFile=/opt/dranswer-agent/current/release.env
+EnvironmentFile=-/etc/dranswer-agent/bedrock.env
+Environment=DA_DRUG_SERVICE=agent_app
+Environment=AGENT_STARTUP_MIGRATIONS_ENABLED=false
+Environment=AGENT_EMBEDDED_WORKER_ENABLED=false
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/dranswer-agent/current/venv/bin/uvicorn agent_app.main:app --host 0.0.0.0 --port 8701 --workers 1 --no-access-log
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=30
+KillSignal=SIGINT
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

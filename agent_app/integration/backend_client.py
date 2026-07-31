@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from typing import TypeVar
 
 import httpx
 from pydantic import ValidationError
 
-from agent_app.integration.contracts import (
+from shared.backend_v13_contracts import (
+    CommonErrorResponse,
     NotificationPolicyChangeRequest,
     NotificationPolicyChangeResponse,
     RecordChangeRequest,
@@ -16,25 +18,46 @@ from agent_app.integration.contracts import (
 from shared.settings import get_settings
 
 ResponseModel = TypeVar("ResponseModel", RecordChangeResponse, NotificationPolicyChangeResponse)
+_BACKEND_REQUEST_ATTEMPT_COUNT: ContextVar[int] = ContextVar(
+    "backend_request_attempt_count",
+    default=1,
+)
 
 
-class BackendV12ClientError(RuntimeError):
+def reset_backend_request_attempt_count() -> None:
+    _BACKEND_REQUEST_ATTEMPT_COUNT.set(1)
+
+
+def backend_request_attempt_count() -> int:
+    return max(1, _BACKEND_REQUEST_ATTEMPT_COUNT.get())
+
+
+class BackendV13ClientError(RuntimeError):
     pass
 
 
-class BackendV12ConfigurationError(BackendV12ClientError):
+class BackendV13ConfigurationError(BackendV13ClientError):
     pass
 
 
-class BackendV12TransportError(BackendV12ClientError):
+class BackendV13TransportError(BackendV13ClientError):
     pass
 
 
-class BackendV12ResponseError(BackendV12ClientError):
-    pass
+class BackendV13ResponseError(BackendV13ClientError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        error_response: CommonErrorResponse | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_response = error_response
 
 
-class BackendV12Client:
+class BackendV13Client:
     RETRYABLE_HTTP_STATUSES = frozenset({503, 504})
 
     def __init__(
@@ -61,7 +84,7 @@ class BackendV12Client:
         self.sleep = sleep
 
     @classmethod
-    def from_settings(cls) -> BackendV12Client:
+    def from_settings(cls) -> BackendV13Client:
         settings = get_settings()
         return cls(
             base_url=settings.system_base_url,
@@ -95,15 +118,16 @@ class BackendV12Client:
 
     async def _post(self, path: str, body: dict, response_model: type[ResponseModel]) -> ResponseModel:
         if not self.base_url:
-            raise BackendV12ConfigurationError("backend_base_url_required")
+            raise BackendV13ConfigurationError("backend_base_url_required")
         if not path:
-            raise BackendV12ConfigurationError("backend_api_path_required")
+            raise BackendV13ConfigurationError("backend_api_path_required")
         if not self.bearer_token:
-            raise BackendV12ConfigurationError("backend_api_token_required")
+            raise BackendV13ConfigurationError("backend_api_token_required")
 
         headers = {"Authorization": self._authorization_value()}
         attempts = self.max_retries + 1
         last_transport_error: Exception | None = None
+        reset_backend_request_attempt_count()
 
         async with httpx.AsyncClient(
             timeout=self.timeout_seconds,
@@ -111,6 +135,7 @@ class BackendV12Client:
             transport=self.transport,
         ) as client:
             for attempt in range(attempts):
+                _BACKEND_REQUEST_ATTEMPT_COUNT.set(attempt + 1)
                 try:
                     response = await client.post(
                         f"{self.base_url}{path}",
@@ -120,7 +145,7 @@ class BackendV12Client:
                 except (httpx.TimeoutException, httpx.TransportError) as exc:
                     last_transport_error = exc
                     if attempt >= self.max_retries:
-                        raise BackendV12TransportError("backend_request_failed_after_retries") from exc
+                        raise BackendV13TransportError("backend_request_failed_after_retries") from exc
                     await self.sleep(self._retry_delay(attempt))
                     continue
 
@@ -139,23 +164,37 @@ class BackendV12Client:
 
                 return self._parse_response(response, response_model)
 
-        raise BackendV12TransportError("backend_request_failed_after_retries") from last_transport_error
+        raise BackendV13TransportError("backend_request_failed_after_retries") from last_transport_error
 
     def _parse_response(self, response: httpx.Response, response_model: type[ResponseModel]) -> ResponseModel:
         try:
             payload = response.json()
         except ValueError as exc:
-            raise BackendV12ResponseError(f"backend_response_not_json:{response.status_code}") from exc
-        try:
-            parsed = response_model.model_validate(payload)
-        except ValidationError as exc:
-            raise BackendV12ResponseError(f"backend_response_contract_invalid:{response.status_code}") from exc
+            raise BackendV13ResponseError(
+                f"backend_response_not_json:{response.status_code}",
+                status_code=response.status_code,
+            ) from exc
+        if 200 <= response.status_code < 300:
+            try:
+                return response_model.model_validate(payload)
+            except ValidationError as exc:
+                raise BackendV13ResponseError(
+                    f"backend_success_contract_invalid:{response.status_code}",
+                    status_code=response.status_code,
+                ) from exc
 
-        if response.status_code >= 400 and parsed.success:
-            raise BackendV12ResponseError(f"backend_error_status_with_success_body:{response.status_code}")
-        if response.status_code < 400 and not parsed.success:
-            raise BackendV12ResponseError(f"backend_success_status_with_error_body:{response.status_code}")
-        return parsed
+        try:
+            error_response = CommonErrorResponse.model_validate(payload)
+        except ValidationError as exc:
+            raise BackendV13ResponseError(
+                f"backend_error_contract_invalid:{response.status_code}",
+                status_code=response.status_code,
+            ) from exc
+        raise BackendV13ResponseError(
+            error_response.error.code,
+            status_code=response.status_code,
+            error_response=error_response,
+        )
 
     def _authorization_value(self) -> str:
         if self.bearer_token.lower().startswith("bearer "):
@@ -202,17 +241,15 @@ class BackendV12Client:
         response: RecordChangeResponse,
     ) -> None:
         if response.request_id != request.request_id:
-            raise BackendV12ResponseError(
+            raise BackendV13ResponseError(
                 "backend_response_request_id_mismatch"
             )
-        if not response.success or response.result is None:
-            return
         result = response.result
         if (
             result.resource_type != request.resource_type
             or result.operation != request.operation
         ):
-            raise BackendV12ResponseError(
+            raise BackendV13ResponseError(
                 "backend_response_record_operation_mismatch"
             )
         if request.record_id is not None:
@@ -233,17 +270,15 @@ class BackendV12Client:
         response: NotificationPolicyChangeResponse,
     ) -> None:
         if response.request_id != request.request_id:
-            raise BackendV12ResponseError(
+            raise BackendV13ResponseError(
                 "backend_response_request_id_mismatch"
             )
-        if not response.success or response.result is None:
-            return
         result = response.result
         if (
             result.policy_id != request.policy_id
             or result.decision != request.payload.decision
         ):
-            raise BackendV12ResponseError(
+            raise BackendV13ResponseError(
                 "backend_response_policy_target_mismatch"
             )
 
@@ -262,20 +297,7 @@ def _validate_external_id_correlation(
 ) -> None:
     if requested_id is None:
         if response_id is not None:
-            raise BackendV12ResponseError(error_code)
-        return
-    if _legacy_numeric_id(requested_id):
-        if response_id is None or _legacy_numeric_id(response_id):
-            raise BackendV12ResponseError(error_code)
+            raise BackendV13ResponseError(error_code)
         return
     if response_id != requested_id:
-        raise BackendV12ResponseError(error_code)
-
-
-def _legacy_numeric_id(value: str) -> bool:
-    normalized = str(value or "").strip()
-    return (
-        normalized.isascii()
-        and normalized.isdigit()
-        and int(normalized) > 0
-    )
+        raise BackendV13ResponseError(error_code)

@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+from time import perf_counter
 from typing import Any
 
 from agent_app import trace_logging
+from agent_app.integration.backend_client import (
+    backend_request_attempt_count,
+    reset_backend_request_attempt_count,
+)
+from agent_app.tools.policy_gate import (
+    ToolCallContext,
+    ToolCallOrigin,
+    ToolPolicyGate,
+)
 from agent_app.tools.protocol import AgentToolExecutorProtocol
 from agent_app.tools.side_effects import ae_tool_call_from_lookup, positive_side_effect_lookup
-from agent_app.tools.names import (
+from shared.tool_names import (
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     GET_PRO_CTCAE_QUESTIONNAIRE,
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
@@ -87,8 +97,14 @@ def _routing_log_payload(routing_context: dict[str, Any] | None) -> dict[str, An
 
 
 class ToolRuntime:
-    def __init__(self, executor: AgentToolExecutorProtocol | None) -> None:
+    def __init__(
+        self,
+        executor: AgentToolExecutorProtocol | None,
+        *,
+        policy_gate: ToolPolicyGate | None = None,
+    ) -> None:
         self.executor = executor
+        self.policy_gate = policy_gate or ToolPolicyGate()
 
     async def execute(
         self,
@@ -99,10 +115,13 @@ class ToolRuntime:
         payload: dict[str, Any],
         force_ae_after_positive_lookup: bool = False,
         routing_context: dict[str, Any] | None = None,
+        call_context: ToolCallContext | None = None,
     ) -> tuple[list[dict[str, Any]], list[Any]]:
         if self.executor is None or not tool_calls:
             return tool_calls, []
+        initial_context = call_context or ToolCallContext()
         executed_calls = list(tool_calls)
+        call_contexts = [initial_context for _ in executed_calls]
         results = []
         ae_already_requested = any(call.get("name") == GET_PRO_CTCAE_QUESTIONNAIRE for call in executed_calls)
         routing = _routing_log_payload(routing_context)
@@ -118,15 +137,66 @@ class ToolRuntime:
         index = 0
         while index < len(executed_calls):
             tool_call = executed_calls[index]
+            current_context = call_contexts[index]
             trace_logging.log_info(
                 "agent_tool_call_started",
                 trace_id=trace_id,
                 source_event_type=source_event_type,
                 routing=routing,
                 tool_index=index,
+                tool_call_origin=current_context.origin.value,
                 **_tool_call_log_payload(tool_call),
             )
-            result = await self.executor.execute_tool_call(tool_call, trace_id=trace_id, source_event_type=source_event_type, payload=payload)
+            started = perf_counter()
+            reset_backend_request_attempt_count()
+            result = self.policy_gate.authorize(
+                tool_call,
+                trace_id=trace_id,
+                source_event_type=source_event_type,
+                payload=payload,
+                context=current_context,
+            )
+            if result is None:
+                result = await self.executor.execute_tool_call(
+                    tool_call,
+                    trace_id=trace_id,
+                    source_event_type=source_event_type,
+                    payload=payload,
+                )
+            elapsed_ms = max(
+                0,
+                round((perf_counter() - started) * 1000),
+            )
+            response = (
+                result.response
+                if isinstance(getattr(result, "response", None), dict)
+                else {}
+            )
+            response_error = (
+                response.get("error")
+                if isinstance(response.get("error"), dict)
+                else {}
+            )
+            result = result.model_copy(
+                update={
+                    "elapsed_ms": max(
+                        elapsed_ms,
+                        int(getattr(result, "elapsed_ms", 0) or 0),
+                    ),
+                    "attempt_count": max(
+                        1,
+                        int(
+                            getattr(result, "attempt_count", 1)
+                            or 1
+                        ),
+                        backend_request_attempt_count(),
+                    ),
+                    "retryable": bool(
+                        getattr(result, "retryable", False)
+                        or response_error.get("retryable") is True
+                    ),
+                }
+            )
             results.append(result)
             trace_logging.log_info(
                 "agent_tool_call_completed",
@@ -134,6 +204,7 @@ class ToolRuntime:
                 source_event_type=source_event_type,
                 routing=routing,
                 tool_index=index,
+                tool_call_origin=current_context.origin.value,
                 **_tool_result_log_payload(result),
             )
             if result.status == "confirmation_required":
@@ -173,6 +244,14 @@ class ToolRuntime:
                     arguments=_tool_call_log_payload(ae_call).get("arguments", {}),
                 )
                 executed_calls.append(ae_call)
+                call_contexts.append(
+                    ToolCallContext(
+                        origin=ToolCallOrigin.SAFETY_RULE,
+                        prior_call_fingerprints=(
+                            initial_context.prior_call_fingerprints
+                        ),
+                    )
+                )
                 ae_already_requested = True
             index += 1
         return executed_calls, results

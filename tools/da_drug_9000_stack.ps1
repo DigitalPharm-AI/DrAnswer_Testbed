@@ -1,10 +1,10 @@
 param(
     [ValidateSet("start", "stop", "status", "verify", "restart")]
     [string]$Action = "start",
-    [string]$EnvFile = ".env.9000.rule_based.example",
+    [string]$EnvFile = ".env.9000",
+    [string]$AgentEnvFile = ".env.agent_app.secret",
     [int]$SystemPort = 9000,
     [int]$AgentPort = 9001,
-    [int]$PhrPort = 9002,
     [int]$TimeoutSeconds = 45,
     [switch]$AllowStopUnknown
 )
@@ -44,15 +44,14 @@ $VerifyPath = Join-Path $LogDir "verify.json"
 $RuntimeDir = Join-Path $Root "runtime"
 $SystemRuntimeDir = Join-Path $RuntimeDir "system"
 $AgentRuntimeDir = Join-Path $RuntimeDir "agent"
-$PhrRuntimeDir = Join-Path $RuntimeDir "phr"
-$Ports = @($SystemPort, $AgentPort, $PhrPort)
+$Ports = @($SystemPort, $AgentPort)
+$BedrockBearerEnvKey = "AWS_BEARER_TOKEN_BEDROCK"
 
 function Ensure-Dirs {
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
     New-Item -ItemType Directory -Force -Path $SystemRuntimeDir | Out-Null
     New-Item -ItemType Directory -Force -Path $AgentRuntimeDir | Out-Null
-    New-Item -ItemType Directory -Force -Path $PhrRuntimeDir | Out-Null
 }
 
 function Single-Quote([string]$Value) {
@@ -98,12 +97,22 @@ function Read-EnvMap([string]$PathValue) {
     return $map
 }
 
+function Assert-CommonEnvCredentialBoundary {
+    $commonEnv = Read-EnvMap $EnvFile
+    if ($commonEnv.ContainsKey($BedrockBearerEnvKey)) {
+        throw (
+            "$BedrockBearerEnvKey must not be present in the common env file. " +
+            "Move it to the Agent-only credential overlay."
+        )
+    }
+}
+
 function Service-Specs {
+    $agentRuntimeEnvFiles = "$EnvFile,$AgentEnvFile"
     return @(
-        [PSCustomObject]@{ Name = "phr"; Service = "phr_app"; Kind = "uvicorn"; Module = "phr_app.main:app"; Port = $PhrPort },
-        [PSCustomObject]@{ Name = "system"; Service = "system_app"; Kind = "uvicorn"; Module = "system_app.main:app"; Port = $SystemPort },
-        [PSCustomObject]@{ Name = "agent"; Service = "agent_app"; Kind = "uvicorn"; Module = "agent_app.main:app"; Port = $AgentPort },
-        [PSCustomObject]@{ Name = "agent-worker"; Service = "agent_app"; Kind = "worker"; Module = "agent_app.worker_main"; Port = 0 }
+        [PSCustomObject]@{ Name = "system"; Service = "system_app"; Kind = "uvicorn"; Module = "system_app.main:app"; Port = $SystemPort; EnvFiles = $EnvFile },
+        [PSCustomObject]@{ Name = "agent"; Service = "agent_app"; Kind = "uvicorn"; Module = "agent_app.main:app"; Port = $AgentPort; EnvFiles = $agentRuntimeEnvFiles },
+        [PSCustomObject]@{ Name = "agent-worker"; Service = "agent_app"; Kind = "worker"; Module = "agent_app.worker_main"; Port = 0; EnvFiles = $agentRuntimeEnvFiles }
     )
 }
 
@@ -236,6 +245,95 @@ function Port-Pid([int]$Port) {
     return $null
 }
 
+function Invoke-AgentMigration {
+    $python = Resolve-Python
+    $previousService = $env:DA_DRUG_SERVICE
+    $previousEnvFile = $env:DA_DRUG_ENV_FILE
+    $previousBedrockBearer = $env:AWS_BEARER_TOKEN_BEDROCK
+    try {
+        $env:DA_DRUG_SERVICE = "agent_app"
+        $env:DA_DRUG_ENV_FILE = $EnvFile
+        $env:AWS_BEARER_TOKEN_BEDROCK = $null
+        & $python -m agent_app.migrate
+        if ($LASTEXITCODE -ne 0) {
+            throw "Agent database migration failed with exit code $LASTEXITCODE"
+        }
+    }
+    finally {
+        $env:DA_DRUG_SERVICE = $previousService
+        $env:DA_DRUG_ENV_FILE = $previousEnvFile
+        $env:AWS_BEARER_TOKEN_BEDROCK = $previousBedrockBearer
+    }
+}
+
+function Invoke-SystemMigration {
+    $python = Resolve-Python
+    $previousService = $env:DA_DRUG_SERVICE
+    $previousEnvFile = $env:DA_DRUG_ENV_FILE
+    $previousBedrockBearer = $env:AWS_BEARER_TOKEN_BEDROCK
+    try {
+        $env:DA_DRUG_SERVICE = "system_app"
+        $env:DA_DRUG_ENV_FILE = $EnvFile
+        $env:AWS_BEARER_TOKEN_BEDROCK = $null
+        & $python -m system_app.migrate
+        if ($LASTEXITCODE -ne 0) {
+            throw "System database migration failed with exit code $LASTEXITCODE"
+        }
+    }
+    finally {
+        $env:DA_DRUG_SERVICE = $previousService
+        $env:DA_DRUG_ENV_FILE = $previousEnvFile
+        $env:AWS_BEARER_TOKEN_BEDROCK = $previousBedrockBearer
+    }
+}
+
+function Invoke-LocalPostgres([string]$PostgresAction) {
+    $scriptPath = Join-Path $Root "tools\local_postgres.ps1"
+    $previousBedrockBearer = $env:AWS_BEARER_TOKEN_BEDROCK
+    try {
+        $env:AWS_BEARER_TOKEN_BEDROCK = $null
+        & powershell.exe `
+            -NoProfile `
+            -ExecutionPolicy Bypass `
+            -File $scriptPath `
+            -Action $PostgresAction
+        if ($LASTEXITCODE -ne 0) {
+            throw (
+                "Local PostgreSQL action '$PostgresAction' failed with " +
+                "exit code $LASTEXITCODE"
+            )
+        }
+    }
+    finally {
+        $env:AWS_BEARER_TOKEN_BEDROCK = $previousBedrockBearer
+    }
+}
+
+function Prepare-PostgresqlRuntime {
+    Invoke-LocalPostgres "start"
+    Invoke-SystemMigration
+    Invoke-AgentMigration
+    Invoke-LocalPostgres "grant"
+}
+
+function Build-ReactFrontend {
+    $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $npm) {
+        throw "npm.cmd is required to build the React frontend"
+    }
+    $previousBedrockBearer = $env:AWS_BEARER_TOKEN_BEDROCK
+    try {
+        $env:AWS_BEARER_TOKEN_BEDROCK = $null
+        & $npm.Source --prefix (Join-Path $Root "frontend") run build
+        if ($LASTEXITCODE -ne 0) {
+            throw "React frontend build failed with exit code $LASTEXITCODE"
+        }
+    }
+    finally {
+        $env:AWS_BEARER_TOKEN_BEDROCK = $previousBedrockBearer
+    }
+}
+
 function Start-One($Spec) {
     $existing = Existing-Pid $Spec
     if ($existing) {
@@ -247,7 +345,6 @@ function Start-One($Spec) {
         Write-Host "$($Spec.Name) port $($Spec.Port) already occupied pid=$portPid; use stop -AllowStopUnknown if this is the 9000 stack"
         return
     }
-
     $python = Resolve-Python
     $stdout = Join-Path $LogDir "$($Spec.Name).out.log"
     $stderr = Join-Path $LogDir "$($Spec.Name).err.log"
@@ -268,10 +365,12 @@ function Start-One($Spec) {
     $previousService = $env:DA_DRUG_SERVICE
     $previousEnvFile = $env:DA_DRUG_ENV_FILE
     $previousRuntimePidFile = $env:DA_DRUG_RUNTIME_PID_FILE
+    $previousBedrockBearer = $env:AWS_BEARER_TOKEN_BEDROCK
     $runtimePidPath = Worker-Runtime-Pid-Path $Spec
     try {
         $env:DA_DRUG_SERVICE = $Spec.Service
-        $env:DA_DRUG_ENV_FILE = $EnvFile
+        $env:DA_DRUG_ENV_FILE = $Spec.EnvFiles
+        $env:AWS_BEARER_TOKEN_BEDROCK = $null
         if ($Spec.Kind -eq "worker") {
             Remove-Item -LiteralPath $runtimePidPath -Force -ErrorAction SilentlyContinue
             $env:DA_DRUG_RUNTIME_PID_FILE = $runtimePidPath
@@ -291,6 +390,7 @@ function Start-One($Spec) {
         $env:DA_DRUG_SERVICE = $previousService
         $env:DA_DRUG_ENV_FILE = $previousEnvFile
         $env:DA_DRUG_RUNTIME_PID_FILE = $previousRuntimePidFile
+        $env:AWS_BEARER_TOKEN_BEDROCK = $previousBedrockBearer
     }
     $servicePid = $proc.Id
     Set-Content -LiteralPath (Launcher-Pid-Path $Spec) -Value $proc.Id -Encoding ascii
@@ -403,14 +503,21 @@ function Wait-Service-Ready($Spec) {
 function Invoke-BoundaryContractVerification {
     $python = Resolve-Python
     $scriptPath = Join-Path $Root "tools\verify_testbed_contract.py"
-    $output = @(
-        & $python $scriptPath `
-            --scope all `
-            --env-file $EnvFile `
-            --runtime `
-            --json 2>&1
-    )
-    $exitCode = $LASTEXITCODE
+    $previousBedrockBearer = $env:AWS_BEARER_TOKEN_BEDROCK
+    try {
+        $env:AWS_BEARER_TOKEN_BEDROCK = $null
+        $output = @(
+            & $python $scriptPath `
+                --scope all `
+                --env-file $EnvFile `
+                --runtime `
+                --json 2>&1
+        )
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $env:AWS_BEARER_TOKEN_BEDROCK = $previousBedrockBearer
+    }
     $raw = ($output | ForEach-Object { "$_" }) -join "`n"
     try {
         $result = $raw | ConvertFrom-Json
@@ -429,50 +536,40 @@ function Invoke-BoundaryContractVerification {
     return $result
 }
 
-function Test-System-Details([object]$Details, [hashtable]$EnvMap) {
-    if ($Details.status -eq "ok") {
-        return $true
-    }
-    $appEnv = "$($EnvMap["APP_ENV"])".Trim().ToLowerInvariant()
-    $provider = "$($EnvMap["LLM_PROVIDER"])".Trim().ToLowerInvariant()
-    $isRuleBasedTestbed = (
-        $appEnv -in @("test", "testing", "testbed") -and
-        $provider -in @("rule_based", "rule-based", "local", "heuristic")
-    )
-    if (-not $isRuleBasedTestbed -or $Details.status -ne "degraded") {
-        return $false
-    }
-    $unexpectedWarnings = @(
-        @($Details.warnings) |
-            Where-Object { "$_" -ne "llm_provider_unsupported" }
-    )
-    return $unexpectedWarnings.Count -eq 0
+function Test-System-Details([object]$Details) {
+    return $Details.status -eq "ok"
 }
 
 function Verify-Stack {
+    Assert-CommonEnvCredentialBoundary
     $envMap = Read-EnvMap $EnvFile
     $token = $envMap["INTERNAL_API_TOKEN"]
     $headers = @{}
     if ($token) {
         $headers["X-Internal-Api-Token"] = $token
     }
+    $generationHeaders = @{}
+    $agentSyncToken = $envMap["AGENT_SYNC_API_TOKEN"]
+    if ($agentSyncToken) {
+        $generationHeaders["Authorization"] = "Bearer $agentSyncToken"
+    }
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $last = $null
     do {
         $systemHealth = Request-Json "http://127.0.0.1:$SystemPort/health"
-        $agentHealth = Request-Json "http://127.0.0.1:$AgentPort/health/ready"
-        $phrHealth = Request-Json "http://127.0.0.1:$PhrPort/health"
+        $agentHealth = Request-Json `
+            "http://127.0.0.1:$AgentPort/health/generation/ready" `
+            $generationHeaders
         $agentAsync = Request-Json "http://127.0.0.1:$AgentPort/agent/async/tasks/status" $headers
         $systemDetails = Request-Json "http://127.0.0.1:$SystemPort/health/details"
         $runningWorkers = @(
             @($agentAsync.workers) |
                 Where-Object { $_.status -eq "running" }
         )
-        $systemDetailsAccepted = Test-System-Details $systemDetails $envMap
+        $systemDetailsAccepted = Test-System-Details $systemDetails
         $ok = (
             $systemHealth.status -eq "ok" -and
             $agentHealth.status -eq "ready" -and
-            $phrHealth.status -eq "ok" -and
             $agentAsync.status -eq "ok" -and
             $runningWorkers.Count -gt 0 -and
             $systemDetailsAccepted
@@ -480,11 +577,10 @@ function Verify-Stack {
         $last = [PSCustomObject]@{
             ok = [bool]$ok
             generated_at = (Get-Date).ToUniversalTime().ToString("o")
-            ports = [PSCustomObject]@{ system = $SystemPort; agent = $AgentPort; phr = $PhrPort }
+            ports = [PSCustomObject]@{ system = $SystemPort; agent = $AgentPort }
             env_file = $EnvFile
             system_health = $systemHealth
             agent_health = $agentHealth
-            phr_health = $phrHealth
             agent_async = $agentAsync
             system_details = $systemDetails
             system_details_accepted = [bool]$systemDetailsAccepted
@@ -511,6 +607,9 @@ Ensure-Dirs
 
 switch ($Action) {
     "start" {
+        Assert-CommonEnvCredentialBoundary
+        Build-ReactFrontend
+        Prepare-PostgresqlRuntime
         foreach ($spec in Service-Specs) {
             Start-One $spec
             Wait-Service-Ready $spec
@@ -530,11 +629,14 @@ switch ($Action) {
         Verify-Stack
     }
     "restart" {
+        Assert-CommonEnvCredentialBoundary
         foreach ($spec in (Service-Specs | Sort-Object Name -Descending)) {
             Stop-One $spec
         }
         Stop-Unknown-Ports
         Start-Sleep -Seconds 1
+        Build-ReactFrontend
+        Prepare-PostgresqlRuntime
         foreach ($spec in Service-Specs) {
             Start-One $spec
             Wait-Service-Ready $spec

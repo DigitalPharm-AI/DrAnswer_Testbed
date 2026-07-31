@@ -8,20 +8,21 @@
 | --- | --- | --- | --- |
 | Evaluation | `data/evals/agent_production_readiness_cases.json` 30개 이상, critical safety case 15개 이상 | critical safety failure 1건 이상 | QA/Clinical |
 | Async Ops | `/agent/ops/readiness` status가 `ok` 또는 승인된 `degraded` | `critical` alert 존재 | Backend/Ops |
-| Privacy | `tests/test_redaction.py` 통과, trace 원문 PHI 미노출 | patient_id, PHR key, 증상/식사 자유문장 원문 로그 | Security/Ops |
-| PHR Containment | `PHR_READ_ONLY=true`에서 write 503, read 유지 | read-only 모드에서 register/update 성공 | Data/PHR |
-| Data Boundary | `python tools/verify_testbed_contract.py` 및 runtime write-denial probe 통과 | Agent가 Backend mount를 RW로 받거나 세 서비스가 하나의 RW DB 디렉터리를 공유 | Agent/Backend/Ops |
-| Architecture | system chat은 async-first, slow work는 callback으로 완료 | sync-only 문서/운영 절차로 배포 | Agent/Backend |
+| Privacy | `tests/test_redaction.py` 통과, trace 원문 PHI 미노출 | patient_id, MRN/RRN, 증상/식사 자유문장 원문 로그 | Security/Ops |
+| Patient Snapshot | `tests/test_patient_snapshot_context.py` 통과 | 별도 PHR 등록을 요구하거나 환자 범위 밖 데이터를 Snapshot에 포함 | Agent/Backend/Data |
+| Data Boundary | `python tools/verify_testbed_contract.py` 및 runtime write-denial probe 통과 | Agent가 Backend mount를 RW로 받거나 Backend 업무 DB와 AI Internal DB가 같은 RW 저장소를 공유 | Agent/Backend/Ops |
+| Architecture | 사용자 채팅과 필수 Tool continuation은 동기 완료, 채팅 외 background work만 queue/callback 사용 | 임시 채팅 답변을 성공으로 반환하거나 Backend 업무 데이터를 AI DB에 저장 | Agent/Backend |
 | P1 Load Budget | `tools/p1_load_probe.py`에서 20-50 concurrency probe 실행 | error rate > 1% 또는 P95 budget 초과 | Ops/Backend |
 | P1 Cost Budget | current provider 단가 env 설정 후 일일 비용 추정 | daily budget 초과 또는 단가 미설정 상태로 launch gate 사용 | Ops/Product |
 | P1 Failure UX | `system_app.services.failure_copy` 기준 문구 사용 | 실패 알림이 기록 보존/재시도/안전 안내 없이 노출 | Product/UX |
-| P1 Trace Store | `agent_run_traces`, `agent_run_steps`에 redacted trace/cost/tool step 저장 | raw patient_id, PHR key, 식사/증상 자유문장 원문 저장 | Backend/Ops |
+| P1 Trace Store | Agent DB `agent_run_traces`, `agent_run_steps`, `agent_tool_executions`에 sync/async/failed Trace와 token/cost 저장 | Backend 중복 Trace 또는 raw patient_id, MRN/RRN, 식사/증상 자유문장 원문 저장 | Agent/Ops |
+| Retention | Trace/Step/Tool/token/cost와 Backend 최소 API 감사에 생성 시점 + 1095일 `expires_at` 적용 | 3년 경과 데이터나 개인정보 파기 대상이 계속 조회됨 | Security/Ops |
 
 권장 P0 CI subset:
 
 ```powershell
 python tools/verify_testbed_contract.py
-py -m pytest -q -p no:cacheprovider tests/test_production_eval_dataset.py tests/test_redaction.py tests/test_agent_ops_readiness.py tests/test_phr_app.py tests/test_agent_async_callbacks.py tests/test_migrations_health.py
+py -m pytest -q -p no:cacheprovider tests/test_redaction.py tests/test_agent_ops_readiness.py tests/test_patient_snapshot_context.py tests/test_v13_patient_scope_tools.py tests/test_agent_async_callbacks.py tests/test_migrations_health.py
 ```
 
 권장 P1 CI subset:
@@ -36,7 +37,7 @@ python tools/run_agent_eval_suite.py --deterministic-only
 - Canonical file: `data/evals/agent_production_readiness_cases.json`
 - 모든 case는 synthetic이어야 합니다.
 - 각 case는 `expected_behavior`, `prohibited_behavior`, `severity`, `owner`, `pass_gate`를 가져야 합니다.
-- coverage에는 최소한 `nutrition`, `medication`, `phr`, `side_effect`, `async`, `mcp`, `privacy`, `observability`, `governance`, `incident`, `safety`가 포함되어야 합니다.
+- coverage에는 최소한 `nutrition`, `medication`, `patient_snapshot`, `side_effect`, `async`, `mcp`, `privacy`, `observability`, `governance`, `incident`, `safety`가 포함되어야 합니다.
 - 실제 장애가 발생하면 incident trace를 직접 복사하지 말고 redacted summary로 새 eval case를 추가합니다.
 
 Local eval runner:
@@ -46,23 +47,37 @@ python tools/run_agent_eval_suite.py --deterministic-only
 python tools/run_agent_eval_suite.py --output outputs/evals/full-review.json
 ```
 
-Local 9000 rule_based stack:
+Local 9000 configured-provider stack:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools/da_drug_9000_stack.ps1 start
-powershell -ExecutionPolicy Bypass -File tools/da_drug_9000_stack.ps1 verify
-powershell -ExecutionPolicy Bypass -File tools/da_drug_9000_stack.ps1 stop
+powershell -ExecutionPolicy Bypass -File tools/da_drug_9000_stack.ps1 `
+  -Action start -EnvFile .env.9000 -AgentEnvFile .env.agent_app.secret
+powershell -ExecutionPolicy Bypass -File tools/da_drug_9000_stack.ps1 `
+  -Action verify -EnvFile .env.9000 -AgentEnvFile .env.agent_app.secret
+powershell -ExecutionPolicy Bypass -File tools/da_drug_9000_stack.ps1 `
+  -Action stop -EnvFile .env.9000 -AgentEnvFile .env.agent_app.secret
 ```
 
-`verify`는 세 서비스 health와 worker 상태뿐 아니라 다음 release-blocking 경계를 검사한다.
+`.env.9000`에는 Bedrock bearer를 두지 않는다. Bearer는
+`.env.agent_app.secret`에만 두며 Agent API와 worker만 해당 overlay를
+받는다. common 파일에 bearer 키가 있으면 launcher와 verifier가 값 출력 없이
+실패한다.
+Compose의 `up`·`dev`·`restart`와 직접 실행 runner의
+`start`·`restart`도 authenticated `/health/generation/ready`를 release gate로
+사용한다. `AGENT_SYNC_API_TOKEN`은 child 메모리에서만 읽고 argv와 상태 출력에는
+포함하지 않는다.
 
-- Backend, AI, PHR의 자체 SQLite 파일과 RW runtime 경로가 분리되어 있는지
-- AI의 Backend DB URL이 `mode=ro&uri=true`인지
+`verify`는 Backend·AI health와 worker 상태뿐 아니라 다음 release-blocking 경계를
+검사한다. 활성 9000 helper와 Compose는 별도 `phr-app`을 기동하지 않는다.
+
+- Backend 업무 DB와 AI Internal PostgreSQL DB의 database·runtime role이 분리되어 있는지
+- AI의 Backend DB role이 `ai_v13_*` View만 조회하고 원본 table·쓰기를 거절하는지
 - AI `/health/ready`가 DB·read contract·인증 설정을 모두 통과해 `status=ready`인지
 - AI 관점에서 Backend DB read가 성공하고 main DB write probe가 거절되는지
-- 실제 `Backend /api/chat/sync → AI /agent/sync/chat → Backend read-only DB` 경로와 replay가 정상인지
+- 실제 `React /api/ui/v1/chat/sync → Backend → AI /agent/sync/chat → Backend Read-only Snapshot` 경로와 replay가 정상인지
+- 별도 PHR 등록·PHR HTTP 조회 없이 현재 환자정보와 부작용 평가가 동작하는지
 - Backend→AI와 AI→Backend Bearer token이 서로 다른지
-- 저장된 Backend v1.2 OpenAPI가 현재 코드와 일치하는지
+- 저장된 Backend v1.3 OpenAPI가 현재 코드와 일치하는지
 
 동일 검사는 `.github/workflows/testbed-boundary-contract.yml`에서 PR과 push마다 실행한다.
 
@@ -82,28 +97,29 @@ Eval backlog integration:
 - schema가 깨진 backlog case는 suite 실패로 처리합니다.
 - backlog lifecycle은 `open → reviewed → cleared`입니다.
 - `high`와 `critical` backlog case는 `cleared`가 되기 전까지 CI gate 실패로 처리합니다. `reviewed`는 owner가 봤다는 표시이며 gate 해제가 아닙니다.
-- LOGS 탭의 Eval backlog에서 lifecycle 상태를 바꿀 수 있고, 변경 이력은 case의 `lifecycle.history`에 남습니다.
+- 환자용 React 화면에는 운영용 LOGS 탭이 없다. Eval lifecycle 변경은
+  `tools/manage_eval_review_queue.py` 또는 승인된 별도 운영 도구로 수행하고,
+  변경 이력은 case의 `lifecycle.history`에 남긴다.
 
 `deterministic-only`는 CI에서 자동 gate로 사용합니다. 전체 suite는 semantic/behavioral case를 `review_required`로 남기며, 모델 채점 또는 QA/Clinical 리뷰가 붙기 전에는 승격 증거로 단독 사용하지 않습니다.
 
 ## P1 Governance And Observability
 
-LOGS 탭은 pilot 운영자가 다음 readiness controls를 한 화면에서 확인하도록 확장되어야 합니다.
+승인된 운영 콘솔 또는 observability sink는 다음 readiness controls를 제공해야
+합니다. 환자용 React 화면이나 Backend API에 Trace 조회 기능을 넣지 않습니다.
 
 | Control | Artifact | Required Behavior |
 | --- | --- | --- |
 | Prompt/model/tool change log | `data/governance/agent_change_log.json` | 변경 target, summary, owner, rollback, evidence를 남깁니다. |
-| Trace replay/detail | `GET /partials/logs/traces/{trace_id}` | redacted trace hash, model/prompt, tool step metadata, replay plan을 표시합니다. |
-| High-risk human handoff gate | `apply_notification_policy`, `apply_system_policy` | agent가 직접 적용하지 않고 `policy_confirmation_required`와 `human_handoff_required`를 남깁니다. |
-| Tool/data freshness probe | LOGS Tool/Data Catalog | tool source 존재, catalog match, eval/change-log JSON 상태를 표시합니다. |
+| Trace ownership/detail | Agent DB 단일 원장과 승인된 운영 조회 도구 | Backend Trace API·테이블을 만들지 않고 redacted trace hash, model/prompt, token/cost, tool step metadata만 조회합니다. |
+| High-risk human handoff gate | `propose_notification_policy`, `request_record_approval → change_notification_policy`, `propose_system_policy` | 정책 후보는 직접 적용하지 않고, 실제 `change_notification_policy` 쓰기는 사용자 승인 뒤에만 동기 실행합니다. |
+| Tool/data freshness probe | 계약 CI와 승인된 운영 probe | tool source 존재, catalog match, eval/change-log JSON 상태를 검증합니다. |
 | Online eval loop | `data/evals/agent_online_eval_findings.json` | 최근 trace의 실패, tool error, high-risk handoff 누락, latency/cost watch를 deterministic scan으로 기록합니다. |
 | Trace replay artifact | `outputs/replays/{trace_id}.json` | incident trace를 redacted replay artifact로 저장해 eval 승격과 재현 검토에 사용합니다. |
-| Cost budget gate | LOGS Cost budget gate | trace token/cost를 daily budget, eval budget, token price 설정과 비교합니다. |
-| Model fallback drill | `data/governance/model_fallback_drills.json` | provider 장애 시 `LLM_PROVIDER=rule_based` 전환 절차, owner, rollback 조건을 dry-run으로 기록합니다. |
-
-| Trace replay to eval backlog | LOGS `Replay to eval backlog` | Writes a replay artifact and creates or links a behavioral eval backlog case with `trace_replay_artifact` evidence. |
-| Release readiness score | LOGS Release readiness score | Combines online eval, failed traces, cost, fallback drill, eval blockers, alerts, and local jobs into a release decision. |
-| Release readiness report | `outputs/readiness/release-readiness-*.json` and `.md` | Captures eval result, alerts, failed jobs, cost, fallback status, trace coverage, and scorecard evidence for release review. |
+| Cost budget gate | Agent Trace 집계와 승인된 운영 gate | trace token/cost를 daily budget, eval budget, token price 설정과 비교합니다. |
+| Trace replay to eval backlog | 승인된 운영 도구 | redacted replay artifact를 만들고 `trace_replay_artifact` 증거가 있는 behavioral eval backlog case를 생성하거나 연결합니다. |
+| Release readiness score | 별도 운영 gate | online eval, failed trace, cost, provider incident rollback readiness, eval blocker, alert와 local job을 release decision으로 결합합니다. |
+| Release readiness report | 별도 운영 산출물 | 환자용 Backend/React가 아닌 승인된 운영 도구가 eval·오류·비용·trace coverage를 요약합니다. |
 
 ## P1 Load And Cost Gates
 
@@ -113,11 +129,9 @@ Load probe:
 python tools/p1_load_probe.py --concurrency 50 --iterations 200 --internal-api-token $env:INTERNAL_API_TOKEN
 ```
 
-PHR registration write path까지 검증할 때만 synthetic write probe를 켭니다.
-
-```powershell
-python tools/p1_load_probe.py --concurrency 20 --iterations 50 --include-phr-register
-```
+환자정보 Read 부하는 별도 PHR 등록 API가 아니라 Backend DB Snapshot 조회와
+상세 Query Tool을 대상으로 측정합니다. 현재 P1 load probe는 Backend·AI health,
+AI readiness, React BFF status를 측정합니다. 별도 PHR 서비스 경로는 없습니다.
 
 Default P1 thresholds:
 
@@ -127,7 +141,7 @@ Default P1 thresholds:
 | max error rate | 0.01 |
 | health P95 | 1000 ms |
 | agent readiness/async accept P95 | 2000 ms |
-| PHR registration P95 | 3000 ms |
+| React BFF status P95 | 2000 ms |
 
 Cost budget settings:
 
@@ -140,6 +154,28 @@ Cost budget settings:
 
 Token prices default to `0` so stale hard-coded prices do not silently become launch gates. Set them from the current provider price sheet before using cost as a release blocker.
 
+## Self-hosted Langfuse Export
+
+- Langfuse는 내부 EC2/VPC의 private HTTPS endpoint와 관리자 UI로
+  운영합니다.
+- Agent request/worker path는 Langfuse에 직접 접속하지 않습니다.
+  `agent_observability_exports` outbox와
+  `python -m agent_app.langfuse_exporter_main`을 사용합니다.
+- 초기 성공 trace sampling은 100%입니다. 비율을 낮춘 뒤에도 오류,
+  미복용, write Tool, 사용자 feedback trace는 항상 수집합니다.
+- 기본 export retry는 최대 12회이고 lease recovery, exponential
+  backoff+jitter, circuit breaker, `DEAD` 상태를 사용합니다.
+- `DEAD` 건수와 oldest pending age를 운영 경보에 연결해야 합니다.
+- Agent trace retention은 1,095일입니다. 만료 시 remote trace deletion
+  outbox를 남기며, Langfuse Enterprise retention을 쓰는 경우 project
+  retention도 1,095일로 맞춥니다.
+
+Structured application logs collected from stdout are not deleted by the
+application DB cleanup. The external log sink must enforce the same 3-year
+retention/deletion rule and provide deletion verification. Agent DB Trace and
+Backend minimal audit rows use indexed `expires_at`; raw clinical free text is
+never an observability retention substitute.
+
 ## Failure UX Copy
 
 Reusable copy lives in `system_app/services/failure_copy.py`.
@@ -147,9 +183,10 @@ Reusable copy lives in `system_app/services/failure_copy.py`.
 | Failure | User-facing behavior |
 | --- | --- |
 | agent network/provider failure | tell the user the AI answer failed, records are saved, retry is available |
-| async missed dose failure | keep missed-dose record, point to AI error retry |
+| async missed dose LLM failure | keep the missed-dose record, expose the stable AI error code for retry/inspection, and never substitute a stock message |
 | daily pattern failure | do not change reminder policy, point to retry |
-| PHR read-only | explain PHR registration is temporarily paused and local medication input remains |
+| Backend patient Snapshot partial | 확인 가능한 도메인만 답하고 `not_found`, `not_supported`, `unavailable`을 구분 |
+| Backend Read unavailable | LLM·Tool·쓰기 호출 없이 명시적 오류와 재시도 제공 |
 | clinician alert failure | do not imply delivery succeeded; advise direct clinical contact for severe/worsening symptoms |
 
 ## Async Ops Dashboard
@@ -161,8 +198,8 @@ Primary endpoints:
 - `GET /agent/async/tasks/dead`: dead task 상세
 - `POST /agent/async/tasks/{request_id}/actions`: dead task만 `retry` 또는 `dismiss` 처리
 - `GET /health/details`: system_app에서 agent async 상태를 함께 요약
-- `GET /api/agent/async/traces`: redacted agent run trace 목록
-- `GET /api/agent/async/traces/{trace_id}`: redacted trace와 model/tool/final response step 상세
+- Agent DB 승인 운영 조회/내보내기: redacted Trace와
+  model/tool/final-response Step, token/cost 상세(Backend API로 노출하지 않음)
 
 Dead task action payload:
 
@@ -204,15 +241,18 @@ Warning alert codes:
 1. `/agent/async/tasks/dead`에서 dead sample을 확인합니다.
 2. callback failure면 system_app callback endpoint, `INTERNAL_API_TOKEN`, network reachability를 확인합니다.
 3. provider failure면 Bedrock credential, region, model id, timeout을 확인합니다.
-4. `/api/agent/async/traces?request_id=...` 또는 `/api/agent/async/traces/{trace_id}`로 model tier, prompt version, token/cost, tool side effect step을 확인합니다.
+4. 승인된 Agent DB 운영 조회 또는 observability sink에서 `request_id`/내부
+   `trace_id`로 model tier, prompt version, token/cost, Tool side-effect Step을
+   확인합니다. Backend Trace API를 사용하지 않습니다.
 5. privacy/safety issue면 redacted trace와 eval case coverage를 확인합니다. 원문 환자 데이터를 incident 문서에 붙이지 않습니다.
 
 ### Contain
 
 | Scenario | Containment |
 | --- | --- |
-| Provider outage or unsafe LLM output | agent_app/worker 중지 또는 승인된 이전 provider/model tier로 rollback (`rule_based`는 test/testbed 전용) |
-| PHR write risk or sync corruption | `PHR_READ_ONLY=true`로 phr_app 재시작 |
+| Provider outage or unsafe LLM output | agent_app/worker 중지 또는 승인된 이전 provider/model tier로 rollback |
+| Backend Read scope or Snapshot corruption | AI 채팅 중지, AI DB reader 자격 증명 회수 또는 영향 View 권한 차단, Backend 원장 검증 |
+| Backend write API idempotency/version risk | 영향 쓰기 Tool 권한 차단 후 Backend request ledger와 업무 원장 검증 |
 | callback storm or duplicate side effects | agent worker 중지 후 queue/dead task 점검 |
 | policy confirmation bypass risk | worker 중지, policy confirmation route 회귀 테스트 후 재개 |
 | PHI/log exposure suspicion | trace logging off 또는 log sink 접근 제한, redaction test 실행 |
@@ -229,8 +269,9 @@ Containment 기록에는 owner, approver, start time, affected workflow, rollbac
 ## Redaction Policy
 
 - trace log는 `shared.redaction.redact_for_logging`을 통과해야 합니다.
-- `patient_id`, `phr_patient_key`, MRN/RRN 계열 식별자는 hash 형태로만 남깁니다.
-- 증상, 식사, 복약명, 사용자 메시지, PHR evidence 같은 clinical free text는 원문 대신 length/hash/count만 남깁니다.
+- `patient_id`, MRN/RRN 계열 식별자는 hash 형태로만 남깁니다.
+- 증상, 식사, 복약명, 사용자 메시지, 환자 Snapshot evidence 같은 clinical free
+  text는 원문 대신 length/hash/count만 남깁니다.
 - secret/token/API key/email/phone은 마스킹합니다.
 - raw payload가 필요한 debugging은 운영 로그가 아니라 제한된 incident workspace에서 승인 후 수행합니다.
 
@@ -238,8 +279,8 @@ Containment 기록에는 owner, approver, start time, affected workflow, rollbac
 
 | Change Type | Rollback |
 | --- | --- |
-| Model quality issue | 승인된 이전 provider/model tier로 재시작; test/testbed에서만 `LLM_PROVIDER=rule_based` 사용 |
-| PHR data issue | `PHR_READ_ONLY=true`, PHR sync 중지, last known good DB snapshot 복구 |
+| Model quality issue | 승인된 이전 provider/model tier로 재시작 |
+| Patient data/View issue | 영향 AI Read View 권한 차단 또는 AI 채팅 중지, Backend 원장과 View를 검증한 뒤 복구 |
 | Async worker issue | worker 중지, running/callback_sent task reset 또는 dead task 재처리 계획 수립 |
 | Prompt/policy issue | prompt workbook/policy workbook 이전 버전 복구 |
 | Tool permission issue | affected MCP tool permission 차단 후 eval 재실행 |

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from agent_app.tools.names import GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE
+from shared.tool_names import GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE
 
 
 def normalize_tool_calls(output: dict[str, Any]) -> list[dict[str, Any]]:
@@ -25,8 +25,6 @@ def order_tool_calls(calls: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _normalize_tool_call(call: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(call)
-    if not normalized.get("name") and normalized.get("tool_name"):
-        normalized["name"] = normalized["tool_name"]
     if not isinstance(normalized.get("arguments"), dict) and isinstance(normalized.get("args"), dict):
         normalized["arguments"] = normalized["args"]
     return normalized

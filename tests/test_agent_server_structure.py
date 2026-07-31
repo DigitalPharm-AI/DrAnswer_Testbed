@@ -1,17 +1,31 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
+from fastapi import Request
+
+from agent_app.errors import AgentExecutionError
 from agent_app.llm.messages import langchain_tools_from_catalog
-from agent_app.main import app as agent_app
+from agent_app.main import (
+    agent_execution_error_handler,
+    app as agent_app,
+)
 from agent_app.providers.base import BaseLLMProvider
-from agent_app.tools.catalog import ToolCatalog
-from agent_app.tools.permissions import requires_human_handoff
+from shared.tool_catalog import ToolCatalog
+from shared.tool_permissions import requires_human_handoff
 from agent_app.tools.policy import DEFERRED_POLICY_TOOL_NAMES
 from agent_app.tools.protocol import ALLOWED_TOOL_NAMES
 from agent_app.tools.runtime import ToolRuntime
+from shared.retention_policy import (
+    AGENT_OBSERVABILITY_RETENTION_DAYS,
+    AGENT_OBSERVABILITY_RETENTION_SECONDS,
+)
 from shared.schemas import ToolCallResult
-from system_app.services import observability_view, trace_retention
+from shared.tool_names import (
+    GET_SIDE_EFFECT_HISTORY,
+    SOURCE_MEDICATION_AGENT,
+)
 
 
 def _routes() -> set[tuple[str, str]]:
@@ -24,28 +38,87 @@ def _routes() -> set[tuple[str, str]]:
     return rows
 
 
-def test_agent_server_api_contract_routes_are_present():
+def test_agent_server_openapi_exposes_only_active_public_routes():
     routes = _routes()
 
     expected = {
-        ("GET", "/agent/model-config"),
-        ("POST", "/agent/model-config"),
-        ("POST", "/agent/multiturn-chat"),
-        ("POST", "/agent/async/daily-patterns"),
+        ("POST", "/agent/sync/chat"),
+        ("POST", "/agent/async/chat_feedback"),
         ("POST", "/agent/async/missed-dose-events"),
-        ("POST", "/agent/async/chat-continuations"),
-        ("POST", "/agent/async/push-messages"),
-        ("POST", "/agent/async/clinician-alerts"),
-        ("POST", "/agent/mcp"),
-        ("GET", "/agent/async/tasks/status"),
-        ("GET", "/agent/ops/readiness"),
-        ("GET", "/agent/async/tasks"),
-        ("GET", "/agent/async/tasks/dead"),
-        ("POST", "/agent/async/tasks/{request_id}/actions"),
-        ("GET", "/agent/async/tasks/{request_id}"),
+        (
+            "POST",
+            "/agent/async/daily-medication-pattern-analysis",
+        ),
     }
 
-    assert expected <= routes
+    assert routes == expected
+
+
+def test_global_agent_error_response_hides_internal_trace_context():
+    request_body = json.dumps(
+        {"request_id": "req_0000000012345678"},
+    ).encode("utf-8")
+    received = False
+
+    async def receive():
+        nonlocal received
+        if received:
+            return {
+                "type": "http.request",
+                "body": b"",
+                "more_body": False,
+            }
+        received = True
+        return {
+            "type": "http.request",
+            "body": request_body,
+            "more_body": False,
+        }
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/agent/internal-test",
+            "headers": [],
+            "query_string": b"",
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+            "scheme": "http",
+        },
+        receive,
+    )
+    response = asyncio.run(
+        agent_execution_error_handler(
+            request,
+            AgentExecutionError(
+                "provider included a sensitive diagnostic",
+                error_type="provider_secret_error",
+                trace_id="trace_internal",
+                agent_name="internal_agent",
+                decision_type="internal_decision",
+            ),
+        )
+    )
+    body = json.loads(response.body)
+
+    assert response.status_code == 500
+    assert body == {
+        "request_id": "req_0000000012345678",
+        "error": {
+            "code": "AI_PROCESSING_ERROR",
+            "message": (
+                "An internal AI Server processing error occurred."
+            ),
+            "retryable": True,
+            "details": None,
+        },
+    }
+    serialized = json.dumps(body)
+    assert "trace_internal" not in serialized
+    assert "internal_agent" not in serialized
+    assert "internal_decision" not in serialized
+    assert "provider included" not in serialized
 
 
 def test_tool_catalog_protocol_allowlist_and_handoff_flags_are_aligned():
@@ -80,7 +153,7 @@ def test_multiturn_tools_bind_through_chat_model_tool_specs():
     assert "dose_event_id" in by_name["update_medication_dose_event_status"]["function"]["parameters"]["required"]
 
 
-def test_tool_runtime_delegates_permission_decisions_to_executor_boundary():
+def test_tool_runtime_delegates_authorized_calls_to_executor_boundary():
     class CapturingExecutor:
         def __init__(self) -> None:
             self.calls: list[dict] = []
@@ -106,16 +179,24 @@ def test_tool_runtime_delegates_permission_decisions_to_executor_boundary():
 
     executed_calls, results = asyncio.run(
         runtime.execute(
-            [{"name": "create_nutrition_meal_record", "arguments": {"meal_type": "lunch", "foods": []}}],
+            [
+                {
+                    "name": GET_SIDE_EFFECT_HISTORY,
+                    "arguments": {"limit": 5},
+                }
+            ],
             trace_id="structure-test-trace",
-            source_event_type="missed_dose",
+            source_event_type=SOURCE_MEDICATION_AGENT,
             payload={},
         )
     )
 
-    assert executed_calls[0]["name"] == "create_nutrition_meal_record"
+    assert executed_calls[0]["name"] == GET_SIDE_EFFECT_HISTORY
     assert len(executor.calls) == 1
-    assert executor.calls[0]["source_event_type"] == "missed_dose"
+    assert (
+        executor.calls[0]["source_event_type"]
+        == SOURCE_MEDICATION_AGENT
+    )
     assert results[0].status == "success"
 
 
@@ -164,6 +245,6 @@ def test_tool_runtime_logs_routing_context(monkeypatch):
     assert started["routing"]["specialist_tool_names"] == ["update_medication_dose_event_status"]
 
 
-def test_trace_retention_policy_is_single_source_for_logs_view():
-    assert observability_view.TRACE_RETENTION_POLICY is trace_retention.TRACE_RETENTION_POLICY
-    assert observability_view._trace_retention_dry_run_count.__module__ == "system_app.services.observability_view"
+def test_agent_observability_retention_is_fixed_to_three_years():
+    assert AGENT_OBSERVABILITY_RETENTION_DAYS == 1095
+    assert AGENT_OBSERVABILITY_RETENTION_SECONDS == 94_608_000

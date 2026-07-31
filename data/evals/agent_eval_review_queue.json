@@ -1,6 +1,6 @@
 {
   "schema_version": "agent_eval_review_queue_v1",
-  "generated_at": "2026-06-23T01:32:56.049908+00:00",
+  "generated_at": "2026-07-29T12:47:22.228360+00:00",
   "dataset_path": "data\\evals\\agent_production_readiness_cases.json",
   "backlog_path": "data\\evals\\agent_eval_backlog.json",
   "items": [
@@ -54,15 +54,15 @@
     },
     {
       "case_id": "PROD-EVAL-004",
-      "title": "PHR 미등록 상태 부작용 질문",
+      "title": "환자 Snapshot 조회 불가 상태 부작용 질문",
       "layer": "semantic",
       "severity": "critical",
       "owner": "QA/Clinical",
-      "intent": "side_effect_without_phr",
+      "intent": "side_effect_without_snapshot",
       "risk": "medical_advice",
       "source": "canonical",
       "tags": [
-        "phr",
+        "patient_snapshot",
         "side_effect",
         "safety",
         "fallback"
@@ -86,10 +86,10 @@
       "risk": "clinical_safety",
       "source": "canonical",
       "tags": [
-        "phr",
+        "patient_snapshot",
         "side_effect",
         "mcp",
-        "async",
+        "sync",
         "safety"
       ],
       "status": "open",
@@ -113,7 +113,7 @@
       "tags": [
         "policy",
         "mcp",
-        "async",
+        "sync",
         "safety"
       ],
       "status": "open",
@@ -172,7 +172,7 @@
     },
     {
       "case_id": "PROD-EVAL-009",
-      "title": "mark_dose_taken 권한 경계",
+      "title": "update_medication_dose_event_status 권한 경계",
       "layer": "behavioral",
       "severity": "critical",
       "owner": "Agent/Backend",
@@ -471,11 +471,11 @@
     },
     {
       "case_id": "PROD-EVAL-027",
-      "title": "rule_based rollback",
+      "title": "LLM provider 장애 fail-closed",
       "layer": "behavioral",
       "severity": "critical",
       "owner": "Ops/Agent",
-      "intent": "rollback",
+      "intent": "provider_failure",
       "risk": "availability",
       "source": "canonical",
       "tags": [
@@ -512,6 +512,55 @@
       "notes": "",
       "created_at": "2026-06-23T01:32:56.049908+00:00",
       "updated_at": "2026-06-23T01:32:56.049908+00:00",
+      "history": [],
+      "active": true
+    },
+    {
+      "case_id": "PROD-EVAL-032",
+      "title": "미복용 LLM 금지 문구와 Tool 호출 거부",
+      "layer": "behavioral",
+      "severity": "critical",
+      "owner": "Agent/Clinical",
+      "intent": "missed_dose_unsafe_generation",
+      "risk": "clinical_safety",
+      "source": "canonical",
+      "tags": [
+        "medication",
+        "missed_dose",
+        "async",
+        "mcp",
+        "safety"
+      ],
+      "status": "open",
+      "reviewer": "",
+      "evidence": "",
+      "notes": "",
+      "created_at": "2026-07-29T12:47:22.228360+00:00",
+      "updated_at": "2026-07-29T12:47:22.228360+00:00",
+      "history": [],
+      "active": true
+    },
+    {
+      "case_id": "PROD-EVAL-033",
+      "title": "Callback 직전 복용 완료 상태 게이트",
+      "layer": "behavioral",
+      "severity": "critical",
+      "owner": "Backend/QA",
+      "intent": "missed_dose_stale_delivery_suppression",
+      "risk": "external_side_effect",
+      "source": "canonical",
+      "tags": [
+        "medication",
+        "missed_dose",
+        "async",
+        "safety"
+      ],
+      "status": "open",
+      "reviewer": "",
+      "evidence": "",
+      "notes": "",
+      "created_at": "2026-07-29T12:47:22.228360+00:00",
+      "updated_at": "2026-07-29T12:47:22.228360+00:00",
       "history": [],
       "active": true
     }

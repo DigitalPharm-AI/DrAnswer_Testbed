@@ -5,8 +5,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent_app.integration.contracts import (
+from shared.backend_v13_contracts import (
     MedicationDoseEventMutationPayload,
+    MedicationSideEffectMutationPayload,
     NotificationPolicyChangeRequest,
     NotificationPolicyChanges,
     NotificationPolicyDecisionPayload,
@@ -14,7 +15,8 @@ from agent_app.integration.contracts import (
     NutritionMealMutationPayload,
     RecordChangeRequest,
 )
-from agent_app.tools.names import (
+from shared.tool_names import (
+    CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
@@ -29,7 +31,6 @@ class ConfirmedMutationContext(BaseModel):
 
     request_id: str = Field(min_length=1)
     source_chat_request_id: str = Field(min_length=1)
-    conversation_id: str = Field(min_length=1)
     confirmation_message_id: str = Field(min_length=1)
     patient_id: str = Field(min_length=1)
     requested_at: datetime
@@ -51,7 +52,22 @@ def record_change_request_from_tool(
             payload=NutritionMealMutationPayload.model_validate(values),
         )
 
-    expected_version = _required_version(values)
+    if tool_name == CREATE_MEDICATION_SIDE_EFFECT_RECORD:
+        side_effect_values = {
+            key: value
+            for key, value in values.items()
+            if key in MedicationSideEffectMutationPayload.model_fields
+        }
+        return _record_request(
+            context,
+            resource_type="medication_side_effect",
+            operation="create",
+            payload=MedicationSideEffectMutationPayload.model_validate(
+                side_effect_values
+            ),
+        )
+
+    expected_version = pop_required_expected_version(values)
 
     if tool_name == UPDATE_NUTRITION_MEAL_RECORD:
         record_id = _pop_required_id(values, "meal_id")
@@ -140,7 +156,6 @@ def notification_policy_request(
     return NotificationPolicyChangeRequest(
         request_id=context.request_id,
         source_chat_request_id=context.source_chat_request_id,
-        conversation_id=context.conversation_id,
         confirmation_message_id=context.confirmation_message_id,
         patient_id=context.patient_id,
         policy_id=policy_id,
@@ -167,7 +182,6 @@ def _record_request(
     return RecordChangeRequest(
         request_id=context.request_id,
         source_chat_request_id=context.source_chat_request_id,
-        conversation_id=context.conversation_id,
         confirmation_message_id=context.confirmation_message_id,
         patient_id=context.patient_id,
         resource_type=resource_type,
@@ -180,7 +194,7 @@ def _record_request(
     )
 
 
-def _required_version(values: dict[str, Any]) -> int:
+def pop_required_expected_version(values: dict[str, Any]) -> int:
     raw = values.pop("expected_version", None)
     if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
         raise ValueError("expected_version_required")

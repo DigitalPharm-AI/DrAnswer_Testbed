@@ -9,10 +9,18 @@ from typing import Any, Literal
 import anyio
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent_app.integration.backend_client import BackendV12Client
+from agent_app.integration.backend_client import (
+    BackendV13Client,
+    BackendV13ResponseError,
+)
+from agent_app.integration.approval_state import (
+    InternalApprovalBinding,
+    InternalApprovalStore,
+)
 from agent_app.integration.mutations import (
     ConfirmedMutationContext,
     notification_policy_request,
+    pop_required_expected_version,
     record_change_request_from_tool,
 )
 from agent_app.integration.write_state import (
@@ -22,11 +30,12 @@ from agent_app.integration.write_state import (
 )
 from agent_app.persistence.db import SessionLocal
 from agent_app.tools.backend_query import BackendQueryTools
-from agent_app.tools.names import (
-    BACKEND_V12_POLICY_WRITE_TOOLS,
-    BACKEND_V12_RECORD_WRITE_TOOLS,
-    BACKEND_V12_SYNC_WRITE_TOOLS,
+from shared.tool_names import (
+    BACKEND_V13_POLICY_WRITE_TOOLS,
+    BACKEND_V13_RECORD_WRITE_TOOLS,
+    BACKEND_V13_SYNC_WRITE_TOOLS,
     CHANGE_NOTIFICATION_POLICY,
+    CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
@@ -45,7 +54,6 @@ MODEL_FORBIDDEN_TECHNICAL_ARGUMENTS = frozenset(
         "expected_version",
         "request_id",
         "source_chat_request_id",
-        "conversation_id",
         "confirmation_message_id",
         "requested_at",
         "reason",
@@ -53,6 +61,9 @@ MODEL_FORBIDDEN_TECHNICAL_ARGUMENTS = frozenset(
 )
 MODEL_WRITE_ARGUMENTS: dict[str, frozenset[str]] = {
     UPDATE_MEDICATION_DOSE_EVENT_STATUS: frozenset({"dose_event_id"}),
+    CREATE_MEDICATION_SIDE_EFFECT_RECORD: frozenset(
+        {"symptom_text", "symptom_onset_text", "medication_name"}
+    ),
     CREATE_NUTRITION_MEAL_RECORD: frozenset(
         {"meal_type", "meal_date", "meal_time", "description", "foods"}
     ),
@@ -100,6 +111,13 @@ BACKEND_WRITE_TOOL_SPECS: dict[str, BackendWriteToolSpec] = {
         "update",
         True,
     ),
+    CREATE_MEDICATION_SIDE_EFFECT_RECORD: BackendWriteToolSpec(
+        CREATE_MEDICATION_SIDE_EFFECT_RECORD,
+        "record_change",
+        "medication_side_effect",
+        "create",
+        False,
+    ),
     CREATE_NUTRITION_MEAL_RECORD: BackendWriteToolSpec(
         CREATE_NUTRITION_MEAL_RECORD,
         "record_change",
@@ -144,13 +162,13 @@ BACKEND_WRITE_TOOL_SPECS: dict[str, BackendWriteToolSpec] = {
     ),
 }
 
-if frozenset(BACKEND_WRITE_TOOL_SPECS) != BACKEND_V12_SYNC_WRITE_TOOLS:
+if frozenset(BACKEND_WRITE_TOOL_SPECS) != BACKEND_V13_SYNC_WRITE_TOOLS:
     raise RuntimeError("backend_write_tool_registry_mismatch")
-if frozenset(MODEL_WRITE_ARGUMENTS) != BACKEND_V12_SYNC_WRITE_TOOLS:
+if frozenset(MODEL_WRITE_ARGUMENTS) != BACKEND_V13_SYNC_WRITE_TOOLS:
     raise RuntimeError("backend_write_argument_registry_mismatch")
-if frozenset(name for name, spec in BACKEND_WRITE_TOOL_SPECS.items() if spec.endpoint == "record_change") != BACKEND_V12_RECORD_WRITE_TOOLS:
+if frozenset(name for name, spec in BACKEND_WRITE_TOOL_SPECS.items() if spec.endpoint == "record_change") != BACKEND_V13_RECORD_WRITE_TOOLS:
     raise RuntimeError("backend_record_write_tool_registry_mismatch")
-if frozenset(name for name, spec in BACKEND_WRITE_TOOL_SPECS.items() if spec.endpoint == "notification_policy_change") != BACKEND_V12_POLICY_WRITE_TOOLS:
+if frozenset(name for name, spec in BACKEND_WRITE_TOOL_SPECS.items() if spec.endpoint == "notification_policy_change") != BACKEND_V13_POLICY_WRITE_TOOLS:
     raise RuntimeError("backend_policy_write_tool_registry_mismatch")
 
 
@@ -159,7 +177,8 @@ class BackendWriteInvocationContext(BaseModel):
 
     source_chat_request_id: str = Field(min_length=1)
     source_message_id: str = Field(min_length=1)
-    conversation_id: str = Field(min_length=1)
+    approval_key: str = Field(min_length=1)
+    action_fingerprint: str = Field(min_length=1)
     patient_id: str = Field(min_length=1)
     requested_at: datetime
 
@@ -169,9 +188,10 @@ class BackendSyncWriteTools:
 
     def __init__(
         self,
-        client: BackendV12Client,
+        client: BackendV13Client,
         backend_queries: BackendQueryTools | None = None,
         state_store: BackendWriteStateStore | None = None,
+        approval_store: InternalApprovalStore | None = None,
     ) -> None:
         self.client = client
         self.backend_queries = backend_queries
@@ -179,6 +199,9 @@ class BackendSyncWriteTools:
         self.state_store = state_store or BackendWriteStateStore(
             SessionLocal,
             retention_seconds=settings.agent_backend_write_retention_seconds,
+        )
+        self.approval_store = approval_store or InternalApprovalStore(
+            SessionLocal
         )
         self._request_arguments_lock = anyio.Lock()
 
@@ -189,6 +212,9 @@ class BackendSyncWriteTools:
         *,
         tool_call_id: str,
         context: BackendWriteInvocationContext,
+        request_id_override: str | None = None,
+        expected_version_override: int | None = None,
+        authoritative_arguments_override: dict[str, Any] | None = None,
     ) -> ToolCallResult:
         spec = BACKEND_WRITE_TOOL_SPECS.get(tool_name)
         if spec is None:
@@ -200,84 +226,161 @@ class BackendSyncWriteTools:
         if unsupported:
             raise ValueError(f"unsupported_model_arguments:{','.join(unsupported)}")
 
-        request_id = backend_write_request_id(
-            source_chat_request_id=context.source_chat_request_id,
-            tool_name=tool_name,
-            tool_call_id=tool_call_id,
-            arguments=arguments,
+        authoritative_arguments = (
+            dict(authoritative_arguments_override)
+            if authoritative_arguments_override is not None
+            else dict(arguments)
+        )
+        request_id = (
+            request_id_override
+            or backend_write_request_id(
+                source_chat_request_id=context.source_chat_request_id,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                arguments=authoritative_arguments,
+            )
         )
         identity = BackendWriteIdentity(
             request_id=request_id,
             source_chat_request_id=context.source_chat_request_id,
-            conversation_id_hash=canonical_payload_hash(
-                {"conversation_id": context.conversation_id}
+            patient_id_hash=canonical_payload_hash(
+                {"patient_id": context.patient_id}
             ),
             trusted_context_hash=canonical_payload_hash(
                 {
                     "source_chat_request_id": context.source_chat_request_id,
                     "source_message_id": context.source_message_id,
-                    "conversation_id": context.conversation_id,
+                    "action_fingerprint": context.action_fingerprint,
                     "patient_id": context.patient_id,
-                    "requested_at": context.requested_at,
                 }
             ),
             tool_call_id=tool_call_id.strip(),
             tool_name=tool_name,
-            argument_hash=canonical_payload_hash(arguments),
+            argument_hash=canonical_payload_hash(authoritative_arguments),
         )
         prepared = await self._stable_internal_arguments(
             identity,
             spec,
-            arguments,
+            authoritative_arguments,
             patient_id=context.patient_id,
+            expected_version_override=expected_version_override,
         )
         request_id = prepared.request_id
         mutation_context = ConfirmedMutationContext(
             request_id=request_id,
             source_chat_request_id=context.source_chat_request_id,
-            conversation_id=context.conversation_id,
             confirmation_message_id=context.source_message_id,
             patient_id=context.patient_id,
             requested_at=context.requested_at,
         )
+        internal_arguments = prepared.internal_arguments
+        if spec.endpoint == "record_change":
+            request = record_change_request_from_tool(
+                tool_name,
+                internal_arguments,
+                mutation_context,
+            )
+        else:
+            values = dict(internal_arguments)
+            request = notification_policy_request(
+                context=mutation_context,
+                policy_id=str(values.pop("policy_id", "") or ""),
+                expected_version=pop_required_expected_version(values),
+                decision=str(values.pop("decision", "") or ""),
+                changes=values.pop("changes", None),
+                reason=str(
+                    values.pop("reason", "") or INTERNAL_WRITE_REASON
+                ),
+            )
+            if values:
+                raise ValueError(
+                    "unsupported_notification_policy_arguments:"
+                    f"{','.join(sorted(values))}"
+                )
+        approval_binding = InternalApprovalBinding(
+            approval_key=context.approval_key,
+            action_name=tool_name,
+            action_fingerprint=context.action_fingerprint,
+            patient_id=context.patient_id,
+            source_chat_request_id=context.source_chat_request_id,
+            confirmation_message_id=context.source_message_id,
+            write_request_id=request_id,
+            argument_hash=identity.argument_hash,
+            request_body_hash=canonical_payload_hash(
+                _backend_write_identity_body(request)
+            ),
+            expected_version=prepared.internal_arguments.get(
+                "expected_version"
+            ),
+        )
         if prepared.cached_response is not None:
+            await anyio.to_thread.run_sync(
+                lambda: self.approval_store.validate_consumed_replay(
+                    approval_binding
+                )
+            )
             return _tool_result_from_response_body(
                 tool_name,
                 request_id,
                 prepared.cached_response,
             )
-        internal_arguments = prepared.internal_arguments
-
         await anyio.to_thread.run_sync(
-            lambda: self.state_store.begin_attempt(request_id)
+            lambda: self.approval_store.claim(approval_binding)
         )
         try:
+            await anyio.to_thread.run_sync(
+                lambda: self.state_store.begin_attempt(request_id)
+            )
             if spec.endpoint == "record_change":
-                request = record_change_request_from_tool(
-                    tool_name,
-                    internal_arguments,
-                    mutation_context,
-                )
                 response = await self.client.change_record(request)
             else:
-                values = dict(internal_arguments)
                 response = await self.client.change_notification_policy(
-                    notification_policy_request(
-                        context=mutation_context,
-                        policy_id=str(values.pop("policy_id", "") or ""),
-                        expected_version=_required_expected_version(values),
-                        decision=str(values.pop("decision", "") or ""),
-                        changes=values.pop("changes", None),
-                        reason=str(
-                            values.pop("reason", "") or INTERNAL_WRITE_REASON
-                        ),
+                    request
+                )
+        except BackendV13ResponseError as exc:
+            error_response = exc.error_response
+            if error_response is None:
+                await anyio.to_thread.run_sync(
+                    lambda: self.state_store.record_transport_failure(
+                        request_id,
+                        error_code=type(exc).__name__,
                     )
                 )
-                if values:
-                    raise ValueError(
-                        "unsupported_notification_policy_arguments:"
-                        f"{','.join(sorted(values))}"
+                await anyio.to_thread.run_sync(
+                    lambda: self.approval_store.release_retry(
+                        context.approval_key
                     )
+                )
+                raise
+            response_body = error_response.model_dump(mode="json")
+            error_code = error_response.error.code
+            stored = await anyio.to_thread.run_sync(
+                lambda: self.state_store.record_response(
+                    request_id,
+                    status_code=exc.status_code or 500,
+                    body=response_body,
+                    terminal=not error_response.error.retryable,
+                    error_code=error_code,
+                )
+            )
+            if error_response.error.retryable:
+                await anyio.to_thread.run_sync(
+                    lambda: self.approval_store.release_retry(
+                        context.approval_key
+                    )
+                )
+            else:
+                await anyio.to_thread.run_sync(
+                    lambda: self.approval_store.consume(
+                        context.approval_key,
+                        result=response_body,
+                    )
+                )
+            return _tool_result_from_response_body(
+                tool_name,
+                request_id,
+                stored.response_body or response_body,
+            )
         except Exception as exc:
             await anyio.to_thread.run_sync(
                 lambda: self.state_store.record_transport_failure(
@@ -285,23 +388,30 @@ class BackendSyncWriteTools:
                     error_code=type(exc).__name__,
                 )
             )
+            await anyio.to_thread.run_sync(
+                lambda: self.approval_store.release_retry(
+                    context.approval_key
+                )
+            )
             raise
 
         response_body = response.model_dump(mode="json")
-        error_code = response.error.code if response.error else ""
-        terminal = response.success or not (
-            response.error is not None and response.error.retryable
-        )
         stored = await anyio.to_thread.run_sync(
             lambda: self.state_store.record_response(
                 request_id,
-                status_code=_response_status(response.success, error_code),
+                status_code=200,
                 body=response_body,
-                terminal=terminal,
-                error_code=error_code,
+                terminal=True,
+                error_code="",
             )
         )
         authoritative_body = stored.response_body or response_body
+        await anyio.to_thread.run_sync(
+            lambda: self.approval_store.consume(
+                context.approval_key,
+                result=authoritative_body,
+            )
+        )
         return _tool_result_from_response_body(
             tool_name,
             request_id,
@@ -315,6 +425,7 @@ class BackendSyncWriteTools:
         arguments: dict[str, Any],
         *,
         patient_id: str,
+        expected_version_override: int | None,
     ) -> PreparedBackendWrite:
         state = await anyio.to_thread.run_sync(
             lambda: self.state_store.load(identity)
@@ -343,6 +454,7 @@ class BackendSyncWriteTools:
                     spec,
                     arguments,
                     patient_id=patient_id,
+                    expected_version_override=expected_version_override,
                 )
                 expected_version = resolved.get("expected_version")
                 if not spec.requires_expected_version:
@@ -369,31 +481,46 @@ class BackendSyncWriteTools:
         arguments: dict[str, Any],
         *,
         patient_id: str,
+        expected_version_override: int | None,
     ) -> dict[str, Any]:
         values = dict(arguments)
         if spec.requires_expected_version:
-            if self.backend_queries is None:
-                raise RuntimeError("backend_read_query_tools_required_for_write")
-            if spec.endpoint == "notification_policy_change":
-                policy_id = str(values.get("policy_id") or "")
-                version = await anyio.to_thread.run_sync(
-                    lambda: self.backend_queries.notification_policy_version(
-                        patient_id=patient_id,
-                        policy_id=policy_id,
-                    )
-                )
+            if expected_version_override is not None:
+                if (
+                    isinstance(expected_version_override, bool)
+                    or expected_version_override < 0
+                ):
+                    raise ValueError("expected_version_override_invalid")
+                version = expected_version_override
             else:
-                record_id, parent_record_id = _record_identifiers(spec, values)
-                version = await anyio.to_thread.run_sync(
-                    lambda: self.backend_queries.record_version(
-                        patient_id=patient_id,
-                        resource_type=spec.resource_type,
-                        record_id=record_id,
-                        parent_record_id=parent_record_id,
+                if self.backend_queries is None:
+                    raise RuntimeError(
+                        "backend_read_query_tools_required_for_write"
                     )
-                )
+                if spec.endpoint == "notification_policy_change":
+                    policy_id = str(values.get("policy_id") or "")
+                    version = await anyio.to_thread.run_sync(
+                        lambda: self.backend_queries.notification_policy_version(
+                            patient_id=patient_id,
+                            policy_id=policy_id,
+                        )
+                    )
+                else:
+                    record_id, parent_record_id = _record_identifiers(
+                        spec,
+                        values,
+                    )
+                    version = await anyio.to_thread.run_sync(
+                        lambda: self.backend_queries.record_version(
+                            patient_id=patient_id,
+                            resource_type=spec.resource_type,
+                            record_id=record_id,
+                            parent_record_id=parent_record_id,
+                        )
+                    )
             values["expected_version"] = version
-        values["reason"] = INTERNAL_WRITE_REASON
+        if spec.resource_type != "nutrition_food":
+            values["reason"] = INTERNAL_WRITE_REASON
         return values
 
 
@@ -416,18 +543,19 @@ def backend_write_request_id(
         separators=(",", ":"),
         default=str,
     ).encode("utf-8")
-    return f"write_{hashlib.sha256(canonical).hexdigest()}"
+    return f"req_{hashlib.sha256(canonical).hexdigest()[:16]}"
 
 
-def is_backend_v12_sync_write(tool_name: str) -> bool:
+def _backend_write_identity_body(request: Any) -> dict[str, Any]:
+    """Exclude transport time while preserving every nested business field."""
+
+    body = request.model_dump(mode="json")
+    body.pop("requested_at", None)
+    return body
+
+
+def is_backend_v13_sync_write(tool_name: str) -> bool:
     return tool_name in BACKEND_WRITE_TOOL_SPECS
-
-
-def _required_expected_version(values: dict[str, Any]) -> int:
-    raw = values.pop("expected_version", None)
-    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
-        raise ValueError("expected_version_required")
-    return raw
 
 
 def _record_identifiers(
@@ -457,7 +585,8 @@ def _internal_arguments_from_state(
         ):
             raise RuntimeError("persisted_expected_version_missing")
         values["expected_version"] = expected_version
-    values["reason"] = INTERNAL_WRITE_REASON
+    if spec.resource_type != "nutrition_food":
+        values["reason"] = INTERNAL_WRITE_REASON
     return values
 
 
@@ -466,8 +595,11 @@ def _tool_result_from_response_body(
     request_id: str,
     body: dict[str, Any],
 ) -> ToolCallResult:
-    success = body.get("success") is True
     error = body.get("error")
+    success = isinstance(body.get("result"), dict) and not isinstance(
+        error,
+        dict,
+    )
     error_code = (
         str(error.get("code") or "")
         if isinstance(error, dict)
@@ -480,21 +612,3 @@ def _tool_result_from_response_body(
         error=error_code,
         idempotency_key=request_id,
     )
-
-
-def _response_status(success: bool, error_code: str) -> int:
-    if success:
-        return 200
-    if error_code in {
-        "IDEMPOTENCY_CONFLICT",
-        "REQUEST_IN_PROGRESS",
-        "VERSION_CONFLICT",
-        "CONFIRMATION_MESSAGE_NOT_FOUND",
-        "SOURCE_CHAT_REQUEST_NOT_FOUND",
-    }:
-        return 409
-    if error_code.endswith("_not_found") or error_code.endswith("_NOT_FOUND"):
-        return 404
-    if error_code in {"BACKEND_PROCESSING_ERROR", "BACKEND_UNAVAILABLE"}:
-        return 503
-    return 422

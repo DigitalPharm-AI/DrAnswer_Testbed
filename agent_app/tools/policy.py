@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from agent_app.tools.names import POLICY_TOOLS, PROPOSE_NOTIFICATION_POLICY
+from shared.tool_names import POLICY_TOOLS, PROPOSE_NOTIFICATION_POLICY
 from shared.schemas import NotificationPolicyDelta, ToolCallResult
 
 DEFERRED_POLICY_TOOL_NAMES = set(POLICY_TOOLS)
@@ -59,7 +60,35 @@ def normalize_policy_tool_calls(tool_calls: list[dict[str, Any]], *, source_even
                     "arguments": policy.model_dump(mode="json"),
                 }
             )
-    return normalized
+    return _deduplicate_tool_calls(normalized)
+
+
+def _deduplicate_tool_calls(
+    tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    deduplicated: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for tool_call in tool_calls:
+        arguments = (
+            tool_call.get("arguments")
+            if isinstance(tool_call.get("arguments"), dict)
+            else {}
+        )
+        fingerprint = json.dumps(
+            {
+                "name": str(tool_call.get("name") or ""),
+                "arguments": arguments,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        deduplicated.append(tool_call)
+    return deduplicated
 
 
 def _notification_policy_deltas(arguments: dict[str, Any], *, source_event_type: str = "") -> list[NotificationPolicyDelta]:

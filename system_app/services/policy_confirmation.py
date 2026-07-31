@@ -4,83 +4,34 @@ from sqlalchemy.orm import Session
 
 from shared.tool_names import PROPOSE_NOTIFICATION_POLICY, PROPOSE_SYSTEM_POLICY
 from shared.schemas import AgentResponse, NotificationPolicyDelta, SystemPolicyDelta
-from system_app.services.audit_service import record_agent_audit
 from system_app.services.clock_service import pause_simulation_clock_for_conversation
 from system_app.services.notification_service import create_notification
 from system_app.services.policy_confirmation_constants import (
-    POLICY_ACTION_DECREASE,
     POLICY_ACTION_INCREASE,
     POLICY_ACTION_KEEP,
-    POLICY_ACTION_LABELS,
 )
 from system_app.services.policy_confirmation_diff import (
     actionable_policy_deltas,
-    adjusted_policy_delta_for_confirmation,
-    policy_confirmation_actions,
-    policy_delta_changed_fields,
-    policy_delta_direction,
-    recommended_policy_action,
-    selected_policy_deltas_for_confirmation,
 )
 from system_app.services.policy_confirmation_payload import (
     policy_change_payload,
-    policy_confirmation_body,
-    policy_confirmation_candidate,
-    policy_delta_confirmation_line,
-    policy_values_display,
-    primary_timing_text,
 )
 from system_app.services.policy_confirmation_prompt import (
-    build_multiple_choice_prompt,
-    multiple_choice_option,
     policy_confirmation_prompt,
-    policy_confirmation_question,
-)
-from system_app.services.policy_confirmation_reply import (
-    handle_policy_confirmation_reply,
-    policy_confirmation_action,
-    policy_confirmation_response,
-    resolve_multiple_choice_reply,
 )
 from system_app.services.policy_service import (
     daily_pattern_conversation_time_view,
-    normalize_system_policy_key,
     validate_policy_delta,
     validate_system_policy_delta,
 )
 from system_app.services.timeline_service import add_chat_message
 
 __all__ = [
-    "POLICY_ACTION_DECREASE",
-    "POLICY_ACTION_INCREASE",
-    "POLICY_ACTION_KEEP",
-    "POLICY_ACTION_LABELS",
-    "actionable_policy_deltas",
-    "adjusted_policy_delta_for_confirmation",
-    "build_multiple_choice_prompt",
     "create_policy_confirmation_alert",
     "create_system_policy_confirmation_alert",
-    "handle_policy_confirmation_reply",
     "has_notification_policy_tool_call",
     "has_system_policy_tool_call",
-    "multiple_choice_option",
-    "policy_change_payload",
-    "policy_confirmation_action",
-    "policy_confirmation_actions",
-    "policy_confirmation_body",
-    "policy_confirmation_candidate",
-    "policy_confirmation_prompt",
-    "policy_confirmation_question",
-    "policy_confirmation_response",
-    "policy_delta_changed_fields",
-    "policy_delta_confirmation_line",
-    "policy_delta_direction",
     "policy_deltas_from_tool_response",
-    "policy_values_display",
-    "primary_timing_text",
-    "recommended_policy_action",
-    "resolve_multiple_choice_reply",
-    "selected_policy_deltas_for_confirmation",
     "system_policy_deltas_from_tool_response",
 ]
 
@@ -130,7 +81,7 @@ def system_policy_deltas_from_tool_response(response: AgentResponse, source_even
             raise ValueError("시스템 정책 도구 호출 인자가 비어 있습니다.")
         for payload in _system_policy_argument_items(arguments):
             normalized = dict(payload)
-            normalized["policy_key"] = normalize_system_policy_key(str(normalized.get("policy_key") or ""))
+            normalized["policy_key"] = str(normalized.get("policy_key") or "")
             normalized["source"] = _normalize_system_policy_source(normalized.get("source"), source_event_type)
             deltas.append(SystemPolicyDelta.model_validate(normalized))
     return deltas
@@ -216,7 +167,7 @@ def _system_policy_multiple_choice(delta: SystemPolicyDelta) -> dict:
 
 
 def _system_policy_label(policy_key: str) -> str:
-    if normalize_system_policy_key(policy_key) == "daily_pattern_conversation_time":
+    if policy_key == "daily_pattern_conversation_time":
         return "일일 패턴 대화 요청 시간"
     return policy_key
 
@@ -260,17 +211,14 @@ def create_policy_confirmation_alert(
     deltas: list[NotificationPolicyDelta],
 ) -> tuple[bool, str]:
     if not deltas:
-        record_agent_audit(session, response, source_event_type, applied=False, error_message="정책 도구 호출 항목이 없습니다.")
         return False, "정책 도구 호출 항목이 없습니다."
     for delta in deltas:
         is_valid, message = validate_policy_delta(delta, session=session)
         if not is_valid:
-            record_agent_audit(session, response, source_event_type, applied=False, error_message=message)
             return False, message
 
     deltas = actionable_policy_deltas(session, deltas)
     if not deltas:
-        record_agent_audit(session, response, source_event_type, applied=False, error_message="policy_confirmation_skipped:no_effective_change")
         return False, "현재 정책과 같은 제안이라 확인 알림을 만들지 않았습니다."
 
     clock, resume_state = pause_simulation_clock_for_conversation(session)
@@ -290,11 +238,6 @@ def create_policy_confirmation_alert(
         metadata={
             "category": "policy_confirmation",
             "status": "agent_ready",
-            "trace_id": response.trace_id,
-            "agent_name": response.agent_name,
-            "prompt_version_id": response.prompt_version_id,
-            "decision_type": response.decision_type,
-            "source_event_type": source_event_type,
             "proposed_policies": [delta.model_dump(mode="json") for delta in deltas],
             "policy_change": policy_change,
             "multiple_choice": multiple_choice,
@@ -324,7 +267,6 @@ def create_policy_confirmation_alert(
             },
         },
     )
-    record_agent_audit(session, response, source_event_type, applied=False, error_message=f"policy_confirmation_requested:{notification.id}")
     return False, "정책 변경 후보를 채팅에 표시했습니다."
 
 
@@ -335,12 +277,10 @@ def create_system_policy_confirmation_alert(
     deltas: list[SystemPolicyDelta],
 ) -> tuple[bool, str]:
     if not deltas:
-        record_agent_audit(session, response, source_event_type, applied=False, error_message="시스템 정책 도구 호출 항목이 없습니다.")
         return False, "시스템 정책 도구 호출 항목이 없습니다."
     for delta in deltas:
         is_valid, message = validate_system_policy_delta(delta)
         if not is_valid:
-            record_agent_audit(session, response, source_event_type, applied=False, error_message=message)
             return False, message
 
     actionable_deltas = []
@@ -349,7 +289,6 @@ def create_system_policy_confirmation_alert(
         if str(current.get("value") or "") != delta.value:
             actionable_deltas.append(delta)
     if not actionable_deltas:
-        record_agent_audit(session, response, source_event_type, applied=False, error_message="policy_confirmation_skipped:no_effective_change")
         return False, "현재 시스템 정책과 같은 제안이라 확인 알림을 만들지 않았습니다."
 
     clock, resume_state = pause_simulation_clock_for_conversation(session)
@@ -369,11 +308,6 @@ def create_system_policy_confirmation_alert(
         metadata={
             "category": "policy_confirmation",
             "status": "agent_ready",
-            "trace_id": response.trace_id,
-            "agent_name": response.agent_name,
-            "prompt_version_id": response.prompt_version_id,
-            "decision_type": response.decision_type,
-            "source_event_type": source_event_type,
             "proposed_system_policies": [delta.model_dump(mode="json") for delta in actionable_deltas],
             "policy_change": policy_change,
             "multiple_choice": multiple_choice,
@@ -403,5 +337,4 @@ def create_system_policy_confirmation_alert(
             },
         },
     )
-    record_agent_audit(session, response, source_event_type, applied=False, error_message=f"policy_confirmation_requested:{notification.id}")
     return False, "정책 변경 후보를 채팅에 표시했습니다."

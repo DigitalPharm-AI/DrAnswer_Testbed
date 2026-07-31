@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
-import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -17,6 +16,9 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 
 import agent_app.main as native_agent_main
 from agent_app.orchestration.delegation import delegation_tools_payload
+from agent_app.agents.multiturn_chat import (
+    _normalize_mutation_confirmation_output,
+)
 from agent_app.agents.tool_chat import AGENT_TOOL_LOOP_LIMIT, ToolChatAgentGraph
 from agent_app.jobs.tasks import DEAD, enqueue_async_task
 from agent_app.llm.messages import (
@@ -25,33 +27,43 @@ from agent_app.llm.messages import (
     langchain_tool_name,
     tool_results_from_messages,
 )
-from agent_app.orchestration.continuation import async_continuation_type
+from agent_app.orchestration.continuation import continuation_type
 from agent_app.errors import AgentExecutionError
 from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
 from agent_app.llm.validation import validate_llm_output
-from agent_app.llm.prompts import multiturn_chat_prompt, nutrition_management_agent_prompt, nutrition_recommendation_agent_prompt
+from agent_app.llm.prompts import (
+    medication_agent_prompt,
+    multiturn_chat_prompt,
+    mutation_confirmation_prompt,
+    mutation_confirmation_reply_prompt,
+    nutrition_management_agent_prompt,
+    nutrition_recommendation_agent_prompt,
+)
 from agent_app.providers.factory import create_llm_provider
-from agent_app.providers.rule_based import RuleBasedProvider
+from agent_app.providers.deterministic_test import DeterministicTestProvider
 from agent_app.llm.responses import missed_dose_hybrid_payload
 from agent_app.tools.calling import normalize_tool_calls
-from agent_app.tools.catalog import ToolCatalog
+from shared.tool_catalog import ToolCatalog
 from agent_app.tools.executor import McpAgentToolExecutor
 from agent_app.tools.mcp_server import http_status_tool_error_result
-from agent_app.tools.names import (
+from shared.tool_names import (
+    ALL_TOOL_NAMES,
+    CHANGE_NOTIFICATION_POLICY,
     CREATE_NUTRITION_MEAL_RECORD,
+    DELEGATION_TOOL_NAMES,
     GET_MEDICATION_DOSE_STATUS,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
     GET_SIDE_EFFECT_HISTORY,
-    LEGACY_TOOL_NAMES,
+    REQUEST_RECORD_APPROVAL,
+    SOURCE_MCP,
     SOURCE_MEDICATION_AGENT,
     SOURCE_MULTITURN_CHAT,
     SOURCE_NUTRITION_MANAGEMENT_AGENT,
     SOURCE_NUTRITION_RECOMMENDATION_AGENT,
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
     UPSERT_NUTRITION_PREFERENCE_FACT,
-    replace_legacy_tool_names,
 )
-from agent_app.tools.permissions import permission_denied_result, validate_tool_permission
+from shared.tool_permissions import permission_denied_result, validate_tool_permission
 from agent_app.tools.policy import _notification_policy_deltas, deferred_policy_tool_result, is_deferred_policy_tool_call
 from agent_app.tools.protocol import (
     MCP_METHOD_TOOLS_CALL,
@@ -70,7 +82,6 @@ from shared.schemas import (
     DosePatternEvent,
     MissedDoseEventPayload,
     MultiturnChatRequest,
-    MutationConfirmationResolutionRequest,
     SlotAdherenceSummary,
     ToolCallResult,
 )
@@ -108,22 +119,21 @@ class NativeFakeProvider(NativeChatProvider):
                     },
                 },
             }
-        if response_mode == "missed_dose_coaching":
+        if response_mode == "missed_dose_message_generation":
             return {
-                "patient_message": "아침 08:00 혈압약 복약을 놓치신 것으로 확인됐어요. 현재 복용 가능하신가요?",
-                "likely_reason": "unknown",
-                "side_effect_signal": False,
-                "symptom_summary": "",
-                "follow_up_questions": ["현재 복용 가능하신가요?"],
-                "recommendation": "현재 상태와 미복용 이유를 확인하세요.",
+                "generated_message": (
+                    "오늘 복약이 어려우셨나요? 현재 상태를 알려주세요."
+                ),
             }
+        if response_mode == "final_answer":
+            return {"message": "요청 처리 결과를 확인했습니다."}
         if "복용" in str(user_payload.get("message", "")):
             return {
                 "message": "복약 완료를 기록하겠습니다.",
                 "tool_call": {
                     "name": "update_medication_dose_event_status",
                     "arguments": {
-                        "dose_event_id": 12,
+                        "dose_event_id": "dose-event-12",
                         "reason": "patient_reported_taken",
                     },
                 },
@@ -155,13 +165,17 @@ class NativeDelegatingMedicationProvider(NativeChatProvider):
             return {
                 "message": "복약 완료를 기록하겠습니다.",
                 "tool_call": {
-                    "name": "update_medication_dose_event_status",
+                    "name": REQUEST_RECORD_APPROVAL,
                     "arguments": {
-                        "dose_event_id": 12,
-                        "reason": "patient_reported_taken",
+                        "action_name": UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+                        "record_arguments": {
+                            "dose_event_id": "dose-event-12",
+                        },
                     },
                 },
             }
+        if user_payload.get("response_mode") == "final_answer":
+            return {"advice": "복약 요청 처리를 완료했습니다."}
         return {"advice": "확인했습니다."}
 
 
@@ -243,6 +257,14 @@ class NativeMultiStepNutritionFoodUpdateChatModel(NativeProviderChatModel):
         tool_result_names = [result.tool_name for result in tool_results]
         self.provider.bound_tool_history.append([langchain_tool_name(tool) for tool in self.bound_tools])
 
+        if payload.get("response_mode") == "final_answer":
+            summary = "점심 식사 기록에서 탕수육을 꿔바로우로 수정했어요."
+            return _chat_result(
+                AIMessage(
+                    content=summary,
+                    response_metadata={"model_output": {"message": summary}},
+                )
+            )
         if payload.get("response_mode") == "multiturn_chat" and not tool_result_names:
             return _chat_result(
                 ai_message_from_tool_calls(
@@ -282,15 +304,17 @@ class NativeMultiStepNutritionFoodUpdateChatModel(NativeProviderChatModel):
                     ai_message_from_tool_calls(
                         [
                             {
-                                "name": "update_nutrition_food_record",
+                                "name": REQUEST_RECORD_APPROVAL,
                                 "arguments": {
-                                    "meal_id": 101,
-                                    "food_id": 202,
-                                    "food_ref_id": "guobaorou",
-                                    "food_name": "꿔바로우",
-                                    "portion": {"amount": 1, "unit": "serving"},
-                                    "nutrients": {"calories": 360, "protein": 18},
-                                    "reason": "patient_corrected_food",
+                                    "action_name": "update_nutrition_food_record",
+                                    "record_arguments": {
+                                        "meal_id": "meal-101",
+                                        "food_id": "food-202",
+                                        "food_ref_id": "guobaorou",
+                                        "food_name": "꿔바로우",
+                                        "portion": {"amount": 1, "unit": "serving"},
+                                        "nutrients": {"calories": 360, "protein": 18},
+                                    },
                                 },
                             }
                         ],
@@ -369,6 +393,49 @@ class NativeLoopLimitChatModel(NativeProviderChatModel):
         )
 
 
+class BlankToolFinalizingProvider(NativeChatProvider):
+    def __init__(self, *, blank_response_mode: str = "multiturn_chat") -> None:
+        self.blank_response_mode = blank_response_mode
+
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        response_mode = user_payload.get("response_mode")
+        if response_mode == "multiturn_chat":
+            return {
+                "message": "영양 관리 에이전트가 확인하겠습니다.",
+                "tool_call": {
+                    "name": "delegate_to_nutrition_management_agent",
+                    "arguments": {
+                        "task": "search food candidates",
+                        "reason": "patient asked about a food",
+                    },
+                },
+            }
+        if response_mode == "nutrition_management_chat":
+            return {
+                "message": "음식 후보를 확인하겠습니다.",
+                "tool_call": {
+                    "name": "search_nutrition_food_candidates",
+                    "arguments": {"query": "삶은 계란"},
+                },
+            }
+        if response_mode == "final_answer":
+            return {"message": "   "}
+        raise AssertionError(f"unexpected_response_mode:{response_mode}")
+
+    async def finalize_tool_results(
+        self,
+        system_prompt: str,
+        user_payload: dict[str, Any],
+        tool_results: list[ToolCallResult],
+    ) -> dict[str, Any]:
+        response_mode = str(user_payload.get("response_mode") or "")
+        if response_mode == self.blank_response_mode:
+            return {"message": "   "}
+        if response_mode == "nutrition_management_chat":
+            return {"message": "삶은 계란 후보를 확인했습니다."}
+        raise AssertionError(f"unexpected_response_mode:{response_mode}")
+
+
 class NativeRecentChatProvider(NativeChatProvider):
     def __init__(self) -> None:
         self.seen_payloads: list[dict[str, Any]] = []
@@ -386,7 +453,10 @@ class NativeRecentChatProvider(NativeChatProvider):
 
 class InvalidMissedDoseHybridProvider(NativeChatProvider):
     async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
-        assert user_payload["response_mode"] == "missed_dose_coaching"
+        assert (
+            user_payload["response_mode"]
+            == "missed_dose_message_generation"
+        )
         return {
             "patient_message": "확인했습니다.",
             "likely_reason": "unknown",
@@ -395,13 +465,27 @@ class InvalidMissedDoseHybridProvider(NativeChatProvider):
 
 class UnsafeMissedDoseToolProvider(NativeChatProvider):
     async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
-        assert user_payload["response_mode"] == "missed_dose_coaching"
+        assert (
+            user_payload["response_mode"]
+            == "missed_dose_message_generation"
+        )
         return {
-            "patient_message": "복용 완료를 기록하겠습니다.",
+            "generated_message": "복용 완료를 기록하겠습니다.",
             "tool_call": {
                 "name": "update_medication_dose_event_status",
-                "arguments": {"dose_event_id": 12},
+                "arguments": {"dose_event_id": "dose-event-12"},
             },
+        }
+
+
+class UnsafeMissedDoseMessageProvider(NativeChatProvider):
+    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+        assert (
+            user_payload["response_mode"]
+            == "missed_dose_message_generation"
+        )
+        return {
+            "generated_message": "혈압약은 반드시 복용하세요.",
         }
 
 
@@ -417,6 +501,27 @@ class NativeFakeToolExecutor:
         if is_deferred_policy_tool_call(tool_call):
             return deferred_policy_tool_result(tool_call, trace_id=trace_id, source_event_type=source_event_type)
         self.calls.append({**tool_call, "_source_event_type": source_event_type})
+        if name == REQUEST_RECORD_APPROVAL:
+            action_name = str(tool_call["arguments"]["action_name"])
+            return ToolCallResult(
+                tool_name=name,
+                status="confirmation_required",
+                response={
+                    "mutation_confirmation": {
+                        "confirmation_required": True,
+                        "action_type": "agent_tool",
+                        "action_name": action_name,
+                        "tool_call_id": str(tool_call.get("id") or ""),
+                        "action_fingerprint": f"fingerprint-{action_name}",
+                        "status": "pending",
+                        "display": {
+                            "title": "record confirmation",
+                            "question": "confirm record change",
+                        },
+                    }
+                },
+                idempotency_key=f"{trace_id}:{name}:{action_name}",
+            )
         if name == "update_medication_dose_event_status":
             return ToolCallResult(
                 tool_name=name,
@@ -477,7 +582,7 @@ class NativeFakeToolExecutor:
                 tool_name=name,
                 status="success",
                 response={
-                    "input_symptom": tool_call["arguments"]["symptom_normalize"],
+                    "input_symptom": tool_call["arguments"]["symptom_text"],
                     "matched": True,
                     "match_type": "exact",
                     "matched_symptom_term": "Nausea",
@@ -633,6 +738,15 @@ def internal_auth_headers() -> dict[str, str]:
     return {"X-Internal-Api-Token": token} if token else {}
 
 
+def invoke_multiturn_graph(request: MultiturnChatRequest):
+    return asyncio.run(
+        native_agent_main.orchestrator.invoke(
+            "multiturn_chat",
+            request.model_dump(mode="json"),
+        )
+    )
+
+
 def test_agent_app_has_no_legacy_imports():
     forbidden = {"agent_app_" + "legacy", "agent_app_old_legacy"}
     root = Path("agent_app")
@@ -660,11 +774,15 @@ def test_nutrition_record_verification_prompts_do_not_trust_recent_chat():
 
     assert "Recent chat is not an authoritative source for current nutrition records" in supervisor_prompt
     assert "do not answer from recent_chat" in supervisor_prompt
+    assert "context.structured_response_context is present" in supervisor_prompt
+    assert "not a new generic message" in supervisor_prompt
     assert "delegate to delegate_to_nutrition_management_agent" in supervisor_prompt
     assert "context.recent_diet_recommendations" in supervisor_prompt
     assert "call get_nutrition_meal_record_list first" in management_prompt
     assert "Do not infer current records from recent chat" in management_prompt
     assert "Use context.recent_diet_recommendations before search_nutrition_food_candidates" in management_prompt
+    assert "Call food search once per distinct food expression" in management_prompt
+    assert "the Tool owns search expansion and ranking" in management_prompt
     assert "prefer meal-like foods over snacks or beverages" in recommendation_prompt
 
 
@@ -675,6 +793,37 @@ def test_multiturn_prompt_routes_global_notification_control_to_application_ui()
     assert "do not call propose_notification_policy, propose_system_policy, or any other tool" in supervisor_prompt
     assert "change the setting directly in the application" in supervisor_prompt
     assert "continue using propose_notification_policy for slot-specific" in supervisor_prompt
+    assert "call get_notification_policies first" in supervisor_prompt
+    assert (
+        "call request_record_approval with action_name "
+        "change_notification_policy"
+    ) in supervisor_prompt
+    assert "do not call the write Tool before the user confirms it" in supervisor_prompt
+
+
+def test_record_confirmation_prompts_keep_button_labels_out_of_message_text():
+    prompts = [
+        multiturn_chat_prompt(),
+        mutation_confirmation_prompt(),
+        mutation_confirmation_reply_prompt(),
+        medication_agent_prompt(),
+        nutrition_management_agent_prompt(),
+    ]
+
+    assert all(
+        "button label" in prompt
+        and ("pseudo-button" in prompt or "structured selections" in prompt)
+        for prompt in prompts
+    )
+    assert "Do not repeat action_label or cancel_label" in mutation_confirmation_prompt()
+    assert '{"message":' in mutation_confirmation_prompt()
+    assert "do not return a question field" in mutation_confirmation_prompt()
+
+
+def test_mutation_confirmation_provider_question_is_normalized_to_message():
+    assert _normalize_mutation_confirmation_output(
+        {"question": "이 식사 기록을 저장할까요?"}
+    ) == {"message": "이 식사 기록을 저장할까요?"}
 
 
 def test_agent_app_health_reports_native_runtime():
@@ -697,14 +846,14 @@ def test_agent_app_async_task_status_endpoint_reports_counts():
 
 
 def test_agent_app_async_task_observability_endpoints_report_task_metadata():
-    native_agent_main.Base.metadata.create_all(bind=native_agent_main.engine)
+    native_agent_main.verify_agent_schema_current(native_agent_main.engine)
     request_id = f"observability-{uuid4().hex}"
     with native_agent_main.Session(native_agent_main.engine) as session:
         task, _created = enqueue_async_task(
             session,
             request_id=request_id,
             task_type="missed_dose",
-            payload={"dose_event_id": 12, "phr_patient_key": "secret-phr-key"},
+            payload={"dose_event_id": 12, "patient_id": "patient-observability"},
             callback_context={"job_id": 12},
         )
         task.status = DEAD
@@ -729,10 +878,10 @@ def test_agent_app_async_task_observability_endpoints_report_task_metadata():
     assert matching[0]["runtime_seconds"] is None
     assert matching[0]["is_locked"] is False
     assert matching[0]["is_retry_due"] is True
-    assert matching[0]["payload_keys"] == ["dose_event_id", "phr_patient_key"]
+    assert matching[0]["payload_keys"] == ["dose_event_id", "patient_id"]
     assert matching[0]["payload_parse_error"] is False
     assert matching[0]["callback_context"] == {"job_id": 12}
-    assert "secret-phr-key" not in json.dumps(list_payload, ensure_ascii=False)
+    assert "patient-observability" not in json.dumps(list_payload, ensure_ascii=False)
 
     assert dead_response.status_code == 200
     assert any(item["request_id"] == request_id for item in dead_response.json()["tasks"])
@@ -745,7 +894,7 @@ def test_agent_app_lifespan_does_not_start_embedded_worker_by_default(monkeypatc
     calls: list[bool] = []
     reset_calls: list[bool] = []
 
-    def fake_worker(stop_event, _orchestrator):
+    def fake_worker(stop_event, _orchestrator, _backend_queries):
         calls.append(stop_event.is_set())
 
     monkeypatch.setenv("AGENT_EMBEDDED_WORKER_ENABLED", "false")
@@ -767,7 +916,7 @@ def test_agent_app_lifespan_can_start_embedded_worker_for_dev(monkeypatch):
     calls: list[bool] = []
     reset_calls: list[bool] = []
 
-    def fake_worker(stop_event, _orchestrator):
+    def fake_worker(stop_event, _orchestrator, _backend_queries):
         calls.append(stop_event.is_set())
 
     monkeypatch.setenv("AGENT_EMBEDDED_WORKER_ENABLED", "true")
@@ -852,6 +1001,7 @@ def test_tool_catalog_can_be_exposed_as_mcp_tools_list():
     for tool in payload["tools"]:
         assert tool["inputSchema"]["type"] == "object"
         assert "properties" in tool["inputSchema"]
+        assert tool["inputSchema"]["additionalProperties"] is False
         assert tool["outputSchema"]["type"] == "object"
         assert tool["args_schema"] == tool["inputSchema"]
         assert {"domain", "source_repo", "source_path", "source_tool_name", "mutability", "risk_level"} <= set(tool)
@@ -864,25 +1014,17 @@ def test_tool_catalog_can_be_exposed_as_mcp_tools_list():
     assert "cannot_consume" in predicate_schema["enum"]
 
 
-def test_model_visible_tool_contract_does_not_expose_legacy_names():
-    tools_payload = json.dumps(ToolCatalog.available_tools_payload(), ensure_ascii=False)
-    delegation_payload = json.dumps(delegation_tools_payload(), ensure_ascii=False)
-    prompt_payload = "\n".join(
-        [
-            multiturn_chat_prompt(),
-            nutrition_management_agent_prompt(),
-            nutrition_recommendation_agent_prompt(),
-        ]
+def test_model_visible_tool_contract_uses_only_canonical_names():
+    tools = ToolCatalog.available_tools_payload()
+    delegation_tools = delegation_tools_payload()
+
+    assert {tool["name"] for tool in tools} <= ALL_TOOL_NAMES
+    assert {tool["name"] for tool in delegation_tools} == DELEGATION_TOOL_NAMES
+    assert {tool["name"] for tool in delegation_tools}.isdisjoint(ALL_TOOL_NAMES)
+    assert all(
+        tool["inputSchema"]["additionalProperties"] is False
+        for tool in delegation_tools
     )
-    visible_payload = "\n".join([tools_payload, delegation_payload, prompt_payload])
-    violations = [legacy_name for legacy_name in sorted(LEGACY_TOOL_NAMES) if re.search(rf"(?<![A-Za-z0-9_]){re.escape(legacy_name)}(?![A-Za-z0-9_])", visible_payload)]
-
-    assert violations == []
-
-
-def test_legacy_tool_name_replacement_keeps_canonical_names_stable():
-    assert replace_legacy_tool_names("record_meal should be hidden") == "create_nutrition_meal_record should be hidden"
-    assert replace_legacy_tool_names(CREATE_NUTRITION_MEAL_RECORD) == CREATE_NUTRITION_MEAL_RECORD
 
 
 def test_tool_result_round_trips_through_mcp_shape():
@@ -906,12 +1048,18 @@ def test_http_status_tool_error_preserves_public_detail_code_and_redacts_private
     public_response = httpx.Response(
         422,
         json={"detail": "invalid_date_format"},
-        request=httpx.Request("POST", "http://system.test/api/agent/nutrition/meals"),
+        request=httpx.Request(
+            "POST",
+            "http://system.test/agent/sync/record-change",
+        ),
     )
     private_response = httpx.Response(
         422,
         json={"detail": "pytest private detail peanut allergy token=secret-value"},
-        request=httpx.Request("POST", "http://system.test/api/agent/nutrition/meals"),
+        request=httpx.Request(
+            "POST",
+            "http://system.test/agent/sync/record-change",
+        ),
     )
 
     public_result = http_status_tool_error_result(
@@ -946,7 +1094,10 @@ def test_mcp_agent_tool_executor_calls_tools_call_json_rpc():
 
     result = asyncio.run(
         executor.execute_tool_call(
-            {"name": "update_medication_dose_event_status", "arguments": {"dose_event_id": 12}},
+            {
+                "name": "update_medication_dose_event_status",
+                "arguments": {"dose_event_id": "dose-event-12"},
+            },
             trace_id="trace-mcp",
             source_event_type="multiturn_chat",
             payload={"patient_id": "demo-patient"},
@@ -956,12 +1107,15 @@ def test_mcp_agent_tool_executor_calls_tools_call_json_rpc():
     assert result.tool_name == "update_medication_dose_event_status"
     assert result.status == "success"
     assert server.requests[0]["request"]["method"] == MCP_METHOD_TOOLS_CALL
-    assert server.requests[0]["request"]["params"] == {"name": "update_medication_dose_event_status", "arguments": {"dose_event_id": 12}}
+    assert server.requests[0]["request"]["params"] == {
+        "name": "update_medication_dose_event_status",
+        "arguments": {"dose_event_id": "dose-event-12"},
+    }
     assert server.requests[0]["trace_id"] == "trace-mcp"
     assert server.requests[0]["source_event_type"] == "multiturn_chat"
 
 
-def test_agent_app_mcp_tools_list_endpoint_reports_context_allowed_catalog():
+def test_agent_app_mcp_tools_list_endpoint_is_always_generic_read_only():
     request = mcp_json_rpc_request(MCP_METHOD_TOOLS_LIST, request_id="tools-list")
 
     response = TestClient(native_agent_main.app).post("/agent/mcp", json=request, headers=internal_auth_headers())
@@ -975,47 +1129,60 @@ def test_agent_app_mcp_tools_list_endpoint_reports_context_allowed_catalog():
     assert {
         "get_pro_ctcae_questionnaire",
         "search_nutrition_food_candidates",
+        "get_nutrition_meal_record_list",
+        "get_nutrition_daily_summary",
+        "get_nutrition_preference_summary",
+        "get_nutrition_recommendation_candidates",
+    } <= tool_names
+    assert not {
+        "request_record_approval",
         "create_nutrition_meal_record",
         "update_nutrition_meal_record",
         "delete_nutrition_meal_record",
         "update_nutrition_food_record",
         "delete_nutrition_food_record",
-        "get_nutrition_meal_record_list",
-        "get_nutrition_daily_summary",
         "upsert_nutrition_preference_fact",
-        "get_nutrition_preference_summary",
-    } <= tool_names
+    }.intersection(tool_names)
     assert "update_medication_dose_event_status" not in tool_names
     assert "get_medication_side_effect_assessment" not in tool_names
     assert "propose_notification_policy" not in tool_names
 
-    context_request = mcp_json_rpc_request(
+    spoofed_meta_request = mcp_json_rpc_request(
         MCP_METHOD_TOOLS_LIST,
-        {"_meta": {"source_event_type": "multiturn_chat"}},
-        request_id="tools-list-multiturn",
+        {"_meta": {"source_event_type": SOURCE_NUTRITION_MANAGEMENT_AGENT}},
+        request_id="tools-list-spoofed-meta",
     )
-    context_response = TestClient(native_agent_main.app).post("/agent/mcp", json=context_request, headers=internal_auth_headers())
+    spoofed_param_request = mcp_json_rpc_request(
+        MCP_METHOD_TOOLS_LIST,
+        {"source_event_type": SOURCE_MEDICATION_AGENT},
+        request_id="tools-list-spoofed-param",
+    )
 
-    assert context_response.status_code == 200
-    context_payload = context_response.json()
-    assert context_payload["result"]["source_event_type"] == "multiturn_chat"
-    context_tools = {tool["name"]: tool for tool in context_payload["result"]["tools"]}
-    assert {"propose_notification_policy", "propose_system_policy"} <= set(context_tools)
-    assert "update_medication_dose_event_status" not in context_tools
-    assert "get_medication_side_effect_assessment" not in context_tools
-    assert "get_pro_ctcae_questionnaire" not in context_tools
-    policy_meta = context_tools["propose_notification_policy"]["_meta"]
-    assert policy_meta["execution_mode"] == "deferred_confirmation"
-    assert policy_meta["requires_human_handoff"] is True
-    assert policy_meta["handoff_gate"] == "high_risk_policy_change"
+    for spoofed_request in (spoofed_meta_request, spoofed_param_request):
+        spoofed_response = TestClient(native_agent_main.app).post(
+            "/agent/mcp",
+            json=spoofed_request,
+            headers=internal_auth_headers(),
+        )
+
+        assert spoofed_response.status_code == 200
+        spoofed_payload = spoofed_response.json()
+        assert spoofed_payload["result"]["source_event_type"] == SOURCE_MCP
+        spoofed_tools = {
+            tool["name"] for tool in spoofed_payload["result"]["tools"]
+        }
+        assert spoofed_tools == tool_names
+        assert CREATE_NUTRITION_MEAL_RECORD not in spoofed_tools
+        assert UPDATE_MEDICATION_DOSE_EVENT_STATUS not in spoofed_tools
+        assert "get_medication_side_effect_assessment" not in spoofed_tools
 
 
-def test_tool_call_validation_accepts_tool_name_alias():
+def test_tool_call_validation_accepts_canonical_name_with_native_args():
     output = {
         "message": "음식 정보를 먼저 찾아볼게요.",
         "tool_calls": [
             {
-                "tool_name": "search_nutrition_food_candidates",
+                "name": "search_nutrition_food_candidates",
                 "args": {"query": "마라탕"},
             }
         ],
@@ -1026,9 +1193,8 @@ def test_tool_call_validation_accepts_tool_name_alias():
 
     assert calls == [
         {
-            "tool_name": "search_nutrition_food_candidates",
-            "args": {"query": "마라탕"},
             "name": "search_nutrition_food_candidates",
+            "args": {"query": "마라탕"},
             "arguments": {"query": "마라탕"},
         }
     ]
@@ -1061,7 +1227,10 @@ def test_tool_calls_payload_keeps_food_search_meal_type_hint():
 def test_agent_app_mcp_direct_call_enforces_default_tool_allowlist():
     request = mcp_json_rpc_request(
         MCP_METHOD_TOOLS_CALL,
-        {"name": "update_medication_dose_event_status", "arguments": {"dose_event_id": 12}},
+        {
+            "name": "update_medication_dose_event_status",
+            "arguments": {"dose_event_id": "dose-event-12"},
+        },
         request_id="blocked-tool",
     )
 
@@ -1075,6 +1244,42 @@ def test_agent_app_mcp_direct_call_enforces_default_tool_allowlist():
     assert result["structuredContent"]["status"] == "error"
     assert result["structuredContent"]["error"] == "tool_permission_denied"
     assert result["structuredContent"]["response"]["source_event_type"] == "mcp"
+
+
+def test_agent_app_mcp_direct_nutrition_write_is_read_only_denied():
+    request = mcp_json_rpc_request(
+        MCP_METHOD_TOOLS_CALL,
+        {
+            "name": CREATE_NUTRITION_MEAL_RECORD,
+            "arguments": {
+                "meal_type": "lunch",
+                "foods": [{"food_name": "삶은 계란"}],
+            },
+            "_meta": {
+                "source_event_type": SOURCE_NUTRITION_MANAGEMENT_AGENT,
+            },
+        },
+        request_id="blocked-generic-mcp-write",
+    )
+
+    response = TestClient(native_agent_main.app).post(
+        "/agent/mcp",
+        json=request,
+        headers=internal_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["isError"] is True
+    assert (
+        result["structuredContent"]["tool_name"]
+        == CREATE_NUTRITION_MEAL_RECORD
+    )
+    assert result["structuredContent"]["error"] == "tool_permission_denied"
+    assert (
+        result["structuredContent"]["response"]["source_event_type"]
+        == SOURCE_MCP
+    )
 
 
 def test_specialist_source_event_types_enforce_tool_boundaries():
@@ -1098,8 +1303,15 @@ def test_specialist_source_event_types_enforce_tool_boundaries():
         == f"{GET_NUTRITION_RECOMMENDATION_CANDIDATES} is not allowed for {SOURCE_NUTRITION_MANAGEMENT_AGENT}"
     )
 
-    dose_call = {"name": UPDATE_MEDICATION_DOSE_EVENT_STATUS, "arguments": {"dose_event_id": 12}}
-    dose_payload = {"context": {"today_dose_events": [{"dose_event_id": 12}]}}
+    dose_call = {
+        "name": UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+        "arguments": {"dose_event_id": "dose-event-12"},
+    }
+    dose_payload = {
+        "context": {
+            "today_dose_events": [{"dose_event_id": "dose-event-12"}]
+        }
+    }
 
     assert (
         validate_tool_permission(dose_call, source_event_type=SOURCE_MULTITURN_CHAT, payload=dose_payload)
@@ -1111,7 +1323,7 @@ def test_specialist_source_event_types_enforce_tool_boundaries():
         query_call = {"name": query_tool_name, "arguments": {}}
         assert validate_tool_permission(query_call, source_event_type=SOURCE_MULTITURN_CHAT, payload={}) == f"{query_tool_name} is not allowed for {SOURCE_MULTITURN_CHAT}"
         assert validate_tool_permission(query_call, source_event_type=SOURCE_MEDICATION_AGENT, payload={}) is None
-        assert async_continuation_type([query_call]) == ""
+        assert continuation_type([query_call]) == ""
 
     assert (
         validate_tool_permission(dose_call, source_event_type=SOURCE_NUTRITION_MANAGEMENT_AGENT, payload=dose_payload)
@@ -1119,67 +1331,29 @@ def test_specialist_source_event_types_enforce_tool_boundaries():
     )
 
 
-def test_agent_app_mcp_allows_nutrition_tools():
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        CREATE_NUTRITION_MEAL_RECORD,
+        UPSERT_NUTRITION_PREFERENCE_FACT,
+        "update_nutrition_meal_record",
+        "delete_nutrition_meal_record",
+        "update_nutrition_food_record",
+        "delete_nutrition_food_record",
+    ],
+)
+def test_agent_app_generic_mcp_source_is_read_only(tool_name):
     denial = validate_tool_permission(
-        {
-            "name": "create_nutrition_meal_record",
-            "arguments": {
-                "meal_type": "lunch",
-                "foods": [{"food_name": "짜장면", "nutrients": {"sodium": 1200}}],
-            },
-        },
+        {"name": tool_name, "arguments": {}},
         source_event_type="mcp",
         payload={},
     )
 
-    assert denial is None
-
-    preference_denial = validate_tool_permission(
-        {
-            "name": "upsert_nutrition_preference_fact",
-            "arguments": {"predicate": "dislikes", "object_label": "짜장면"},
-        },
-        source_event_type="mcp",
-        payload={},
-    )
-
-    assert preference_denial is None
-    assert (
-        validate_tool_permission(
-            {"name": "update_nutrition_meal_record", "arguments": {"meal_id": 1, "meal_type": "dinner"}},
-            source_event_type="mcp",
-            payload={},
-        )
-        is None
-    )
-    assert (
-        validate_tool_permission(
-            {"name": "delete_nutrition_meal_record", "arguments": {"meal_id": 1}},
-            source_event_type="mcp",
-            payload={},
-        )
-        is None
-    )
-    assert (
-        validate_tool_permission(
-            {"name": "update_nutrition_food_record", "arguments": {"meal_id": 1, "food_id": 10, "portion": "half"}},
-            source_event_type="mcp",
-            payload={},
-        )
-        is None
-    )
-    assert (
-        validate_tool_permission(
-            {"name": "delete_nutrition_food_record", "arguments": {"meal_id": 1, "food_id": 10}},
-            source_event_type="mcp",
-            payload={},
-        )
-        is None
-    )
+    assert denial == f"{tool_name} is not allowed for mcp"
 
 
-def test_rule_based_provider_splits_explicit_nutrition_preferences_by_entity():
-    result = RuleBasedProvider().model_output(
+def test_deterministic_provider_splits_explicit_nutrition_preferences_by_entity():
+    result = DeterministicTestProvider().model_output(
         {
             "response_mode": "multiturn_chat",
             "message": "나는 짜장면 싫어하고 땅콩 알레르기가 있어",
@@ -1193,15 +1367,14 @@ def test_rule_based_provider_splits_explicit_nutrition_preferences_by_entity():
     assert by_label["땅콩"] == "allergic_to"
 
 
-def test_async_request_id_prefers_conversation_id_over_reset_prone_job_id():
+def test_async_request_id_prefers_stable_job_id():
     context = AgentCallbackContext(
         app_base_url="http://system",
         notification_id=3,
         job_id=1,
-        conversation_id="missed-dose-1-abc123",
     )
 
-    assert native_agent_main._request_id("missed_dose", context) == "missed_dose:conversation:missed-dose-1-abc123"
+    assert native_agent_main._request_id("missed_dose", context) == "missed_dose:job:1"
 
 
 def test_agent_app_daily_pattern_endpoint_is_system_compatible(monkeypatch):
@@ -1234,43 +1407,92 @@ def test_agent_app_missed_dose_endpoint_is_system_compatible(monkeypatch):
     assert payload["decision_type"] == "missed_dose_assessment"
     assert payload["requires_conversation_alert"] is True
     assert payload["structured_payload"]["dose_event_id"] == 12
-    assert "Always include missed_dose_hybrid.generated_message" in provider.seen_prompts[0]
-    assert "Put missed_dose_hybrid.reason before generated_message" in provider.seen_prompts[0]
-    assert '"reason":"<why this expression fits the tone/context>","generated_message"' in provider.seen_prompts[0]
-    assert "45 characters or fewer" in provider.seen_prompts[0]
+    assert payload["structured_payload"]["feedback_category"] == "B"
+    assert payload["structured_payload"]["feedback_tone"] == "persuasion"
+    assert payload["structured_payload"]["tools_executed"] is False
+    assert payload["structured_payload"]["tool_execution_mode"] == "none"
+    assert len(provider.seen_prompts) == 1
+    assert len(provider.seen_payloads) == 1
+    assert (
+        provider.seen_payloads[0]["response_mode"]
+        == "missed_dose_message_generation"
+    )
+    serialized_payload = json.dumps(
+        provider.seen_payloads[0],
+        ensure_ascii=False,
+    )
+    assert "demo-patient" not in serialized_payload
+    assert "혈압약" not in serialized_payload
+    assert "dose_event_id" not in serialized_payload
+    assert "복약 루틴을 함께 맞춰봐요" not in serialized_payload
 
 
-def test_missed_dose_output_validator_fails_when_hybrid_required(monkeypatch):
+def test_missed_dose_fails_closed_when_feedback_context_is_missing(monkeypatch):
     provider = InvalidMissedDoseHybridProvider()
     orchestrator = AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=NativeFakeToolExecutor())
     payload = build_missed_payload().model_copy(
         update={
-            "adherence_pattern_context": {"pattern_code": "B"},
-            "tone_policy_context": {"tone_key": "persuasion"},
+            "adherence_pattern_context": {},
+            "tone_policy_context": {},
         }
     )
 
     with pytest.raises(AgentExecutionError) as exc_info:
         asyncio.run(orchestrator.invoke("missed_dose", payload.model_dump(mode="json")))
 
-    assert exc_info.value.error_type == "llm_output_validation_failed"
+    assert exc_info.value.error_type == "missed_dose_policy_context_invalid"
     assert exc_info.value.agent_name == "missed_dose_coach"
     assert exc_info.value.decision_type == "missed_dose_assessment"
 
 
-def test_missed_dose_tool_permission_blocks_mark_taken(monkeypatch):
+def test_missed_dose_rejects_invalid_llm_schema_without_fallback():
+    orchestrator = AgentLangGraphNativeOrchestrator(
+        provider=InvalidMissedDoseHybridProvider(),
+        tool_executor=NativeFakeToolExecutor(),
+    )
+
+    with pytest.raises(AgentExecutionError) as exc_info:
+        asyncio.run(
+            orchestrator.invoke(
+                "missed_dose",
+                build_missed_payload().model_dump(mode="json"),
+            )
+        )
+
+    assert exc_info.value.error_type == "llm_output_validation_failed"
+
+
+def test_missed_dose_rejects_unsafe_llm_message_without_fallback():
+    orchestrator = AgentLangGraphNativeOrchestrator(
+        provider=UnsafeMissedDoseMessageProvider(),
+        tool_executor=NativeFakeToolExecutor(),
+    )
+
+    with pytest.raises(AgentExecutionError) as exc_info:
+        asyncio.run(
+            orchestrator.invoke(
+                "missed_dose",
+                build_missed_payload().model_dump(mode="json"),
+            )
+        )
+
+    assert exc_info.value.error_type == "llm_output_validation_failed"
+
+
+def test_missed_dose_rejects_tool_calls_without_executing_them(monkeypatch):
     provider = UnsafeMissedDoseToolProvider()
     tool_executor = NativeFakeToolExecutor()
     orchestrator = AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=tool_executor)
 
-    response = asyncio.run(orchestrator.invoke("missed_dose", build_missed_payload().model_dump(mode="json")))
+    with pytest.raises(AgentExecutionError) as exc_info:
+        asyncio.run(
+            orchestrator.invoke(
+                "missed_dose",
+                build_missed_payload().model_dump(mode="json"),
+            )
+        )
 
-    structured = response.structured_payload
-    assert structured["tool_call"]["name"] == "update_medication_dose_event_status"
-    assert structured["tool_results"][0]["tool_name"] == "update_medication_dose_event_status"
-    assert structured["tool_results"][0]["status"] == "error"
-    assert structured["tool_results"][0]["error"] == "tool_permission_denied"
-    assert "missed_dose" in structured["tool_results"][0]["response"]["source_event_type"]
+    assert exc_info.value.error_type == "llm_output_validation_failed"
     assert tool_executor.calls == []
 
 
@@ -1278,12 +1500,8 @@ def test_agent_app_multiturn_blocks_direct_medication_tool_call(monkeypatch):
     provider = NativeFakeProvider()
     tool_executor = NativeFakeToolExecutor()
     monkeypatch.setattr(native_agent_main, "orchestrator", AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=tool_executor))
-    client = TestClient(native_agent_main.app)
 
-    response = client.post("/agent/multiturn-chat", json=build_taken_chat_request().model_dump(mode="json"), headers=internal_auth_headers())
-
-    assert response.status_code == 200
-    payload = response.json()
+    payload = invoke_multiturn_graph(build_taken_chat_request()).model_dump(mode="json")
     structured = payload["structured_payload"]
     assert payload["agent_name"] == "multiturn_chat_agent"
     assert payload["decision_type"] == "tool_call"
@@ -1305,47 +1523,153 @@ def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_perm
     provider = NativeDelegatingMedicationProvider()
     tool_executor = NativeFakeToolExecutor()
     monkeypatch.setattr(native_agent_main, "orchestrator", AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=tool_executor))
-    client = TestClient(native_agent_main.app)
 
-    response = client.post("/agent/multiturn-chat", json=build_taken_chat_request().model_dump(mode="json"), headers=internal_auth_headers())
-
-    assert response.status_code == 200
-    payload = response.json()
+    payload = invoke_multiturn_graph(build_taken_chat_request()).model_dump(mode="json")
     assert payload["agent_name"] == "multiturn_chat_agent"
-    assert payload["decision_type"] == "tool_call"
-    assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
+    assert payload["decision_type"] == "mutation_confirmation_required"
+    assert payload["structured_payload"]["routing_mode"] == "mutation_confirmation_required"
     assert payload["structured_payload"]["tool_loop_mode"] == "langgraph_state_graph"
-    assert payload["structured_payload"]["delegated_agent"] == "medication_agent"
-    assert payload["structured_payload"]["delegated_by"] == "multiturn_chat_agent"
     assert payload["structured_payload"]["supervisor_agent"] == "multiturn_chat_agent"
-    assert payload["structured_payload"]["specialist_agent"] == "medication_agent"
     assert payload["structured_payload"]["executed_by"] == "multiturn_chat_agent"
     assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "delegate_to_medication_agent"
-    assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == "update_medication_dose_event_status"
-    assert payload["structured_payload"]["tool_call"]["name"] == "update_medication_dose_event_status"
-    assert payload["structured_payload"]["tool_results"][0]["tool_name"] == "update_medication_dose_event_status"
-    assert payload["structured_payload"]["tool_results"][0]["status"] == "success"
-    assert payload["structured_payload"]["tool_results"][0]["response"]["status"] == "taken"
-    assert tool_executor.calls[0]["name"] == "update_medication_dose_event_status"
+    assert payload["structured_payload"]["specialist_tool_calls"][0]["name"] == REQUEST_RECORD_APPROVAL
+    assert payload["structured_payload"]["tool_results"][0]["tool_name"] == REQUEST_RECORD_APPROVAL
+    assert payload["structured_payload"]["tool_results"][0]["status"] == "confirmation_required"
+    assert payload["structured_payload"]["mutation_confirmation"]["action_name"] == UPDATE_MEDICATION_DOSE_EVENT_STATUS
+    assert tool_executor.calls[0]["name"] == REQUEST_RECORD_APPROVAL
+    assert tool_executor.calls[0]["arguments"]["action_name"] == UPDATE_MEDICATION_DOSE_EVENT_STATUS
     assert tool_executor.calls[0]["_source_event_type"] == SOURCE_MEDICATION_AGENT
-    assert [seen["response_mode"] for seen in provider.seen_payloads] == ["multiturn_chat", "medication_chat"]
+    assert [seen.get("response_mode") for seen in provider.seen_payloads] == [
+        "multiturn_chat",
+        "medication_chat",
+        None,
+    ]
     supervisor_tools = set(provider.bound_tool_history[0])
     specialist_tools = set(provider.bound_tool_history[1])
     assert "delegate_to_medication_agent" in supervisor_tools
-    assert {"propose_notification_policy", "propose_system_policy"} <= supervisor_tools
+    assert {
+        "propose_notification_policy",
+        "propose_system_policy",
+        "get_notification_policies",
+        "request_record_approval",
+    } <= supervisor_tools
+    assert "change_notification_policy" not in supervisor_tools
     assert {
         "update_medication_dose_event_status",
         "get_medication_side_effect_assessment",
         "get_pro_ctcae_questionnaire",
     }.isdisjoint(supervisor_tools)
     assert {
-        "update_medication_dose_event_status",
+        "request_record_approval",
         "get_medication_side_effect_assessment",
         "get_pro_ctcae_questionnaire",
         "get_medication_dose_status",
         "get_side_effect_history",
     } <= specialist_tools
+    assert "update_medication_dose_event_status" not in specialist_tools
     assert "get_nutrition_recommendation_candidates" not in specialist_tools
+
+
+def test_agent_app_executes_approved_policy_change_in_supervisor(
+    monkeypatch,
+):
+    class ApprovedPolicyProvider(NativeChatProvider):
+        async def model_output(
+            self,
+            _system_prompt: str,
+            user_payload: dict[str, Any],
+        ) -> dict[str, Any]:
+            if (
+                user_payload.get("response_mode")
+                == "approved_write_finalization"
+            ):
+                return {"message": "아침 알림 정책을 변경했어요."}
+            raise AssertionError(
+                "approved policy Tool must be forced before model routing"
+            )
+
+        async def finalize_tool_results(
+            self,
+            _system_prompt: str,
+            _user_payload: dict[str, Any],
+            tool_results: list[ToolCallResult],
+        ) -> dict[str, Any]:
+            assert [result.tool_name for result in tool_results] == [
+                CHANGE_NOTIFICATION_POLICY
+            ]
+            return {"message": "아침 알림 정책을 변경했어요."}
+
+    class ApprovedPolicyExecutor:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def execute_tool_call(
+            self,
+            tool_call,
+            *,
+            trace_id,
+            source_event_type,
+            payload,
+        ):
+            self.calls.append(
+                {
+                    **tool_call,
+                    "_source_event_type": source_event_type,
+                    "_payload": payload,
+                }
+            )
+            return ToolCallResult(
+                tool_name=CHANGE_NOTIFICATION_POLICY,
+                status="success",
+                response={
+                    "success": True,
+                    "result": {
+                        "policy_id": "npol_approved",
+                        "decision": "apply",
+                        "version": 5,
+                    },
+                },
+                idempotency_key="mutation:policy-confirmation",
+            )
+
+    executor = ApprovedPolicyExecutor()
+    monkeypatch.setattr(
+        native_agent_main,
+        "orchestrator",
+        AgentLangGraphNativeOrchestrator(
+            provider=ApprovedPolicyProvider(),
+            tool_executor=executor,
+        ),
+    )
+    request = build_taken_chat_request().model_copy(deep=True)
+    request.message = "변경"
+    request.context = {
+        **request.context,
+        "approved_user_action": {
+            "action_name": CHANGE_NOTIFICATION_POLICY,
+            "status": "confirmed",
+            "arguments": {
+                "approval_key": "apv_abcdefghijklmnopqrstuvwx",
+            },
+        },
+    }
+
+    response = invoke_multiturn_graph(request)
+
+    assert response.human_summary == "아침 알림 정책을 변경했어요."
+    assert len(executor.calls) == 1
+    assert executor.calls[0]["name"] == CHANGE_NOTIFICATION_POLICY
+    assert (
+        executor.calls[0]["_source_event_type"]
+        == SOURCE_MULTITURN_CHAT
+    )
+    assert executor.calls[0]["arguments"] == {
+        "approval_key": "apv_abcdefghijklmnopqrstuvwx",
+    }
+    assert "apv_abcdefghijklmnopqrstuvwx" not in json.dumps(
+        response.structured_payload,
+        ensure_ascii=False,
+    )
 
 
 def test_agent_app_mutation_confirmation_stops_specialist_and_finishes_in_supervisor(monkeypatch):
@@ -1363,7 +1687,6 @@ def test_agent_app_mutation_confirmation_stops_specialist_and_finishes_in_superv
                 response={
                     "mutation_confirmation": {
                         "confirmation_required": True,
-                        "confirmation_id": "confirmation-1",
                         "action_type": "agent_tool",
                         "action_name": UPDATE_MEDICATION_DOSE_EVENT_STATUS,
                         "tool_call_id": tool_call.get("id", ""),
@@ -1383,22 +1706,14 @@ def test_agent_app_mutation_confirmation_stops_specialist_and_finishes_in_superv
         "orchestrator",
         AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=executor),
     )
-    client = TestClient(native_agent_main.app)
-
-    response = client.post(
-        "/agent/multiturn-chat",
-        json=build_taken_chat_request().model_dump(mode="json"),
-        headers=internal_auth_headers(),
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
+    payload = invoke_multiturn_graph(build_taken_chat_request()).model_dump(mode="json")
     structured = payload["structured_payload"]
     assert payload["agent_name"] == "multiturn_chat_agent"
     assert payload["decision_type"] == "mutation_confirmation_required"
     assert structured["routing_mode"] == "mutation_confirmation_required"
     assert structured["mutation_confirmation_required"] is True
-    assert structured["mutation_confirmation"]["confirmation_id"] == "confirmation-1"
+    assert "confirmation_id" not in structured["mutation_confirmation"]
+    assert "approval_key" not in structured["mutation_confirmation"]
     assert structured["tool_results"][0]["status"] == "confirmation_required"
     assert executor.calls[0]["_source_event_type"] == SOURCE_MEDICATION_AGENT
     assert provider.chat_model_bound_tool_history[-1] == []
@@ -1448,7 +1763,6 @@ def test_agent_app_nutrition_preference_confirmation_stops_specialist_and_finish
                 response={
                     "mutation_confirmation": {
                         "confirmation_required": True,
-                        "confirmation_id": "preference-confirmation-1",
                         "action_type": "agent_tool",
                         "action_name": UPSERT_NUTRITION_PREFERENCE_FACT,
                         "tool_call_id": tool_call.get("id", ""),
@@ -1469,24 +1783,15 @@ def test_agent_app_nutrition_preference_confirmation_stops_specialist_and_finish
         "orchestrator",
         AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=executor),
     )
-    client = TestClient(native_agent_main.app)
     request = MultiturnChatRequest(
         patient_id="demo-patient",
-        phr_patient_key="phr-demo",
         event_type="multiturn_chat",
         message="What should I eat for dinner? I am allergic to apples.",
         current_time=datetime(2026, 4, 20, 18, 30),
         context={"recent_chat": []},
     )
 
-    response = client.post(
-        "/agent/multiturn-chat",
-        json=request.model_dump(mode="json"),
-        headers=internal_auth_headers(),
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
+    payload = invoke_multiturn_graph(request).model_dump(mode="json")
     structured = payload["structured_payload"]
     assert payload["agent_name"] == "multiturn_chat_agent"
     assert payload["decision_type"] == "mutation_confirmation_required"
@@ -1508,6 +1813,8 @@ def test_agent_app_interprets_pending_mutation_confirmation_reply_without_tools(
 
         async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
             self.seen_payloads.append(user_payload)
+            if user_payload["response_mode"] == "final_answer":
+                return {"message": f"confirmation reply: {intent}"}
             assert user_payload["response_mode"] == "mutation_confirmation_reply"
             return {"intent": intent, "message": f"confirmation reply: {intent}"}
 
@@ -1521,7 +1828,6 @@ def test_agent_app_interprets_pending_mutation_confirmation_reply_without_tools(
         "orchestrator",
         AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=NoToolExecutor()),
     )
-    client = TestClient(native_agent_main.app)
     request = build_taken_chat_request().model_copy(deep=True)
     request.message = "natural confirmation reply"
     request.context = {
@@ -1532,14 +1838,7 @@ def test_agent_app_interprets_pending_mutation_confirmation_reply_without_tools(
         },
     }
 
-    response = client.post(
-        "/agent/multiturn-chat",
-        json=request.model_dump(mode="json"),
-        headers=internal_auth_headers(),
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
+    payload = invoke_multiturn_graph(request).model_dump(mode="json")
     assert payload["agent_name"] == "multiturn_chat_agent"
     assert payload["decision_type"] == "mutation_confirmation_reply"
     assert payload["structured_payload"]["mutation_confirmation_reply"] == {"intent": intent}
@@ -1570,7 +1869,6 @@ def test_agent_app_continues_new_request_after_pending_confirmation_reply_classi
         "orchestrator",
         AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=NoToolExecutor()),
     )
-    client = TestClient(native_agent_main.app)
     request = build_taken_chat_request().model_copy(deep=True)
     request.message = "What time is it now?"
     request.context = {
@@ -1581,14 +1879,7 @@ def test_agent_app_continues_new_request_after_pending_confirmation_reply_classi
         },
     }
 
-    response = client.post(
-        "/agent/multiturn-chat",
-        json=request.model_dump(mode="json"),
-        headers=internal_auth_headers(),
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
+    payload = invoke_multiturn_graph(request).model_dump(mode="json")
     assert payload["decision_type"] == "system_guidance"
     assert payload["human_summary"] == "Handled the independent request."
     assert payload["structured_payload"]["mutation_confirmation_reply"] == {"intent": "new_request"}
@@ -1656,7 +1947,6 @@ def test_agent_app_revises_pending_preference_confirmation_with_a_new_proposal(m
                 response={
                     "mutation_confirmation": {
                         "confirmation_required": True,
-                        "confirmation_id": "preference-revision-confirmation",
                         "action_type": "agent_tool",
                         "action_name": UPSERT_NUTRITION_PREFERENCE_FACT,
                         "tool_call_id": tool_call.get("id", ""),
@@ -1678,7 +1968,6 @@ def test_agent_app_revises_pending_preference_confirmation_with_a_new_proposal(m
         "orchestrator",
         AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=executor),
     )
-    client = TestClient(native_agent_main.app)
     request = build_taken_chat_request().model_copy(deep=True)
     request.message = "Apply it as a hard ingestion restriction."
     request.context = {
@@ -1693,20 +1982,14 @@ def test_agent_app_revises_pending_preference_confirmation_with_a_new_proposal(m
         },
     }
 
-    response = client.post(
-        "/agent/multiturn-chat",
-        json=request.model_dump(mode="json"),
-        headers=internal_auth_headers(),
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
+    payload = invoke_multiturn_graph(request).model_dump(mode="json")
     structured = payload["structured_payload"]
     assert payload["agent_name"] == "multiturn_chat_agent"
     assert payload["decision_type"] == "mutation_confirmation_required"
     assert structured["mutation_confirmation_reply"] == {"intent": "revise"}
     assert structured["mutation_confirmation_revision"]["display"]["target"] == "watermelon"
-    assert structured["mutation_confirmation"]["confirmation_id"] == "preference-revision-confirmation"
+    assert "confirmation_id" not in structured["mutation_confirmation"]
+    assert "approval_key" not in structured["mutation_confirmation"]
     assert executor.calls[0]["name"] == UPSERT_NUTRITION_PREFERENCE_FACT
     assert executor.calls[0]["arguments"]["predicate"] == "cannot_consume"
     assert executor.calls[0]["arguments"]["safety_level"] == "hard"
@@ -1718,6 +2001,8 @@ def test_agent_app_empty_pending_confirmation_context_uses_standard_supervisor_r
             self.bound_tool_names: list[str] = []
 
         async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
+            if user_payload["response_mode"] == "final_answer":
+                return {"message": "standard response"}
             assert user_payload["response_mode"] == "multiturn_chat"
             return {"message": "standard response"}
 
@@ -1731,19 +2016,11 @@ def test_agent_app_empty_pending_confirmation_context_uses_standard_supervisor_r
         "orchestrator",
         AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=NoToolExecutor()),
     )
-    client = TestClient(native_agent_main.app)
     request = build_taken_chat_request().model_copy(deep=True)
     request.message = "hello"
     request.context = {**request.context, "pending_mutation_confirmation": {}}
 
-    response = client.post(
-        "/agent/multiturn-chat",
-        json=request.model_dump(mode="json"),
-        headers=internal_auth_headers(),
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
+    payload = invoke_multiturn_graph(request).model_dump(mode="json")
     assert payload["decision_type"] == "system_guidance"
     assert payload["human_summary"] == "standard response"
     assert "mutation_confirmation_reply" not in payload["structured_payload"]
@@ -1759,7 +2036,7 @@ def test_agent_app_rejects_unapplied_mutation_result_instead_of_claiming_success
                 tool_name=tool_call["name"],
                 status="skipped",
                 response={
-                    "dose_event_id": 12,
+                    "dose_event_id": "dose-event-12",
                     "status": "taken",
                     "message": "stale result from an earlier confirmation",
                 },
@@ -1771,386 +2048,25 @@ def test_agent_app_rejects_unapplied_mutation_result_instead_of_claiming_success
         "orchestrator",
         AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=SkippedMutationExecutor()),
     )
-    client = TestClient(native_agent_main.app)
+    with pytest.raises(AgentExecutionError) as exc_info:
+        invoke_multiturn_graph(build_taken_chat_request())
 
-    response = client.post(
-        "/agent/multiturn-chat",
-        json=build_taken_chat_request().model_dump(mode="json"),
-        headers=internal_auth_headers(),
-    )
-
-    assert response.status_code == 500
-    assert response.json()["error_type"] == "mutation_tool_not_applied"
-
-
-def test_agent_app_mutation_confirmation_resolution_finishes_in_supervisor(monkeypatch):
-    class ResolutionProvider(NativeChatProvider):
-        def __init__(self) -> None:
-            self.seen_payloads: list[dict[str, Any]] = []
-            self.bound_tool_names: list[str] = []
-            self.bound_tool_history: list[list[str]] = []
-
-        async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
-            self.seen_payloads.append(user_payload)
-            self.bound_tool_history.append(list(self.bound_tool_names))
-            status = str((user_payload.get("context") or {}).get("mutation_resolution", {}).get("status") or "")
-            return {"message": f"Supervisor resolved mutation: {status}."}
-
-    class ResolutionExecutor:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, Any]] = []
-
-        async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
-            self.calls.append(
-                {
-                    **tool_call,
-                    "_source_event_type": source_event_type,
-                    "_approved": dict((payload.get("context") or {}).get("approved_mutation_confirmation") or {}),
-                }
-            )
-            return ToolCallResult(
-                tool_name=tool_call["name"],
-                status="success",
-                response={"dose_event_id": 12, "status": "taken"},
-            )
-
-    for resolution, expected_status, expected_call_count in (
-        ("confirm", "applied", 1),
-        ("cancel", "cancelled", 0),
-    ):
-        provider = ResolutionProvider()
-        executor = ResolutionExecutor()
-        monkeypatch.setattr(
-            native_agent_main,
-            "orchestrator",
-            AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=executor),
-        )
-        client = TestClient(native_agent_main.app)
-        request = MutationConfirmationResolutionRequest(
-            confirmation_id=f"confirmation-{resolution}",
-            resolution=resolution,
-            action_name=UPDATE_MEDICATION_DOSE_EVENT_STATUS,
-            tool_call_id=f"tool-{resolution}",
-            arguments={"dose_event_id": 12},
-            action_fingerprint=f"fingerprint-{resolution}",
-            source_event_type=SOURCE_MEDICATION_AGENT,
-            original_request=build_taken_chat_request(),
-        )
-
-        response = client.post(
-            "/agent/mutation-confirmations/resolve",
-            json=request.model_dump(mode="json"),
-            headers=internal_auth_headers(),
-        )
-
-        assert response.status_code == 200
-        payload = response.json()
-        assert payload["agent_name"] == "multiturn_chat_agent"
-        assert payload["structured_payload"]["supervisor_agent"] == "multiturn_chat_agent"
-        assert payload["decision_type"] == "mutation_resolution"
-        assert payload["structured_payload"]["routing_mode"] == "mutation_resolution_finalization"
-        assert payload["structured_payload"]["tool_calls"] == []
-        assert payload["structured_payload"]["iterations"] == 0
-        assert payload["structured_payload"]["finalization_mode"] == "mutation_resolution_iterative_llm"
-        assert set(payload["structured_payload"]["node_timings_ms"]) == {"mutation_resolution_llm"}
-        assert provider.seen_payloads[-1]["context"]["mutation_resolution"]["status"] == expected_status
-        assert "delegate_to_medication_agent" in provider.chat_model_bound_tool_history[0]
-        assert UPDATE_MEDICATION_DOSE_EVENT_STATUS not in provider.chat_model_bound_tool_history[0]
-        assert len(provider.seen_payloads) == 1
-        assert len(executor.calls) == expected_call_count
-        if executor.calls:
-            assert executor.calls[0]["_source_event_type"] == SOURCE_MEDICATION_AGENT
-            assert executor.calls[0]["_approved"]["confirmation_id"] == f"confirmation-{resolution}"
-
-
-def test_agent_app_mutation_resolution_continues_only_remaining_work(monkeypatch):
-    remaining_task = "Check only whether the morning taken record can be corrected to missed."
-
-    class RemainingWorkProvider(NativeChatProvider):
-        def __init__(self) -> None:
-            self.seen_payloads: list[dict[str, Any]] = []
-            self.finalized_payloads: list[dict[str, Any]] = []
-            self.bound_tool_names: list[str] = []
-
-        async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
-            self.seen_payloads.append(user_payload)
-            response_mode = user_payload.get("response_mode")
-            if response_mode == "mutation_resolution_continuation":
-                return {
-                    "message": "Continue the unresolved morning correction.",
-                    "tool_call": {
-                        "name": "delegate_to_medication_agent",
-                        "arguments": {
-                            "task": remaining_task,
-                            "reason": "The lunch update is complete but the morning correction remains.",
-                        },
-                    },
-                }
-            if response_mode == "medication_chat":
-                return {
-                    "message": "Inspect the morning dose record before explaining the supported action.",
-                    "tool_call": {
-                        "name": GET_MEDICATION_DOSE_STATUS,
-                        "arguments": {"target_date": "2026-04-20"},
-                    },
-                }
-            raise AssertionError(f"unexpected response_mode: {response_mode}")
-
-        async def finalize_tool_results(
-            self,
-            system_prompt: str,
-            user_payload: dict[str, Any],
-            tool_results: list[dict[str, Any]],
-        ) -> dict[str, Any]:
-            self.finalized_payloads.append(user_payload)
-            if user_payload.get("response_mode") == "medication_chat":
-                return {"message": "The morning dose is recorded as taken, but reverting it to missed is unsupported."}
-            if user_payload.get("response_mode") == "mutation_resolution_continuation":
-                return {
-                    "message": "The lunch dose was recorded as taken. The morning taken record cannot currently be reverted to missed."
-                }
-            raise AssertionError(f"unexpected finalization response_mode: {user_payload.get('response_mode')}")
-
-    class RemainingWorkExecutor:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, Any]] = []
-
-        async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
-            self.calls.append({**tool_call, "_payload": payload, "_source_event_type": source_event_type})
-            if tool_call["name"] == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
-                return ToolCallResult(
-                    tool_name=tool_call["name"],
-                    status="success",
-                    response={"dose_event_id": 22, "status": "taken"},
-                )
-            if tool_call["name"] == GET_MEDICATION_DOSE_STATUS:
-                return ToolCallResult(
-                    tool_name=tool_call["name"],
-                    status="success",
-                    response={
-                        "records": [
-                            {"dose_event_id": 21, "slot_label": "morning 08:00", "status": "taken"},
-                            {"dose_event_id": 22, "slot_label": "lunch 13:00", "status": "taken"},
-                        ]
-                    },
-                )
-            raise AssertionError(f"unexpected tool: {tool_call['name']}")
-
-    provider = RemainingWorkProvider()
-    executor = RemainingWorkExecutor()
-    monkeypatch.setattr(
-        native_agent_main,
-        "orchestrator",
-        AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=executor),
-    )
-    client = TestClient(native_agent_main.app)
-    original_request = build_taken_chat_request().model_copy(
-        update={
-            "message": "I took the lunch dose, but I did not actually take the morning dose.",
-            "context": {
-                "today_dose_events": [
-                    {"dose_event_id": 21, "slot_label": "morning 08:00", "status": "taken"},
-                    {"dose_event_id": 22, "slot_label": "lunch 13:00", "status": "missed"},
-                ]
-            },
-        }
-    )
-    request = MutationConfirmationResolutionRequest(
-        confirmation_id="confirmation-multi-intent",
-        resolution="confirm",
-        action_name=UPDATE_MEDICATION_DOSE_EVENT_STATUS,
-        tool_call_id="tool-lunch",
-        arguments={"dose_event_id": 22},
-        action_fingerprint="fingerprint-lunch",
-        source_event_type=SOURCE_MEDICATION_AGENT,
-        original_request=original_request,
-    )
-
-    response = client.post(
-        "/agent/mutation-confirmations/resolve",
-        json=request.model_dump(mode="json"),
-        headers=internal_auth_headers(),
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    structured = payload["structured_payload"]
-    assert payload["agent_name"] == "multiturn_chat_agent"
-    assert payload["decision_type"] == "mutation_resolution"
-    assert structured["routing_mode"] == "mutation_resolution_continuation"
-    assert structured["iterations"] == 1
-    assert structured["supervisor_tool_calls"][0]["name"] == "delegate_to_medication_agent"
-    assert [call["name"] for call in structured["specialist_tool_calls"]] == [GET_MEDICATION_DOSE_STATUS]
-    assert [call["name"] for call in executor.calls] == [
-        UPDATE_MEDICATION_DOSE_EVENT_STATUS,
-        GET_MEDICATION_DOSE_STATUS,
-    ]
-    assert executor.calls[1]["_payload"]["message"] == remaining_task
-    scoped_context = executor.calls[1]["_payload"]["context"]["supervisor_delegation"]
-    assert scoped_context["original_user_message"] == original_request.message
-    assert scoped_context["mutation_resolution"]["action_fingerprint"] == "fingerprint-lunch"
-    assert "morning taken record cannot currently be reverted" in payload["human_summary"]
-
-
-def test_agent_app_nutrition_preference_resolution_continues_to_recommendation(monkeypatch):
-    remaining_task = "Recommend dinner while honoring the apple allergy that was just confirmed."
-
-    class PreferenceRecommendationProvider(NativeChatProvider):
-        def __init__(self) -> None:
-            self.seen_payloads: list[dict[str, Any]] = []
-            self.finalized_payloads: list[dict[str, Any]] = []
-            self.bound_tool_names: list[str] = []
-
-        async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
-            self.seen_payloads.append(user_payload)
-            response_mode = user_payload.get("response_mode")
-            if response_mode == "mutation_resolution_continuation":
-                return {
-                    "message": "Continue only the unresolved dinner recommendation.",
-                    "tool_call": {
-                        "name": "delegate_to_nutrition_recommendation_agent",
-                        "arguments": {
-                            "task": remaining_task,
-                            "reason": "The allergy was saved and the recommendation remains.",
-                        },
-                    },
-                }
-            if response_mode == "nutrition_recommendation_chat":
-                return {
-                    "message": "Find dinner candidates that exclude apple.",
-                    "tool_call": {
-                        "name": GET_NUTRITION_RECOMMENDATION_CANDIDATES,
-                        "arguments": {
-                            "meal_type": "dinner",
-                            "constraints": {"allergens": ["apple"]},
-                        },
-                    },
-                }
-            raise AssertionError(f"unexpected response_mode: {response_mode}")
-
-        async def finalize_tool_results(
-            self,
-            system_prompt: str,
-            user_payload: dict[str, Any],
-            tool_results: list[dict[str, Any]],
-        ) -> dict[str, Any]:
-            self.finalized_payloads.append(user_payload)
-            if user_payload.get("response_mode") == "nutrition_recommendation_chat":
-                return {"message": "Apple-free dinner candidates are ready."}
-            if user_payload.get("response_mode") == "mutation_resolution_continuation":
-                return {"message": "The apple allergy was saved, and safe dinner candidates are ready below."}
-            raise AssertionError(f"unexpected finalization response_mode: {user_payload.get('response_mode')}")
-
-    class PreferenceRecommendationExecutor:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, Any]] = []
-
-        async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
-            self.calls.append({**tool_call, "_payload": payload, "_source_event_type": source_event_type})
-            if tool_call["name"] == UPSERT_NUTRITION_PREFERENCE_FACT:
-                return ToolCallResult(
-                    tool_name=tool_call["name"],
-                    status="success",
-                    response={
-                        "success": True,
-                        "fact": {
-                            "predicate": "allergic_to",
-                            "object_label": "apple",
-                            "safety_level": "hard",
-                        },
-                        "preferences": {"hard_constraints": [{"object_label": "apple"}]},
-                    },
-                )
-            if tool_call["name"] == GET_NUTRITION_RECOMMENDATION_CANDIDATES:
-                return ToolCallResult(
-                    tool_name=tool_call["name"],
-                    status="success",
-                    response={
-                        "success": True,
-                        "recommendations": [{"food_name": "grilled tofu bowl"}],
-                    },
-                )
-            raise AssertionError(f"unexpected tool: {tool_call['name']}")
-
-    provider = PreferenceRecommendationProvider()
-    executor = PreferenceRecommendationExecutor()
-    monkeypatch.setattr(
-        native_agent_main,
-        "orchestrator",
-        AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=executor),
-    )
-    client = TestClient(native_agent_main.app)
-    original_request = MultiturnChatRequest(
-        patient_id="demo-patient",
-        phr_patient_key="phr-demo",
-        event_type="multiturn_chat",
-        message="What should I eat for dinner? I am allergic to apples.",
-        current_time=datetime(2026, 4, 20, 18, 30),
-        context={"recent_chat": []},
-    )
-    request = MutationConfirmationResolutionRequest(
-        confirmation_id="confirmation-preference-recommendation",
-        resolution="confirm",
-        action_name=UPSERT_NUTRITION_PREFERENCE_FACT,
-        tool_call_id="tool-preference",
-        arguments={
-            "predicate": "allergic_to",
-            "object_label": "apple",
-            "object_type": "ingredient",
-        },
-        action_fingerprint="fingerprint-apple-allergy",
-        source_event_type=SOURCE_NUTRITION_MANAGEMENT_AGENT,
-        original_request=original_request,
-    )
-
-    response = client.post(
-        "/agent/mutation-confirmations/resolve",
-        json=request.model_dump(mode="json"),
-        headers=internal_auth_headers(),
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    structured = payload["structured_payload"]
-    assert payload["agent_name"] == "multiturn_chat_agent"
-    assert structured["routing_mode"] == "mutation_resolution_continuation"
-    assert structured["supervisor_tool_calls"][0]["name"] == "delegate_to_nutrition_recommendation_agent"
-    assert [call["name"] for call in structured["specialist_tool_calls"]] == [
-        GET_NUTRITION_RECOMMENDATION_CANDIDATES
-    ]
-    assert [call["name"] for call in executor.calls] == [
-        UPSERT_NUTRITION_PREFERENCE_FACT,
-        GET_NUTRITION_RECOMMENDATION_CANDIDATES,
-    ]
-    assert executor.calls[0]["_source_event_type"] == SOURCE_NUTRITION_MANAGEMENT_AGENT
-    assert executor.calls[1]["_source_event_type"] == SOURCE_NUTRITION_RECOMMENDATION_AGENT
-    assert executor.calls[1]["_payload"]["message"] == remaining_task
-    scoped_context = executor.calls[1]["_payload"]["context"]["supervisor_delegation"]
-    assert scoped_context["mutation_resolution"]["action_fingerprint"] == "fingerprint-apple-allergy"
-    assert "safe dinner candidates" in payload["human_summary"]
-    assert structured["specialist_agent"] == "nutrition_recommendation_agent"
-    assert structured["diet_recommendations"] == [{"food_name": "grilled tofu bowl"}]
-
+    assert exc_info.value.error_type == "mutation_tool_not_applied"
 
 
 def test_agent_app_multiturn_delegates_nutrition_management_tools(monkeypatch):
     provider = NativeDelegatingNutritionManagementProvider()
     tool_executor = NativeFakeToolExecutor()
     monkeypatch.setattr(native_agent_main, "orchestrator", AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=tool_executor))
-    client = TestClient(native_agent_main.app)
     request = MultiturnChatRequest(
         patient_id="demo-patient",
-        phr_patient_key="phr-demo",
         event_type="multiturn_chat",
         message="삶은 계란 먹었어",
         current_time=datetime(2026, 4, 20, 9, 35),
         context={"recent_chat": []},
     )
 
-    response = client.post("/agent/multiturn-chat", json=request.model_dump(mode="json"), headers=internal_auth_headers())
-
-    assert response.status_code == 200
-    payload = response.json()
+    payload = invoke_multiturn_graph(request).model_dump(mode="json")
     supervisor_tools = set(provider.bound_tool_history[0])
     specialist_tools = set(provider.bound_tool_history[1])
     assert payload["agent_name"] == "multiturn_chat_agent"
@@ -2176,73 +2092,72 @@ def test_agent_app_multiturn_delegates_nutrition_management_tools(monkeypatch):
     )
     assert {
         "search_nutrition_food_candidates",
+        "request_record_approval",
+        "get_nutrition_daily_summary",
+    } <= specialist_tools
+    assert not {
         "create_nutrition_meal_record",
         "update_nutrition_meal_record",
         "delete_nutrition_meal_record",
         "update_nutrition_food_record",
         "delete_nutrition_food_record",
-        "get_nutrition_daily_summary",
-    } <= specialist_tools
+    }.intersection(specialist_tools)
     assert "get_nutrition_recommendation_candidates" not in specialist_tools
 
 
-def test_agent_app_multiturn_delegated_nutrition_food_update_reaches_supervisor_final(monkeypatch):
+def test_agent_app_multiturn_delegated_nutrition_food_update_requests_supervisor_confirmation(monkeypatch):
     provider = NativeMultiStepNutritionFoodUpdateProvider()
     tool_executor = NativeFakeToolExecutor()
     monkeypatch.setattr(native_agent_main, "orchestrator", AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=tool_executor))
-    client = TestClient(native_agent_main.app)
     request = MultiturnChatRequest(
         patient_id="demo-patient",
-        phr_patient_key="phr-demo",
         event_type="multiturn_chat",
         message="점심에 탕수육이 아니라 꿔바로우 먹었어. 바꿔줘",
         current_time=datetime(2026, 4, 20, 13, 20),
         context={"recent_chat": []},
     )
 
-    response = client.post("/agent/multiturn-chat", json=request.model_dump(mode="json"), headers=internal_auth_headers())
-
-    assert response.status_code == 200
-    payload = response.json()
+    payload = invoke_multiturn_graph(request).model_dump(mode="json")
     assert payload["agent_name"] == "multiturn_chat_agent"
-    assert payload["human_summary"] == "점심 식사 기록에서 탕수육을 꿔바로우로 수정했어요."
-    assert payload["structured_payload"]["routing_mode"] == "delegated_agent"
+    assert payload["decision_type"] == "mutation_confirmation_required"
+    assert payload["structured_payload"]["routing_mode"] == "mutation_confirmation_required"
     assert payload["structured_payload"]["tool_loop_mode"] == "langgraph_state_graph"
-    assert payload["structured_payload"]["specialist_agent"] == "nutrition_management_agent"
-    assert payload["structured_payload"]["final_answer_source"] == "model_output"
+    assert payload["structured_payload"]["mutation_confirmation"]["action_name"] == "update_nutrition_food_record"
+    assert payload["structured_payload"]["finalization_mode"] == "confirmation_llm_without_tools"
     assert payload["structured_payload"]["supervisor_tool_calls"][0]["name"] == "delegate_to_nutrition_management_agent"
     assert [call["name"] for call in payload["structured_payload"]["specialist_tool_calls"]] == [
         "get_nutrition_meal_record_list",
         "search_nutrition_food_candidates",
-        "update_nutrition_food_record",
+        REQUEST_RECORD_APPROVAL,
     ]
     assert [call["name"] for call in tool_executor.calls] == [
         "get_nutrition_meal_record_list",
         "search_nutrition_food_candidates",
-        "update_nutrition_food_record",
+        REQUEST_RECORD_APPROVAL,
     ]
+    assert tool_executor.calls[-1]["arguments"]["action_name"] == "update_nutrition_food_record"
     assert provider.bound_tool_history[0] and "delegate_to_nutrition_management_agent" in provider.bound_tool_history[0]
-    assert provider.bound_tool_history[1:] and all("update_nutrition_food_record" in names for names in provider.bound_tool_history[1:4])
+    assert provider.bound_tool_history[1:]
+    assert all(
+        "request_record_approval" in names
+        and "update_nutrition_food_record" not in names
+        for names in provider.bound_tool_history[1:4]
+    )
 
 
 def test_agent_app_multiturn_delegates_nutrition_recommendation_tools(monkeypatch):
     provider = NativeDelegatingNutritionRecommendationProvider()
     tool_executor = NativeFakeToolExecutor()
     monkeypatch.setattr(native_agent_main, "orchestrator", AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=tool_executor))
-    client = TestClient(native_agent_main.app)
     request = MultiturnChatRequest(
         patient_id="demo-patient",
-        phr_patient_key="phr-demo",
         event_type="multiturn_chat",
         message="저녁 뭐 먹을까?",
         current_time=datetime(2026, 4, 20, 18, 30),
         context={"recent_chat": []},
     )
 
-    response = client.post("/agent/multiturn-chat", json=request.model_dump(mode="json"), headers=internal_auth_headers())
-
-    assert response.status_code == 200
-    payload = response.json()
+    payload = invoke_multiturn_graph(request).model_dump(mode="json")
     supervisor_tools = set(provider.bound_tool_history[0])
     specialist_tools = set(provider.bound_tool_history[1])
     assert payload["agent_name"] == "multiturn_chat_agent"
@@ -2305,7 +2220,6 @@ def test_specialist_state_graph_stops_at_common_tool_loop_limit():
             "trace-specialist-loop-limit",
             {
                 "patient_id": "demo-patient",
-                "phr_patient_key": "phr-demo",
                 "message": "계란 정보를 확인해줘",
                 "context": {},
             },
@@ -2315,34 +2229,92 @@ def test_specialist_state_graph_stops_at_common_tool_loop_limit():
     assert structured["routing_mode"] == "specialist_max_iterations"
     assert structured["tool_loop_mode"] == "langgraph_state_graph"
     assert len(structured["tool_calls"]) == AGENT_TOOL_LOOP_LIMIT
-    assert len(tool_executor.calls) == AGENT_TOOL_LOOP_LIMIT
+    # The graph can observe the model repeating the same call until the loop
+    # guard fires, but the runtime executes an identical read only once.
+    assert len(tool_executor.calls) == 1
     assert provider.chat_model_call_count == 1
     assert structured["pending_tool_calls"][0]["name"] == "search_nutrition_food_candidates"
     assert "도구 실행 단계" in response.human_summary
+
+
+def test_specialist_tool_result_without_final_llm_answer_fails_closed():
+    provider = BlankToolFinalizingProvider(
+        blank_response_mode="nutrition_management_chat",
+    )
+    graph_runner = ToolChatAgentGraph(
+        provider=provider,
+        tool_runtime=ToolRuntime(NativeFakeToolExecutor()),
+        agent_name="nutrition_management_agent",
+        prompt=nutrition_management_agent_prompt(),
+        response_mode="nutrition_management_chat",
+        decision_type="tool_call",
+        tool_names=("search_nutrition_food_candidates",),
+        source_event_type=SOURCE_NUTRITION_MANAGEMENT_AGENT,
+        defer_tool_continuation=False,
+    )
+
+    with pytest.raises(AgentExecutionError) as exc_info:
+        asyncio.run(
+            graph_runner.invoke(
+                "trace-specialist-missing-final-answer",
+                {
+                    "patient_id": "demo-patient",
+                    "message": "삶은 계란 정보를 확인해줘",
+                    "context": {},
+                },
+            )
+        )
+
+    assert exc_info.value.error_type == "llm_final_answer_missing"
+
+
+def test_multiturn_structured_delegation_does_not_require_final_text(monkeypatch):
+    provider = BlankToolFinalizingProvider()
+    monkeypatch.setattr(
+        native_agent_main,
+        "orchestrator",
+        AgentLangGraphNativeOrchestrator(
+            provider=provider,
+            tool_executor=NativeFakeToolExecutor(),
+        ),
+    )
+    request = MultiturnChatRequest(
+        patient_id="demo-patient",
+        event_type="multiturn_chat",
+        message="삶은 계란 정보를 확인해줘",
+        current_time=datetime(2026, 4, 20, 9, 35),
+        context={"recent_chat": []},
+    )
+
+    response = invoke_multiturn_graph(request)
+
+    assert response.human_summary == "삶은 계란 후보를 확인했습니다."
+    assert response.structured_payload["food_candidates"]
+    assert (
+        response.structured_payload["final_answer_source"]
+        == "specialist_handoff"
+    )
 
 
 def test_agent_app_multiturn_delegates_side_effect_continuation_to_medication_agent(monkeypatch):
     provider = NativeSideEffectLookupProvider()
     tool_executor = NativeFakeToolExecutor()
     monkeypatch.setattr(native_agent_main, "orchestrator", AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=tool_executor))
-    client = TestClient(native_agent_main.app)
 
     request = MultiturnChatRequest(
         patient_id="demo-patient",
-        phr_patient_key="phr-demo",
         event_type="multiturn_chat",
         message="I feel nauseous. Could it be the medication?",
         current_time=datetime(2026, 4, 20, 9, 35),
         context={"recent_chat": []},
     )
-    response = client.post("/agent/multiturn-chat", json=request.model_dump(mode="json"), headers=internal_auth_headers())
-
-    assert response.status_code == 200
-    payload = response.json()
+    payload = invoke_multiturn_graph(request).model_dump(mode="json")
     structured = payload["structured_payload"]
-    assert payload["decision_type"] == "async_continuation_requested"
+    assert payload["decision_type"] == "continuation_required"
+    assert payload["human_summary"] == ""
     assert structured["routing_mode"] == "delegated_agent"
-    assert structured["async_continuation_type"] == "side_effect_assessment"
+    assert structured["continuation_required"] is True
+    assert structured["continuation_type"] == "side_effect_assessment"
     assert structured["supervisor_tool_calls"][0]["name"] == "delegate_to_medication_agent"
     assert [call["name"] for call in structured["specialist_tool_calls"]] == ["get_medication_side_effect_assessment"]
     assert tool_executor.calls == []
@@ -2354,17 +2326,14 @@ def test_agent_app_multiturn_delegates_side_effect_continuation_to_medication_ag
 
     continuation = request.model_copy(deep=True)
     continuation.context = {
-        "execute_async_continuation": True,
-        "async_tool_calls": structured["tool_calls"],
+        "execute_tool_continuation": True,
+        "continuation_tool_calls": structured["tool_calls"],
     }
-    continuation_response = client.post("/agent/multiturn-chat", json=continuation.model_dump(mode="json"), headers=internal_auth_headers())
-
-    assert continuation_response.status_code == 200
-    continuation_payload = continuation_response.json()
+    continuation_payload = invoke_multiturn_graph(continuation).model_dump(mode="json")
     continuation_structured = continuation_payload["structured_payload"]
     assert continuation_payload["decision_type"] == "side_effect_assessment"
     assert continuation_structured["routing_mode"] == "delegated_agent"
-    assert continuation_structured["delegation_reason"] == "async_medication_continuation"
+    assert continuation_structured["delegation_reason"] == "medication_tool_continuation"
     assert continuation_structured["supervisor_tool_calls"][0]["name"] == "delegate_to_medication_agent"
     assert [call["name"] for call in continuation_structured["specialist_tool_calls"]] == [
         "get_medication_side_effect_assessment",
@@ -2388,10 +2357,8 @@ def test_agent_app_multiturn_uses_provider_for_general_recent_chat_reply(monkeyp
         "orchestrator",
         AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=NativeFakeToolExecutor()),
     )
-    client = TestClient(native_agent_main.app)
     request = MultiturnChatRequest(
         patient_id="demo-patient",
-        phr_patient_key="phr-demo",
         event_type="multiturn_chat",
         message="나 아까 문제가 있다고했었나?",
         current_time=datetime(2026, 5, 22, 4, 51),
@@ -2407,13 +2374,13 @@ def test_agent_app_multiturn_uses_provider_for_general_recent_chat_reply(monkeyp
         },
     )
 
-    response = client.post("/agent/multiturn-chat", json=request.model_dump(mode="json"), headers=internal_auth_headers())
-
-    assert response.status_code == 200
-    payload = response.json()
+    payload = invoke_multiturn_graph(request).model_dump(mode="json")
     assert payload["agent_name"] == "multiturn_chat_agent"
     assert payload["decision_type"] == "system_guidance"
-    assert payload["structured_payload"]["final_answer_source"] == "model_output"
+    assert (
+        payload["structured_payload"]["final_answer_source"]
+        == "agent_loop_final_text"
+    )
     assert "요청을 확인했습니다" not in payload["human_summary"]
     assert "메스꺼" in payload["human_summary"]
     assert "1번 자주 있다" in payload["human_summary"]
@@ -2421,8 +2388,8 @@ def test_agent_app_multiturn_uses_provider_for_general_recent_chat_reply(monkeyp
     assert "answer ordinary follow-up" in provider.seen_prompts[0]
 
 
-def test_rule_based_provider_is_test_only_for_runtime_selection(monkeypatch):
-    monkeypatch.setenv("LLM_PROVIDER", "rule_based")
+def test_deterministic_provider_is_test_only_for_runtime_selection(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "deterministic_test")
     monkeypatch.setenv("APP_ENV", "development")
     get_settings.cache_clear()
     try:
@@ -2432,17 +2399,17 @@ def test_rule_based_provider_is_test_only_for_runtime_selection(monkeypatch):
         get_settings.cache_clear()
 
 
-def test_rule_based_provider_is_available_only_in_explicit_testbed(monkeypatch):
-    monkeypatch.setenv("LLM_PROVIDER", "rule_based")
+def test_deterministic_provider_is_available_only_in_explicit_testbed(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "deterministic_test")
     monkeypatch.setenv("APP_ENV", "testbed")
     get_settings.cache_clear()
     try:
-        assert isinstance(create_llm_provider(), RuleBasedProvider)
+        assert isinstance(create_llm_provider(), DeterministicTestProvider)
     finally:
         get_settings.cache_clear()
 
 
-def test_ae_tool_call_from_lookup_normalizes_generic_phr_effect_to_pro_ctcae_symptom():
+def test_ae_tool_call_from_lookup_passes_only_patient_symptom_text():
     result = ToolCallResult(
         tool_name="get_medication_side_effect_assessment",
         status="success",
@@ -2465,11 +2432,13 @@ def test_ae_tool_call_from_lookup_normalizes_generic_phr_effect_to_pro_ctcae_sym
     )
 
     assert tool_call["name"] == "get_pro_ctcae_questionnaire"
-    assert tool_call["arguments"]["symptom_normalize"] == "메스꺼움"
+    assert tool_call["arguments"] == {
+        "symptom_text": "속이 메스꺼운데 약때문일까?"
+    }
 
 
-def test_rule_based_provider_requires_repeated_daily_pattern_before_policy_tool_call():
-    provider = RuleBasedProvider()
+def test_deterministic_provider_requires_repeated_daily_pattern_before_policy_tool_call():
+    provider = DeterministicTestProvider()
 
     daily_output = provider.model_output(
         {**build_daily_pattern().model_dump(mode="json"), "response_mode": "daily_pattern_analysis"}
@@ -2499,8 +2468,8 @@ def test_rule_based_provider_requires_repeated_daily_pattern_before_policy_tool_
     assert side_effect_output["side_effect_signal"] is False
 
 
-def test_rule_based_provider_returns_general_chat_when_no_tool_needed():
-    provider = RuleBasedProvider()
+def test_deterministic_provider_returns_general_chat_when_no_tool_needed():
+    provider = DeterministicTestProvider()
     request = MultiturnChatRequest(
         patient_id="demo-patient",
         event_type="multiturn_chat",
@@ -2517,12 +2486,12 @@ def test_rule_based_provider_returns_general_chat_when_no_tool_needed():
     chat_output = provider.model_output(request.model_dump(mode="json") | {"response_mode": "multiturn_chat"})
 
     assert "tool_call" not in chat_output
-    assert "속이 메스꺼운데 약때문일까?" in chat_output["advice"]
-    assert "1번 문항: 자주 있다" in chat_output["advice"]
+    assert "속이 메스꺼운데 약때문일까?" in chat_output["message"]
+    assert "1번 문항: 자주 있다" in chat_output["message"]
 
 
-def test_rule_based_provider_answers_nutrition_and_medication_chat_together():
-    provider = RuleBasedProvider()
+def test_deterministic_provider_answers_nutrition_and_medication_chat_together():
+    provider = DeterministicTestProvider()
     request = MultiturnChatRequest(
         patient_id="demo-patient",
         event_type="multiturn_chat",
@@ -2535,9 +2504,9 @@ def test_rule_based_provider_answers_nutrition_and_medication_chat_together():
 
     assert "tool_call" not in chat_output
     assert "tool_calls" not in chat_output
-    assert "영양과 복약" in chat_output["advice"]
-    assert "저녁" in chat_output["advice"]
-    assert "처방된 복약 시간" in chat_output["advice"]
+    assert "영양과 복약" in chat_output["message"]
+    assert "저녁" in chat_output["message"]
+    assert "처방된 복약 시간" in chat_output["message"]
 
 
 def test_notification_policy_deltas_fill_daily_pattern_source():
@@ -2647,6 +2616,18 @@ def build_missed_payload() -> MissedDoseEventPayload:
         scheduled_for=datetime(2026, 4, 20, 8, 0),
         detected_at=datetime(2026, 4, 20, 9, 30),
         recent_slot_summaries=[],
+        adherence_pattern_context={
+            "pattern_code": "B",
+            "pattern_label": "습관 미형성",
+            "reason": "복약 루틴 형성을 위한 단기 미복용 확인이 필요합니다.",
+        },
+        tone_policy_context={
+            "pattern_code": "B",
+            "tone_key": "persuasion",
+            "message": "복약 루틴을 함께 맞춰봐요. 지금 확인해보세요.",
+            "message_variant": "v1",
+            "message_catalog_source": "test_catalog",
+        },
         chat_context=[],
     )
 
@@ -2661,7 +2642,7 @@ def build_taken_chat_request() -> MultiturnChatRequest:
             "schedule_slots": ["아침 08:00"],
             "today_dose_events": [
                 {
-                    "dose_event_id": 12,
+                    "dose_event_id": "dose-event-12",
                     "medication_name": "혈압약",
                     "slot_label": "아침 08:00",
                     "scheduled_for": "2026-04-20T08:00:00",

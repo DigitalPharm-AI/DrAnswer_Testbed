@@ -2,36 +2,24 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_app.tools.names import GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE
+from shared.tool_names import GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE
 from shared.schemas import ToolCallResult
-
-SYMPTOM_NORMALIZATION_HINTS = (
-    (("메스꺼", "구역", "울렁거", "속울렁", "속불편"), "메스꺼움"),
-    (("어지럽", "현기증", "핑돌"), "어지러움"),
-    (("구토", "토했", "토할"), "구토"),
-    (("설사",), "설사"),
-    (("복통", "배아", "배가아"), "복통"),
-    (("근육통", "근육이아", "쑤심"), "근육통"),
-    (("두통", "머리아"), "두통"),
-    (("피로감", "심한피로", "기운없"), "피로, 피곤함, 또는 기운 없음"),
-)
 
 
 def positive_side_effect_lookup(result: ToolCallResult) -> bool:
-    return result.tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT and result.status == "success" and result.response.get("suspected") is True
+    return (
+        result.tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT
+        and result.status == "success"
+        and result.response.get("suspected") is True
+    )
 
 
 def ae_tool_call_from_lookup(tool_call: dict[str, Any], result: ToolCallResult, payload: dict[str, Any]) -> dict[str, Any]:
     arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
     symptom_text = _text(arguments.get("symptom_text")) or _text(payload.get("message")) or _text(result.response.get("evidence")) or "증상"
-    matched_effects = result.response.get("matched_effects") if isinstance(result.response.get("matched_effects"), list) else []
-    symptom_normalize = _normalize_symptom_candidate(*matched_effects, symptom_text, result.response.get("evidence")) or symptom_text
     return {
         "name": GET_PRO_CTCAE_QUESTIONNAIRE,
-        "arguments": {
-            "symptom_text": symptom_text,
-            "symptom_normalize": symptom_normalize,
-        },
+        "arguments": {"symptom_text": symptom_text},
     }
 
 
@@ -74,22 +62,3 @@ def _effect_names(value: Any) -> list[str]:
 
 def _text(value: Any) -> str:
     return str(value).strip() if value is not None else ""
-
-
-def _compact(value: str) -> str:
-    return "".join(str(value).split())
-
-
-def _normalize_symptom_candidate(*values: Any) -> str:
-    fallback = ""
-    for value in values:
-        text = _text(value)
-        if not text:
-            continue
-        compact_text = _compact(text)
-        for aliases, canonical in SYMPTOM_NORMALIZATION_HINTS:
-            if any(_compact(alias) in compact_text for alias in aliases):
-                return canonical
-        if not fallback and "주의사항 관련 증상" not in text:
-            fallback = text
-    return fallback

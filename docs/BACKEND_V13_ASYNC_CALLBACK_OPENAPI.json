@@ -1,0 +1,541 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "닥터앤서 Backend v1.3 비동기 결과 Callback API",
+    "version": "1.3",
+    "description": "AI Server가 미복용 이벤트 처리 결과와 알림 정책 변경 제안을 전달하는 v1.3 Callback 계약이다. 정책 제안은 사용자 확인 전 현재 정책을 변경하지 않는다."
+  },
+  "paths": {
+    "/api/agent/async/missed-dose-results": {
+      "post": {
+        "summary": "Agent Async Missed Dose Results",
+        "operationId": "agent_async_missed_dose_results_api_agent_async_missed_dose_results_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MissedDoseResultCallback"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AsyncResultCallbackAck"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BackendApiBearer": []
+          }
+        ]
+      }
+    },
+    "/api/agent/async/notification-policy-change-proposals": {
+      "post": {
+        "summary": "Agent Async Notification Policy Change Proposals",
+        "operationId": "agent_async_notification_policy_change_proposals_api_agent_async_notification_policy_change_proposals_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationPolicyChangeProposalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationPolicyProposalAck"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The same proposal was already accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationPolicyProposalAck"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommonErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BackendApiBearer": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AsyncProcessingError": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Message"
+          },
+          "retryable": {
+            "type": "boolean",
+            "title": "Retryable"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "retryable"
+        ],
+        "title": "AsyncProcessingError"
+      },
+      "AsyncResultCallbackAck": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Request Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "processed",
+              "duplicate"
+            ],
+            "title": "Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "status"
+        ],
+        "title": "AsyncResultCallbackAck"
+      },
+      "CommonErrorResponse": {
+        "properties": {
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^req_[0-9a-f]{16}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "error": {
+            "$ref": "#/components/schemas/ContractError"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "error"
+        ],
+        "title": "CommonErrorResponse"
+      },
+      "ContractError": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Message"
+          },
+          "retryable": {
+            "type": "boolean",
+            "title": "Retryable"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code",
+          "message",
+          "retryable",
+          "details"
+        ],
+        "title": "ContractError"
+      },
+      "MissedDoseResult": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Message"
+          },
+          "requires_reply": {
+            "type": "boolean",
+            "title": "Requires Reply"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "message",
+          "requires_reply"
+        ],
+        "title": "MissedDoseResult"
+      },
+      "MissedDoseResultCallback": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Request Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MissedDoseResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AsyncProcessingError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "status",
+          "result",
+          "error"
+        ],
+        "title": "MissedDoseResultCallback"
+      },
+      "NotificationPolicyChangeProposalRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Request Id"
+          },
+          "patient_id": {
+            "type": "string",
+            "pattern": "^patient_[0-9a-f]{16}$",
+            "title": "Patient Id"
+          },
+          "proposed_policy": {
+            "$ref": "#/components/schemas/NotificationPolicyProposal"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "patient_id",
+          "proposed_policy",
+          "reason"
+        ],
+        "title": "NotificationPolicyChangeProposalRequest"
+      },
+      "NotificationPolicyProposal": {
+        "properties": {
+          "extra_reminders": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 5.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extra Reminders"
+          },
+          "interval_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 60.0,
+                "minimum": 5.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Minutes"
+          },
+          "missed_dose_after_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 240.0,
+                "minimum": 15.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Missed Dose After Minutes"
+          },
+          "primary_reminder_timing": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "before",
+                  "at",
+                  "after"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Reminder Timing"
+          },
+          "primary_reminder_offset_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 120.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Reminder Offset Minutes"
+          },
+          "effective_start_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Start Date"
+          },
+          "effective_end_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective End Date"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "NotificationPolicyProposal",
+        "description": "The proposal contract reuses the synchronous policy limits."
+      },
+      "NotificationPolicyProposalAck": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "pattern": "^req_[0-9a-f]{16}$",
+            "title": "Request Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "duplicate"
+            ],
+            "title": "Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "request_id",
+          "status"
+        ],
+        "title": "NotificationPolicyProposalAck"
+      }
+    },
+    "securitySchemes": {
+      "BackendApiBearer": {
+        "type": "http",
+        "description": "AI Server가 Backend v1.3 쓰기 API를 호출할 때 사용하는 Bearer token",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "x-contract-scope": {
+    "contract_version": "1.3",
+    "public_id_suffix": "16 lowercase hexadecimal characters",
+    "included": [
+      "/api/agent/async/missed-dose-results",
+      "/api/agent/async/notification-policy-change-proposals"
+    ]
+  }
+}

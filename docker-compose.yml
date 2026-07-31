@@ -1,31 +1,35 @@
 services:
-  phr-app:
+  system-migrate:
+    image: da-drug:latest
     build:
       context: .
       dockerfile: Dockerfile
-    image: da-drug:latest
-    command: uvicorn phr_app.main:app --host 0.0.0.0 --port 8002
+    command: python -m system_app.migrate
     env_file:
-      - path: .env
-        required: false
-      - path: .env.phr_app
+      - path: .env.system_app
         required: false
     environment:
-      DA_DRUG_SERVICE: phr_app
-      PHR_DATABASE_URL: sqlite:////app/runtime/phr/phr.db
-    volumes:
-      - type: volume
-        source: phr-runtime
-        target: /app/runtime/phr
-    expose:
-      - "8002"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=3).read()"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 10s
-    restart: unless-stopped
+      DA_DRUG_SERVICE: system_app
+      AWS_BEARER_TOKEN_BEDROCK: ""
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: "no"
+
+  agent-migrate:
+    image: da-drug:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m agent_app.migrate
+    env_file:
+      - path: .env.agent_app
+        required: false
+    environment:
+      DA_DRUG_SERVICE: agent_app
+      AWS_BEARER_TOKEN_BEDROCK: ""
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: "no"
 
   agent-app:
     image: da-drug:latest
@@ -34,35 +38,29 @@ services:
       dockerfile: Dockerfile
     command: uvicorn agent_app.main:app --host 0.0.0.0 --port 8001
     env_file:
-      - path: .env
-        required: false
       - path: .env.agent_app
+        required: false
+      - path: .env.agent_app.secret
         required: false
     environment:
       DA_DRUG_SERVICE: agent_app
-      AGENT_DATABASE_URL: sqlite:////app/runtime/agent/agent.db
-      BACKEND_READ_DATABASE_URL: "sqlite:///file:/app/backend-read/system.db?mode=ro&uri=true"
+      AGENT_STARTUP_MIGRATIONS_ENABLED: "false"
       AGENT_EMBEDDED_WORKER_ENABLED: "false"
       SYSTEM_BASE_URL: http://system-app:8000
-      PHR_BASE_URL: http://phr-app:8002
       PROMPT_WORKBOOK_PATH: /app/runtime/agent/prompt_registry.xlsx
       POLICY_WORKBOOK_PATH: /app/runtime/agent/default_notification_policies.xlsx
-      PRO_CTCAE_WORKBOOK_PATH: /app/runtime/agent/pro_ctcae_korean_parsed.xlsx
+      PRO_CTCAE_WORKBOOK_PATH: /app/data/pro_ctcae_korean_parsed.xlsx
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - type: volume
         source: agent-runtime
         target: /app/runtime/agent
-      - type: volume
-        source: system-runtime
-        target: /app/backend-read
-        read_only: true
     expose:
       - "8001"
     depends_on:
-      phr-app:
-        condition: service_healthy
+      agent-migrate:
+        condition: service_completed_successfully
       system-app:
         condition: service_healthy
     healthcheck:
@@ -80,35 +78,51 @@ services:
       dockerfile: Dockerfile
     command: python -m agent_app.worker_main
     env_file:
-      - path: .env
-        required: false
       - path: .env.agent_app
+        required: false
+      - path: .env.agent_app.secret
         required: false
     environment:
       DA_DRUG_SERVICE: agent_app
-      AGENT_DATABASE_URL: sqlite:////app/runtime/agent/agent.db
-      BACKEND_READ_DATABASE_URL: "sqlite:///file:/app/backend-read/system.db?mode=ro&uri=true"
+      AGENT_STARTUP_MIGRATIONS_ENABLED: "false"
       SYSTEM_BASE_URL: http://system-app:8000
-      PHR_BASE_URL: http://phr-app:8002
       PROMPT_WORKBOOK_PATH: /app/runtime/agent/prompt_registry.xlsx
       POLICY_WORKBOOK_PATH: /app/runtime/agent/default_notification_policies.xlsx
-      PRO_CTCAE_WORKBOOK_PATH: /app/runtime/agent/pro_ctcae_korean_parsed.xlsx
+      PRO_CTCAE_WORKBOOK_PATH: /app/data/pro_ctcae_korean_parsed.xlsx
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - type: volume
         source: agent-runtime
         target: /app/runtime/agent
-      - type: volume
-        source: system-runtime
-        target: /app/backend-read
-        read_only: true
     depends_on:
-      phr-app:
-        condition: service_healthy
+      agent-migrate:
+        condition: service_completed_successfully
       agent-app:
         condition: service_healthy
       system-app:
+        condition: service_healthy
+    restart: unless-stopped
+
+  agent-langfuse-exporter:
+    image: da-drug:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m agent_app.langfuse_exporter_main
+    env_file:
+      - path: .env.agent_app
+        required: false
+    environment:
+      DA_DRUG_SERVICE: agent_app
+      AGENT_STARTUP_MIGRATIONS_ENABLED: "false"
+      AWS_BEARER_TOKEN_BEDROCK: ""
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      agent-migrate:
+        condition: service_completed_successfully
+      agent-app:
         condition: service_healthy
     restart: unless-stopped
 
@@ -119,16 +133,14 @@ services:
       dockerfile: Dockerfile
     command: uvicorn system_app.main:app --host 0.0.0.0 --port 8000
     env_file:
-      - path: .env
-        required: false
       - path: .env.system_app
         required: false
     environment:
       DA_DRUG_SERVICE: system_app
-      SYSTEM_DATABASE_URL: sqlite:////app/runtime/system/system.db
+      SYSTEM_STARTUP_MIGRATIONS_ENABLED: "false"
+      AWS_BEARER_TOKEN_BEDROCK: ""
       AGENT_BASE_URL: http://agent-app:8001
       SYSTEM_BASE_URL: http://system-app:8000
-      PHR_BASE_URL: http://phr-app:8002
       PROMPT_WORKBOOK_PATH: /app/runtime/system/prompt_registry.xlsx
       POLICY_WORKBOOK_PATH: /app/runtime/system/default_notification_policies.xlsx
     volumes:
@@ -141,8 +153,8 @@ services:
     ports:
       - "${SYSTEM_PORT:-8000}:8000"
     depends_on:
-      phr-app:
-        condition: service_healthy
+      system-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
       interval: 10s
@@ -151,7 +163,73 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  contract-migrate:
+    profiles: ["contract-test-server"]
+    image: da-drug:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m contract_test_server.migrate
+    env_file:
+      - path: .env.contract
+        required: false
+      - path: .env.contract-migration
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: "no"
+
+  contract-test-server:
+    profiles: ["contract-test-server"]
+    image: da-drug:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn contract_test_server.main:app --host 0.0.0.0 --port 8701
+    env_file:
+      - path: .env.contract
+        required: false
+    environment:
+      CONTRACT_HOST: 0.0.0.0
+      CONTRACT_PORT: "8701"
+      CONTRACT_STARTUP_MIGRATIONS_ENABLED: "false"
+      CONTRACT_SPECS_DIR: /app/docs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${CONTRACT_PORT:-8701}:8701"
+    depends_on:
+      contract-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8701/health/ready', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  contract-callback-worker:
+    profiles: ["contract-test-server"]
+    image: da-drug:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m contract_test_server.worker_main
+    env_file:
+      - path: .env.contract
+        required: false
+    environment:
+      CONTRACT_STARTUP_MIGRATIONS_ENABLED: "false"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      contract-migrate:
+        condition: service_completed_successfully
+      contract-test-server:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   agent-runtime:
-  phr-runtime:
   system-runtime:

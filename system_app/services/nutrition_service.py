@@ -871,9 +871,17 @@ def daily_nutrition_view(
     return summary
 
 
-def nutrition_dashboard_view(session: Session, patient_id: str | None = None) -> dict[str, Any]:
+def nutrition_dashboard_view(
+    session: Session,
+    patient_id: str | None = None,
+    target_date: date | str | None = None,
+) -> dict[str, Any]:
     profile = ensure_nutrition_profile(session, patient_id, persist=False)
-    summary = daily_nutrition_view(session, patient_id=profile.patient_id)
+    summary = daily_nutrition_view(
+        session,
+        target_date=target_date,
+        patient_id=profile.patient_id,
+    )
     meals = [meal_view(session, meal) for meal in meals_for_date(session, profile.patient_id, date.fromisoformat(summary["date"]))]
     metric_views = nutrition_metric_views(summary, meals)
     recorded_scenarios = {meal["scenario_key"] for meal in meals if meal.get("scenario_key")}
@@ -985,31 +993,13 @@ def food_view(food: NutritionFood) -> dict[str, Any]:
     }
 
 
-def search_foods(query: str, limit: int = 10, *, session: Session | None = None, patient_id: str | None = None) -> dict[str, Any]:
+def search_foods(query: str, limit: int = 10, *, session: Session, patient_id: str | None = None) -> dict[str, Any]:
     needle = query.strip().lower()
     if not needle:
         return {"success": False, "error": "query_required", "candidates": []}
     from system_app.services.food_search_service import search_food_candidates
     candidates = search_food_candidates(needle, limit, session=session, patient_id=patient_id)
     return {"success": True, "candidates": candidates, "source": "db" if candidates else "sample"}
-
-
-def _food_search_candidate(food: dict[str, Any]) -> dict[str, Any]:
-    nutrients = food["nutrients"]
-    return {
-        "food_ref_id": food.get("food_ref_id", ""),
-        "food_name": food["food_name"],
-        "category": "sample",
-        "serving_size": 100,
-        "portion": food.get("portion", "1인분"),
-        "nutrients": {
-            "energy": nutrients["칼로리"],
-            "protein": nutrients["단백질"],
-            "sodium": nutrients["나트륨"],
-            "fat": nutrients["지방"],
-            "carbohydrate": nutrients["탄수화물"],
-        },
-    }
 
 
 def nutrition_summary_text(summary: dict[str, Any]) -> str:
@@ -1030,36 +1020,10 @@ def nutrition_summary_text(summary: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def build_nutrition_context(session: Session, patient_id: str | None = None) -> dict[str, Any]:
-    dashboard = nutrition_dashboard_view(session, patient_id=patient_id)
-    meals = dashboard["meals"]
-    summary = dashboard["summary"]
-    return {
-        "profile": dashboard["profile"],
-        "today_summary": summary,
-        "preferences": dashboard["preferences"],
-        "today_meals": [
-            {
-                "meal_id": meal["id"],
-                "meal_type": meal["meal_type"],
-                "meal_label": meal["meal_label"],
-                "foods": [{"food_name": food["food_name"], "portion": food["portion"]} for food in meal["foods"]],
-            }
-            for meal in meals
-        ],
-    }
-
-
 def _nutrition_preference_summary(session: Session, patient_id: str) -> dict[str, Any]:
     from system_app.services.nutrition_preference_service import nutrition_preference_summary
 
     return nutrition_preference_summary(session, patient_id=patient_id)
-
-
-def _annotate_food_candidate(session: Session | None, candidate: dict[str, Any], patient_id: str | None) -> dict[str, Any]:
-    from system_app.services.nutrition_preference_service import annotate_food_candidate
-
-    return annotate_food_candidate(session, candidate, patient_id=patient_id)
 
 
 def _coerce_date(value: date | str | None) -> date | None:

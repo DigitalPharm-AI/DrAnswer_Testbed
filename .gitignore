@@ -1,8 +1,8 @@
 .env
 .env.*
-!.env.example
 !.env.*.example
 .chrome-profile/
+.playwright-cli/
 .playwright-mcp/
 .npm-cache/
 .ruff_cache/
@@ -13,7 +13,9 @@ __pycache__/
 runtime/
 node_modules/
 outputs/
+output/
 artifacts/
+system_app/static/react/
 새 폴더/
 *.pyc
 *.pyo
@@ -21,11 +23,13 @@ artifacts/
 *.db
 *.db-*
 *.sqlite3
+*.dump
 *.webm
 *.mp4
 OpenData_ItemPermitDetail*.xls
 data/*.log
 data/*.xlsx
+!data/pro_ctcae_korean_parsed.xlsx
 data/*.db
 data/*.db-*
 data/~$*.xlsx

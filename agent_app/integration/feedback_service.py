@@ -18,6 +18,7 @@ from agent_app.integration.feedback_crypto import (
     FeedbackCipher,
     FeedbackEncryptionContext,
 )
+from agent_app.observability.outbox import enqueue_user_feedback_score
 from agent_app.persistence.models import AgentFeedbackLink
 from shared.settings import Settings
 from shared.time_utils import utc_now
@@ -95,7 +96,10 @@ class ChatFeedbackService:
             row = self._find(session, payload.request_id)
             if row is None:
                 return None
-            return self._stored_response(row, request_hash=request_hash)
+            return self._stored_response(
+                row,
+                request_hash=request_hash,
+            )
 
     def accept(
         self,
@@ -109,33 +113,29 @@ class ChatFeedbackService:
         if replay is not None:
             return replay
 
-        now = utc_now()
         patient_id_hash = self.cipher.patient_digest(payload.patient_id)
         context = feedback_encryption_context(
             payload,
             patient_id_hash=patient_id_hash,
         )
-        feedback_text = payload.feedback_text or ""
+        feedback_text = payload.feedback_text
         ciphertext = (
             self.cipher.encrypt(feedback_text, context=context)
-            if feedback_text
+            if feedback_text is not None
             else ""
         )
         text_hash = (
             self.cipher.text_digest(feedback_text)
-            if feedback_text
+            if feedback_text is not None
             else ""
-        )
-        response = ChatFeedbackAccepted().model_dump(mode="json")
-        response_json = json.dumps(
-            response,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
         )
 
         for _ in range(3):
             with self.session_factory() as session:
+                # Refresh per insert attempt. If a concurrent reaction wins
+                # the partial-unique race, the retry that supersedes it must
+                # carry a later ordering timestamp.
+                now = utc_now()
                 existing = self._find(
                     session,
                     payload.request_id,
@@ -146,19 +146,41 @@ class ChatFeedbackService:
                         existing,
                         request_hash=request_hash,
                     )
+                if payload.reaction is not None:
+                    self._clear_current_reaction(
+                        session,
+                        payload=payload,
+                        patient_id_hash=patient_id_hash,
+                        updated_at=now,
+                    )
+                response = ChatFeedbackAccepted(
+                    status="accepted",
+                    # The response describes this request, not the currently
+                    # active reaction from an earlier request. The v1.3
+                    # contract requires null for an opinion-only submission.
+                    reaction=payload.reaction,
+                    accepted_at=now.replace(tzinfo=UTC),
+                ).model_dump(mode="json")
+                response_json = json.dumps(
+                    response,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
                 row = AgentFeedbackLink(
                     api_path=FEEDBACK_API_PATH,
                     request_id=payload.request_id,
                     request_hash=request_hash,
                     message_id=payload.message_id,
-                    conversation_id=payload.conversation_id,
                     patient_id_hash=patient_id_hash,
                     trace_id=str(verified_target.get("trace_id") or "")[:160],
-                    feedback=payload.feedback,
+                    feedback=_reaction_storage_value(payload.reaction),
                     feedback_text_ciphertext=ciphertext,
                     feedback_text_hash=text_hash,
                     encryption_key_id=(
-                        self.cipher.key_id if feedback_text else ""
+                        self.cipher.key_id
+                        if feedback_text is not None
+                        else ""
                     ),
                     status=ACCEPTED,
                     error_code="",
@@ -176,6 +198,18 @@ class ChatFeedbackService:
                     + timedelta(seconds=self.retention_seconds),
                 )
                 session.add(row)
+                enqueue_user_feedback_score(
+                    session,
+                    request_id=payload.request_id,
+                    message_id=payload.message_id,
+                    patient_id_hash=patient_id_hash,
+                    trace_id=row.trace_id,
+                    feedback=row.feedback,
+                    feedback_at=payload.feedback_at,
+                    feedback_text_present=feedback_text is not None,
+                    settings=self.settings,
+                    recorded_at=now,
+                )
                 try:
                     session.commit()
                 except IntegrityError:
@@ -347,15 +381,57 @@ class ChatFeedbackService:
             )
         try:
             body = json.loads(row.response_json)
-            accepted = ChatFeedbackAccepted.model_validate(body)
+            ChatFeedbackAccepted.model_validate(body)
         except Exception as exc:
             raise RuntimeError(
                 "feedback_stored_response_invalid"
             ) from exc
         return FeedbackHttpResponse(
             status_code=int(row.response_status),
-            body=accepted.model_dump(mode="json"),
+            body=body,
         )
+
+    @staticmethod
+    def _clear_current_reaction(
+        session: Session,
+        *,
+        payload: ChatFeedbackRequest,
+        patient_id_hash: str,
+        updated_at: datetime,
+    ) -> None:
+        session.execute(
+            update(AgentFeedbackLink)
+            .where(
+                AgentFeedbackLink.api_path == FEEDBACK_API_PATH,
+                AgentFeedbackLink.message_id == payload.message_id,
+                AgentFeedbackLink.patient_id_hash == patient_id_hash,
+                AgentFeedbackLink.feedback.is_not(None),
+            )
+            .values(
+                feedback=None,
+                updated_at=updated_at,
+            )
+        )
+
+    @staticmethod
+    def _current_reaction(
+        session: Session,
+        *,
+        payload: ChatFeedbackRequest,
+        patient_id_hash: str,
+    ) -> str | None:
+        value = session.scalar(
+            select(AgentFeedbackLink.feedback)
+            .where(
+                AgentFeedbackLink.api_path == FEEDBACK_API_PATH,
+                AgentFeedbackLink.message_id == payload.message_id,
+                AgentFeedbackLink.patient_id_hash == patient_id_hash,
+                AgentFeedbackLink.feedback.is_not(None),
+            )
+            .order_by(AgentFeedbackLink.id.desc())
+            .limit(1)
+        )
+        return _reaction_contract_value(value)
 
     @staticmethod
     def _validate_target(
@@ -364,13 +440,11 @@ class ChatFeedbackService:
     ) -> None:
         actual = (
             str(target.get("message_id") or ""),
-            str(target.get("conversation_id") or ""),
             str(target.get("patient_id") or ""),
             str(target.get("role") or "").lower(),
         )
         expected = (
             payload.message_id,
-            payload.conversation_id,
             payload.patient_id,
             "assistant",
         )
@@ -405,7 +479,6 @@ def feedback_encryption_context(
         api_path=FEEDBACK_API_PATH,
         request_id=payload.request_id,
         message_id=payload.message_id,
-        conversation_id=payload.conversation_id,
         patient_id_hash=patient_id_hash,
         feedback_at=_feedback_time_text(payload.feedback_at),
     )
@@ -417,6 +490,24 @@ def _feedback_time_text(value: datetime) -> str:
 
 def _database_time(value: datetime) -> datetime:
     return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def _reaction_storage_value(
+    reaction: str | None,
+) -> bool | None:
+    if reaction == "like":
+        return True
+    if reaction == "dislike":
+        return False
+    return None
+
+
+def _reaction_contract_value(
+    value: bool | None,
+) -> str | None:
+    if value is None:
+        return None
+    return "like" if bool(value) else "dislike"
 
 
 def hmac_compare(left: str, right: str) -> bool:

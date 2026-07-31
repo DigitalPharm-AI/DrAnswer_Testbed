@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from shared.json_utils import parse_json_object
 from shared.settings import get_settings
 from shared.time_utils import utc_now
-from system_app.models import Notification, SimulationClock
+from system_app.models import SimulationClock
 
 settings = get_settings()
 
@@ -27,7 +26,6 @@ def ensure_clock(session: Session) -> SimulationClock:
         is_running=False,
         speed_multiplier=0,
         last_processed_sim_time=initial_time,
-        last_daily_pattern_sent_date=initial_time.date() - timedelta(days=1),
     )
     session.add(clock)
     session.commit()
@@ -59,19 +57,3 @@ def pause_simulation_clock_at_conversation(session: Session, conversation_time: 
     clock.last_tick_real_at = utc_now()
     session.flush()
     return clock, resume_state
-
-
-def resume_simulation_clock_from_notification(session: Session, notification: Notification) -> None:
-    if notification.notification_type != "conversation_alert":
-        return
-    metadata = parse_json_object(notification.metadata_json)
-    resume_clock = metadata.get("resume_clock") if isinstance(metadata.get("resume_clock"), dict) else {}
-    if not resume_clock.get("was_running"):
-        return
-    speed_multiplier = resume_clock.get("speed_multiplier")
-    if not isinstance(speed_multiplier, int) or speed_multiplier <= 0:
-        speed_multiplier = 1
-    clock = ensure_clock(session)
-    clock.is_running = True
-    clock.speed_multiplier = speed_multiplier
-    clock.last_tick_real_at = utc_now()

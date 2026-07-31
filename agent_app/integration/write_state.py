@@ -28,7 +28,7 @@ class BackendWriteStateConflict(RuntimeError):
 class BackendWriteIdentity:
     request_id: str
     source_chat_request_id: str
-    conversation_id_hash: str
+    patient_id_hash: str
     trusted_context_hash: str
     tool_call_id: str
     tool_name: str
@@ -130,7 +130,7 @@ class BackendWriteStateStore:
             row = AgentBackendWriteRequest(
                 request_id=identity.request_id,
                 source_chat_request_id=identity.source_chat_request_id,
-                conversation_id_hash=identity.conversation_id_hash,
+                patient_id_hash=identity.patient_id_hash,
                 trusted_context_hash=identity.trusted_context_hash,
                 tool_call_id=identity.tool_call_id,
                 tool_name=identity.tool_name,
@@ -287,17 +287,15 @@ class BackendWriteStateStore:
     ) -> None:
         actual = (
             row.source_chat_request_id,
-            row.conversation_id_hash,
+            row.patient_id_hash,
             row.trusted_context_hash,
-            row.tool_call_id,
             row.tool_name,
             row.argument_hash,
         )
         expected = (
             identity.source_chat_request_id,
-            identity.conversation_id_hash,
+            identity.patient_id_hash,
             identity.trusted_context_hash,
-            identity.tool_call_id,
             identity.tool_name,
             identity.argument_hash,
         )
@@ -313,14 +311,14 @@ class BackendWriteStateStore:
     ) -> None:
         actual = (
             row.source_chat_request_id,
-            row.conversation_id_hash,
+            row.patient_id_hash,
             row.trusted_context_hash,
             row.tool_name,
             row.argument_hash,
         )
         expected = (
             identity.source_chat_request_id,
-            identity.conversation_id_hash,
+            identity.patient_id_hash,
             identity.trusted_context_hash,
             identity.tool_name,
             identity.argument_hash,

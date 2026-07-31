@@ -1,7 +1,7 @@
 from datetime import date
 
 from shared.schemas import NotificationPolicyDelta
-from system_app.services.simulation import validate_policy_delta
+from system_app.services.policy_service import validate_policy_delta
 
 
 def test_policy_validation_accepts_valid_policy():

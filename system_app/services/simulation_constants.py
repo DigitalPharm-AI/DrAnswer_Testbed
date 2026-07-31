@@ -12,10 +12,6 @@ MEDICATION_PRESET_OPTIONS = [
     # "영양제",
     CUSTOM_CHOICE,
 ]
-PHR_SYNC_UNREGISTERED = "unregistered"
-PHR_SYNC_SYNCED = "synced"
-PHR_SYNC_NEEDS_SYNC = "needs_sync"
-PHR_SYNC_FAILED = "sync_failed"
 DOSAGE_PRESET_OPTIONS = [
     "1정",
     "2정",

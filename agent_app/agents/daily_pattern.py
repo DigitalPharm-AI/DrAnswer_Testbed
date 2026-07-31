@@ -10,13 +10,14 @@ from agent_app.agents.single_round_graph import (
     SingleRoundToolAgentGraph,
     single_round_message_flow,
 )
+from agent_app.errors import AgentExecutionError
 from agent_app.llm.messages import patient_summary_with_source
 from agent_app.llm.generation import PROMPT_VERSION_ID, agent_error
 from agent_app.llm.prompts import daily_pattern_final_prompt, daily_pattern_prompt
 from agent_app.providers.base import BaseLLMProvider
-from agent_app.tools.names import PROPOSE_NOTIFICATION_POLICY
+from shared.tool_names import PROPOSE_NOTIFICATION_POLICY
 from agent_app.tools.policy import has_deferred_policy_tool_call
-from agent_app.tools.results import tool_calls_payload, tool_result_summary
+from agent_app.tools.results import tool_calls_payload
 from agent_app.tools.runtime import ToolRuntime
 from shared.schemas import AgentResponse, DailyMedicationPattern
 
@@ -54,15 +55,21 @@ class DailyPatternAgent:
         response_output = final_output if executed_calls else decision_output
         response_message = state.get("final_ai_message") if executed_calls else state["decision_ai_message"]
         policy_confirmation_required = has_deferred_policy_tool_call(executed_calls)
-        fallback_summary = str(response_output.get("message") or response_output.get("summary") or "")
-        if policy_confirmation_required and not fallback_summary:
-            fallback_summary = "알림 정책 변경 후보를 만들었습니다. 확인 후 반영합니다."
-        fallback_summary = tool_result_summary(results, fallback_summary or "오늘 복약 패턴을 분석했습니다.")
+        generated_summary = str(response_output.get("message") or response_output.get("summary") or "").strip()
         human_summary, final_answer_source = patient_summary_with_source(
             response_message,
-            fallback_summary,
-            fallback_source="tool_result_summary" if results else "model_output",
+            generated_summary,
+            fallback_source="model_output",
         )
+        human_summary = human_summary.strip()
+        if not human_summary:
+            raise AgentExecutionError(
+                "llm_final_answer_missing",
+                error_type="llm_final_answer_missing",
+                trace_id=state["trace_id"],
+                agent_name="daily_pattern_agent",
+                decision_type="tool_call" if executed_calls else "pattern_policy_recommendation",
+            )
         structured_payload = {
             "summary": str(response_output.get("summary") or response_output.get("message") or ""),
             "analysis": response_output,

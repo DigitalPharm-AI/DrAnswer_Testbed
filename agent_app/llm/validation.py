@@ -20,12 +20,10 @@ class LlmToolCall(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def normalize_legacy_tool_shape(cls, data: Any) -> Any:
+    def normalize_native_tool_arguments(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
         normalized = dict(data)
-        if not normalized.get("name") and normalized.get("tool_name"):
-            normalized["name"] = normalized["tool_name"]
         if not isinstance(normalized.get("arguments"), dict) and isinstance(normalized.get("args"), dict):
             normalized["arguments"] = normalized["args"]
         return normalized
@@ -75,6 +73,21 @@ class MissedDoseHybridOutput(BaseModel):
         return value
 
 
+class MissedDoseGenerationOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    generated_message: str = Field(min_length=1, max_length=45)
+    token_usage: dict[str, int] | None = None
+
+    @field_validator("generated_message")
+    @classmethod
+    def validate_generated_message(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("generated_message_required")
+        return text
+
+
 class DailyPatternOutput(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -110,16 +123,16 @@ class MissedDoseOutput(BaseModel):
 class MultiturnChatOutput(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    advice: str | None = None
     message: str | None = None
-    observations: list[Any] = Field(default_factory=list)
     tool_call: LlmToolCall | None = None
     tool_calls: list[LlmToolCall] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_content(self) -> MultiturnChatOutput:
-        if not (self.advice or self.message or self.tool_call or self.tool_calls):
-            raise ValueError("multiturn_output_requires_reply_or_tool_call")
+        if not (
+            self.message or self.tool_call or self.tool_calls
+        ):
+            raise ValueError("multiturn_output_requires_message_or_tool_call")
         return self
 
 
@@ -151,13 +164,34 @@ def validate_llm_output(
         MissedDoseOutput.model_validate(output)
         if not (allow_tool_only and _has_tool_call(output)):
             _validate_missed_dose_contextual_requirements(output, payload)
+    elif decision_type == "missed_dose_message_generation":
+        validate_missed_dose_generation_output(output)
     elif decision_type == "system_guidance":
         MultiturnChatOutput.model_validate(output)
     return output
 
 
 def validate_mutation_confirmation_reply_output(output: dict[str, Any]) -> dict[str, Any]:
-    return MutationConfirmationReplyOutput.model_validate(output).model_dump(mode="json")
+    semantic_output = {
+        key: value
+        for key, value in output.items()
+        if key != "token_usage"
+    }
+    validated = MutationConfirmationReplyOutput.model_validate(
+        semantic_output
+    ).model_dump(mode="json")
+    if isinstance(output.get("token_usage"), dict):
+        validated["token_usage"] = dict(output["token_usage"])
+    return validated
+
+
+def validate_missed_dose_generation_output(
+    output: dict[str, Any],
+) -> dict[str, Any]:
+    return MissedDoseGenerationOutput.model_validate(output).model_dump(
+        mode="json",
+        exclude_none=True,
+    )
 
 
 

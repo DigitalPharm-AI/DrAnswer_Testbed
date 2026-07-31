@@ -14,9 +14,7 @@ from shared.tool_names import (
     UPSERT_NUTRITION_PREFERENCE_FACT,
 )
 
-CONFIRMATION_NONE = "none"
 CONFIRMATION_USER_REQUIRED = "user_required"
-CONFIRMATION_APP_SERVER = "app_server_confirmation"
 
 
 @dataclass(frozen=True)

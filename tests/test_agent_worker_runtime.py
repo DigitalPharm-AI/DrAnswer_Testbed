@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 import agent_app.worker_main as worker_main
 
@@ -9,8 +10,18 @@ def test_worker_main_initializes_queue_and_runs_worker(monkeypatch):
     events: list[object] = []
 
     class FakeSettings:
-        def require_internal_api_token_in_production(self) -> None:
+        def require_internal_api_token(self) -> str:
             events.append("settings_checked")
+            return "test-internal-token"
+
+        def require_backend_read_database_url(self) -> None:
+            events.append("backend_read_settings_checked")
+
+        def require_agent_postgresql(self) -> None:
+            events.append("agent_database_settings_checked")
+
+        def require_backend_read_postgresql(self) -> None:
+            events.append("backend_read_database_settings_checked")
 
     class FakeSession:
         def __init__(self, _engine):
@@ -25,16 +36,35 @@ def test_worker_main_initializes_queue_and_runs_worker(monkeypatch):
         def commit(self) -> None:
             events.append("session_committed")
 
-    def fake_worker(stop_event, orchestrator):
-        events.append(("worker_started", orchestrator, stop_event.is_set()))
+    def fake_worker(stop_event, orchestrator, backend_queries):
+        events.append(
+            (
+                "worker_started",
+                orchestrator,
+                backend_queries,
+                stop_event.is_set(),
+            )
+        )
         stop_event.set()
 
     monkeypatch.setattr(worker_main, "get_settings", lambda: FakeSettings())
-    monkeypatch.setattr(worker_main.Base.metadata, "create_all", lambda bind: events.append(("schema_created", bind is worker_main.engine)))
-    monkeypatch.setattr(worker_main, "run_migrations", lambda engine: events.append(("migrations_run", engine is worker_main.engine)) or [])
+    monkeypatch.setattr(
+        worker_main,
+        "verify_agent_schema_current",
+        lambda engine: events.append(
+            ("schema_verified", engine is worker_main.engine)
+        ),
+    )
     monkeypatch.setattr(worker_main, "Session", FakeSession)
     monkeypatch.setattr(worker_main, "reset_running_async_tasks", lambda session: events.append(("tasks_reset", session is not None)) or 0)
-    monkeypatch.setattr(worker_main, "create_orchestrator", lambda: "fake-orchestrator")
+    monkeypatch.setattr(
+        worker_main,
+        "create_runtime_components",
+        lambda: SimpleNamespace(
+            orchestrator="fake-orchestrator",
+            tool_server=SimpleNamespace(backend_queries="fake-backend-queries"),
+        ),
+    )
     monkeypatch.setattr(worker_main, "async_task_worker", fake_worker)
     monkeypatch.setattr(worker_main.signal, "signal", lambda *_args, **_kwargs: None)
 
@@ -42,12 +72,19 @@ def test_worker_main_initializes_queue_and_runs_worker(monkeypatch):
 
     assert events == [
         "settings_checked",
-        ("schema_created", True),
-        ("migrations_run", True),
+        "backend_read_settings_checked",
+        "agent_database_settings_checked",
+        "backend_read_database_settings_checked",
+        ("schema_verified", True),
         "session_created",
         ("tasks_reset", True),
         "session_committed",
-        ("worker_started", "fake-orchestrator", False),
+        (
+            "worker_started",
+            "fake-orchestrator",
+            "fake-backend-queries",
+            False,
+        ),
     ]
 
 

@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from system_app.models import NutritionFoodRef
@@ -25,7 +25,7 @@ def search_food_candidates(
     query: str,
     limit: int = 10,
     *,
-    session: Session | None,
+    session: Session,
     patient_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """음식명으로 후보 목록 반환. 추후 외부 API로 교체 시 이 함수만 변경.
@@ -34,8 +34,6 @@ def search_food_candidates(
         [{food_ref_id, food_name, category, serving_size,
           nutrients: {energy, protein, sodium, fat, carbohydrate: {value, unit}}}]
     """
-    if session is None:
-        return _fallback_scenario_search(query.strip().lower(), limit, session=None, patient_id=patient_id)
     return _search_from_db(query, limit, session=session, patient_id=patient_id)
 
 
@@ -50,16 +48,15 @@ def _search_from_db(
     if not needle:
         return []
 
-    # 테이블이 비어있으면 하드코딩 폴백
+    # An empty reference table is an explicit empty dataset. Do not substitute
+    # test scenarios for Backend-owned reference data.
     count = session.scalar(select(func.count()).select_from(NutritionFoodRef))
     if not count:
-        return _fallback_scenario_search(needle, limit, session=session, patient_id=patient_id)
+        return []
 
     # 전체 구절로 먼저 검색
     rows = session.scalars(
-        select(NutritionFoodRef)
-        .where(NutritionFoodRef.food_name.like(f"%{needle}%"))
-        .limit(limit)
+        _ranked_food_search_statement(needle, limit)
     ).all()
 
     # 결과 부족 시 공백 분리 토큰 중 가장 긴 토큰으로 재검색
@@ -69,9 +66,7 @@ def _search_from_db(
             if len(token) < 2:
                 continue
             rows = session.scalars(
-                select(NutritionFoodRef)
-                .where(NutritionFoodRef.food_name.like(f"%{token}%"))
-                .limit(limit)
+                _ranked_food_search_statement(token, limit)
             ).all()
             if rows:
                 break
@@ -80,6 +75,28 @@ def _search_from_db(
 
     from system_app.services.nutrition_preference_service import annotate_food_candidate
     return [annotate_food_candidate(session, c, patient_id=patient_id) for c in candidates]
+
+
+def _ranked_food_search_statement(needle: str, limit: int):
+    """Return deterministic relevance order before applying the result limit."""
+
+    normalized_name = func.lower(NutritionFoodRef.food_name)
+    match_rank = case(
+        (normalized_name == needle, 0),
+        (normalized_name.like(f"{needle}%"), 1),
+        else_=2,
+    )
+    return (
+        select(NutritionFoodRef)
+        .where(normalized_name.like(f"%{needle}%"))
+        .order_by(
+            match_rank,
+            func.length(NutritionFoodRef.food_name),
+            normalized_name,
+            NutritionFoodRef.food_ref_id,
+        )
+        .limit(limit)
+    )
 
 
 def _row_to_candidate(row: NutritionFoodRef) -> dict[str, Any]:
@@ -106,33 +123,6 @@ def _serving_size(row: NutritionFoodRef) -> float:
     except (TypeError, ValueError):
         return 100.0
     return value if value > 0 else 100.0
-
-
-def _fallback_scenario_search(
-    needle: str,
-    limit: int,
-    *,
-    session: Session | None,
-    patient_id: str | None,
-) -> list[dict[str, Any]]:
-    from system_app.services.nutrition_service import NUTRITION_SCENARIOS, _food_search_candidate
-
-    candidates: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for scenario in NUTRITION_SCENARIOS.values():
-        for food in scenario["foods"]:
-            name = food["food_name"]
-            if needle not in name.lower() or name in seen:
-                continue
-            seen.add(name)
-            candidates.append(_food_search_candidate(food))
-            if len(candidates) >= limit:
-                break
-        if len(candidates) >= limit:
-            break
-
-    from system_app.services.nutrition_preference_service import annotate_food_candidate
-    return [annotate_food_candidate(session, c, patient_id=patient_id) for c in candidates]
 
 
 def scale_nutrients(nutrients: dict[str, Any], ratio: float) -> dict[str, Any]:

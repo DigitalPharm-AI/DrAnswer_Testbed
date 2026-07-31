@@ -3,7 +3,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+from shared.public_ids import AssistantMessageId, PatientId, RequestId
 
 
 class StrictFeedbackContractModel(BaseModel):
@@ -11,26 +19,16 @@ class StrictFeedbackContractModel(BaseModel):
 
 
 class ChatFeedbackRequest(StrictFeedbackContractModel):
-    request_id: str = Field(min_length=1, max_length=160)
-    message_id: str = Field(min_length=1, max_length=160)
-    conversation_id: str = Field(min_length=1, max_length=160)
-    patient_id: str = Field(min_length=1, max_length=160)
-    feedback: bool
-    feedback_text: str | None = Field(max_length=4_000)
-    feedback_at: datetime
-
-    @field_validator(
-        "request_id",
-        "message_id",
-        "conversation_id",
-        "patient_id",
+    request_id: RequestId
+    message_id: AssistantMessageId
+    patient_id: PatientId
+    reaction: Literal["like", "dislike"] | None = None
+    feedback_text: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=4_000,
     )
-    @classmethod
-    def normalize_identifier(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("identifier_must_not_be_blank")
-        return normalized
+    feedback_at: datetime
 
     @field_validator("feedback_text")
     @classmethod
@@ -38,7 +36,9 @@ class ChatFeedbackRequest(StrictFeedbackContractModel):
         if value is None:
             return None
         normalized = value.strip()
-        return normalized or None
+        if not normalized:
+            raise ValueError("feedback_text_must_not_be_blank")
+        return normalized
 
     @field_validator("feedback_at")
     @classmethod
@@ -47,6 +47,28 @@ class ChatFeedbackRequest(StrictFeedbackContractModel):
             raise ValueError("timezone_offset_required")
         return value
 
+    @model_validator(mode="after")
+    def require_reaction_or_opinion(self) -> ChatFeedbackRequest:
+        if self.reaction is None and self.feedback_text is None:
+            raise ValueError("reaction_or_feedback_text_required")
+        return self
+
 
 class ChatFeedbackAccepted(StrictFeedbackContractModel):
-    status: Literal["accepted"] = "accepted"
+    status: Literal["accepted"]
+    reaction: Literal["like", "dislike"] | None = None
+    # Optional so Agent rows created by the opinion-only contract can still
+    # replay their original stored response.
+    accepted_at: datetime | None = None
+
+    @field_validator("accepted_at")
+    @classmethod
+    def validate_accepted_at(
+        cls,
+        value: datetime | None,
+    ) -> datetime | None:
+        if value is not None and (
+            value.tzinfo is None or value.utcoffset() is None
+        ):
+            raise ValueError("timezone_offset_required")
+        return value

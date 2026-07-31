@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from shared.backend_v13_contracts import ProCtcaeSeverityResult
+from shared.contract_boundary import remove_retired_conversation_fields
 
 
 class ChatTurn(BaseModel):
@@ -16,7 +19,6 @@ class AgentCallbackContext(BaseModel):
     app_base_url: str
     notification_id: int | None = None
     job_id: int | None = None
-    conversation_id: str | None = None
 
 
 class MultipleChoiceOption(BaseModel):
@@ -54,7 +56,7 @@ class SlotAdherenceSummary(BaseModel):
 
 
 class DosePatternEvent(BaseModel):
-    dose_event_id: int | None = None
+    dose_event_id: str | int | None = None
     medication_name: str
     slot_label: str
     scheduled_for: datetime
@@ -63,7 +65,7 @@ class DosePatternEvent(BaseModel):
 
 
 class MissedDoseReplyContext(BaseModel):
-    dose_event_id: int | None = None
+    dose_event_id: str | int | None = None
     medication_name: str = ""
     slot_label: str = ""
     scheduled_for: datetime | None = None
@@ -122,7 +124,6 @@ class PolicyWorkbookLoadResult(BaseModel):
 
 class DailyMedicationPattern(BaseModel):
     patient_id: str
-    phr_patient_key: str | None = None
     date: date
     window_start_date: date | None = None
     window_end_date: date | None = None
@@ -135,14 +136,22 @@ class DailyMedicationPattern(BaseModel):
     policy_boundaries: list[ResolvedPolicyBoundary] = Field(default_factory=list)
     missed_dose_reply_context: list[MissedDoseReplyContext] = Field(default_factory=list)
     conversation_context: list[ChatTurn] = Field(default_factory=list)
+    # These snapshots come from the AI Server's fixed read-only Backend DB
+    # queries. The public daily-pattern trigger remains disabled until the
+    # v1.3 makes Backend the owner of the public daily-pattern trigger.
+    active_schedule_snapshot: list[dict[str, Any]] = Field(
+        default_factory=list,
+    )
+    current_policy_snapshot: list[dict[str, Any]] = Field(
+        default_factory=list,
+    )
     notes: str | None = None
     callback_context: AgentCallbackContext | None = None
 
 
 class MissedDoseEventPayload(BaseModel):
     patient_id: str
-    phr_patient_key: str | None = None
-    dose_event_id: int
+    dose_event_id: str | int
     medication_name: str
     slot_label: str
     scheduled_for: datetime
@@ -155,6 +164,7 @@ class MissedDoseEventPayload(BaseModel):
     chat_context: list[ChatTurn] = Field(default_factory=list)
     missed_dose_reply_context: list[MissedDoseReplyContext] = Field(default_factory=list)
     conversation_context: list[ChatTurn] = Field(default_factory=list)
+    context: dict[str, Any] = Field(default_factory=dict)
     callback_context: AgentCallbackContext | None = None
 
 
@@ -185,18 +195,8 @@ class SystemPolicyDelta(BaseModel):
     source: Literal["patient_request", "system_request"] = "patient_request"
 
 
-class MissedDoseAssessment(BaseModel):
-    dose_event_id: int
-    likely_reason: str
-    side_effect_signal: bool
-    symptom_summary: str
-    follow_up_questions: list[str]
-    recommendation: str
-
-
 class MultiturnChatRequest(BaseModel):
     patient_id: str
-    phr_patient_key: str | None = None
     event_type: str
     message: str
     current_time: datetime
@@ -216,43 +216,16 @@ class AgentResponse(BaseModel):
     validation_errors: list[str] = Field(default_factory=list)
 
 
-class AgentAsyncAccepted(BaseModel):
+class AgentInternalTaskAccepted(BaseModel):
     request_id: str
     task_type: str
     status: Literal["accepted", "duplicate"]
-    callback_expected: bool = True
-    message: str = ""
+    accepted_at: datetime
 
 
 class AgentAsyncTaskActionRequest(BaseModel):
     action: Literal["retry", "dismiss"]
     reason: str = ""
-
-
-class AgentAsyncJobResultRequest(BaseModel):
-    request_id: str
-    task_type: Literal["daily_pattern", "missed_dose"]
-    response: AgentResponse
-    job_id: int | None = None
-    related_dose_event_id: int | None = None
-    idempotency_key: str | None = None
-
-
-class AgentAsyncChatResultRequest(BaseModel):
-    request_id: str
-    event_type: str = "multiturn_chat"
-    message: str = ""
-    notification_id: int | None = None
-    response: AgentResponse
-    idempotency_key: str | None = None
-
-
-class AgentAsyncPolicyChangeRequest(BaseModel):
-    request_id: str
-    source_event_type: str = "multiturn_chat"
-    notification_id: int | None = None
-    response: AgentResponse
-    idempotency_key: str | None = None
 
 
 class AgentAsyncPushMessageRequest(BaseModel):
@@ -267,6 +240,14 @@ class AgentAsyncPushMessageRequest(BaseModel):
     related_dose_event_id: int | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     chat_category: str | None = None
+
+    @field_validator("metadata")
+    @classmethod
+    def remove_retired_metadata(
+        cls,
+        value: dict[str, Any],
+    ) -> dict[str, Any]:
+        return remove_retired_conversation_fields(value)
 
 
 class AgentAsyncClinicianAlertRequest(BaseModel):
@@ -284,19 +265,13 @@ class AgentAsyncClinicianAlertRequest(BaseModel):
     streak_metrics: dict[str, Any] = Field(default_factory=dict)
     callback_context: AgentCallbackContext | None = None
 
-
-class AgentAsyncFailureRequest(BaseModel):
-    request_id: str
-    task_type: str
-    message: str
-    error_type: str = "agent_async_task_failed"
-    trace_id: str | None = None
-    agent_name: str | None = None
-    decision_type: str | None = None
-    job_id: int | None = None
-    notification_id: int | None = None
-    related_dose_event_id: int | None = None
-    idempotency_key: str | None = None
+    @field_validator("metadata")
+    @classmethod
+    def remove_retired_metadata(
+        cls,
+        value: dict[str, Any],
+    ) -> dict[str, Any]:
+        return remove_retired_conversation_fields(value)
 
 
 class ToolCallResult(BaseModel):
@@ -305,65 +280,17 @@ class ToolCallResult(BaseModel):
     response: dict[str, Any] = Field(default_factory=dict)
     error: str = ""
     idempotency_key: str | None = None
+    elapsed_ms: int = Field(default=0, ge=0)
+    attempt_count: int = Field(default=1, ge=1)
+    retryable: bool = False
 
-
-class MutationConfirmationPrepareRequest(BaseModel):
-    patient_id: str
-    action_type: Literal["agent_tool", "server_action"] = "agent_tool"
-    action_name: str
-    tool_call_id: str = ""
-    arguments: dict[str, Any] = Field(default_factory=dict)
-    trace_id: str
-    source_event_type: str
-    request_context: dict[str, Any] = Field(default_factory=dict)
-
-
-class MutationConfirmationPrepareResult(BaseModel):
-    confirmation_required: bool
-    confirmation_id: str | None = None
-    action_type: Literal["agent_tool", "server_action"] = "agent_tool"
-    action_name: str
-    tool_call_id: str = ""
-    action_fingerprint: str = ""
-    status: str
-    display: dict[str, Any] = Field(default_factory=dict)
-    execution_result: dict[str, Any] = Field(default_factory=dict)
-
-
-class MutationConfirmationResolutionRequest(BaseModel):
-    confirmation_id: str
-    resolution: Literal["confirm", "cancel"]
-    action_type: Literal["agent_tool", "server_action"] = "agent_tool"
-    action_name: str
-    tool_call_id: str = ""
-    arguments: dict[str, Any] = Field(default_factory=dict)
-    action_fingerprint: str
-    source_event_type: str = "multiturn_chat"
-    original_request: MultiturnChatRequest
-
-
-class ConfirmedMutationExecutionRequest(BaseModel):
-    confirmation_id: str
-    action_name: str
-    action_fingerprint: str
-    trace_id: str
-    source_event_type: str = "multiturn_chat"
-
-
-class ConfirmedMutationExecutionResult(BaseModel):
-    confirmation_id: str
-    action_name: str
-    status: Literal["applied", "stale", "failed"]
-    tool_result: dict[str, Any] = Field(default_factory=dict)
-    error: str = ""
-
-
-class SideEffectAssessmentRequest(BaseModel):
-    phr_patient_key: str
-    medication_name: str | None = None
-    symptom_text: str
-    recent_chat: list[ChatTurn] = Field(default_factory=list)
-    dose_event_id: str | int | None = None
+    @field_validator("response")
+    @classmethod
+    def remove_retired_response_fields(
+        cls,
+        value: dict[str, Any],
+    ) -> dict[str, Any]:
+        return remove_retired_conversation_fields(value)
 
 
 class SideEffectAssessmentResult(BaseModel):
@@ -376,39 +303,33 @@ class SideEffectAssessmentResult(BaseModel):
 
 
 class SideEffectRecordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     patient_id: str | None = None
-    phr_patient_key: str | None = None
     medication_name: str | None = None
     symptom_text: str
+    symptom_onset_text: str = ""
     suspected: bool
-    severity: Literal["none", "low", "moderate", "high"] = "none"
+    severity: ProCtcaeSeverityResult
     matched_effects: list[str] = Field(default_factory=list)
     matched_items: list[str] = Field(default_factory=list)
-    evidence: str = ""
-    recommendation: str = ""
-    source_trace_id: str | None = None
-    source_event_type: str = "agent_tool"
     related_dose_event_id: str | int | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class SideEffectRecordView(BaseModel):
-    id: int
+    id: str | int
     patient_id: str
-    phr_patient_key: str = ""
     medication_name: str = ""
     symptom_text: str = ""
+    symptom_onset_text: str = ""
     suspected: bool
-    severity: str = "none"
+    severity: ProCtcaeSeverityResult | dict[str, Any]
     matched_effects: list[str] = Field(default_factory=list)
     matched_items: list[str] = Field(default_factory=list)
-    evidence: str = ""
-    recommendation: str = ""
-    source_trace_id: str = ""
-    source_event_type: str = ""
     related_dose_event_id: str | int | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    version: int = 1
     created_at: datetime
+    updated_at: datetime | None = None
 
 
 class SideEffectRecordResult(BaseModel):
@@ -426,9 +347,9 @@ class SideEffectHistoryResult(BaseModel):
 
 
 class AEProCtcaeAssessmentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     symptom_text: str
-    symptom_normalize: str = ""
-    threshold: float | None = None
 
 
 class AEProCtcaeQuestion(BaseModel):
@@ -458,15 +379,27 @@ class AEProCtcaeAssessmentResult(BaseModel):
 
 
 class DoseTakenToolRequest(BaseModel):
-    dose_event_id: int = Field(ge=1)
+    dose_event_id: str | int
     taken_at: datetime | None = None
     reason: str = ""
-    source_trace_id: str | None = None
-    source_event_type: str = "agent_tool"
+
+    @field_validator("dose_event_id")
+    @classmethod
+    def validate_dose_event_id(cls, value: str | int) -> str | int:
+        if isinstance(value, bool):
+            raise ValueError("dose_event_id_required")
+        if isinstance(value, int):
+            if value < 1:
+                raise ValueError("dose_event_id_required")
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("dose_event_id_required")
+        return normalized
 
 
 class DoseTakenToolResult(BaseModel):
-    dose_event_id: int
+    dose_event_id: str | int
     status: Literal["taken", "not_found"]
     taken_at: datetime | None = None
     message: str
@@ -500,13 +433,6 @@ class NutritionFoodPayload(BaseModel):
     food_name: str
     portion: str = "1인분"
     nutrients: dict[str, Any] = Field(default_factory=dict)
-
-
-class NutritionFoodSearchRequest(BaseModel):
-    query: str
-    patient_id: str | None = None
-    limit: int = Field(default=6, ge=1, le=20)
-    meal_type: Literal["breakfast", "lunch", "dinner", "snack"] | None = None
 
 
 class NutritionMealRecordRequest(BaseModel):
@@ -550,72 +476,6 @@ class NutritionFoodDeleteRequest(BaseModel):
     delete_empty_meal: bool = True
 
 
-class NutritionMealListResult(BaseModel):
-    success: bool = True
-    meals: list[dict[str, Any]] = Field(default_factory=list)
-    total: int = 0
-
-
-class NutritionMealRecordResult(BaseModel):
-    success: bool = True
-    meal: dict[str, Any]
-    daily_summary: dict[str, Any]
-    alert_created: bool = False
-    alert_id: int | None = None
-
-
-class NutritionMealUpdateResult(BaseModel):
-    success: bool = True
-    meal: dict[str, Any]
-    daily_summary: dict[str, Any]
-    alert_created: bool = False
-    alert_id: int | None = None
-    updated: bool = True
-    reason: str = ""
-
-
-class NutritionMealDeleteResult(BaseModel):
-    success: bool = True
-    deleted_meal: dict[str, Any]
-    daily_summary: dict[str, Any]
-    reason: str = ""
-
-
-class NutritionFoodUpdateResult(BaseModel):
-    success: bool = True
-    meal: dict[str, Any]
-    food: dict[str, Any]
-    daily_summary: dict[str, Any]
-    updated: bool = True
-    reason: str = ""
-
-
-class NutritionFoodDeleteResult(BaseModel):
-    success: bool = True
-    meal_id: int
-    food_id: int
-    deleted_food: dict[str, Any]
-    meal: dict[str, Any] | None = None
-    daily_summary: dict[str, Any]
-    meal_deleted: bool = False
-    reason: str = ""
-
-
-class NutritionDailySummaryResult(BaseModel):
-    success: bool = True
-    daily_summary: dict[str, Any]
-
-
-class NutritionFoodSearchResult(BaseModel):
-    success: bool = True
-    candidates: list[dict[str, Any]] = Field(default_factory=list)
-    source: str = "sample"
-    error: str = ""
-    query: str = ""
-    meal_type: str = ""
-    limit: int = 6
-
-
 class NutritionPreferenceFactRequest(BaseModel):
     patient_id: str | None = None
     predicate: Literal[
@@ -635,80 +495,12 @@ class NutritionPreferenceFactRequest(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     source: str = "agent_tool"
     evidence_text: str = ""
-    source_trace_id: str = ""
 
 
 class NutritionPreferenceFactResult(BaseModel):
     success: bool = True
     fact: dict[str, Any]
     preferences: dict[str, Any]
-
-
-class NutritionPreferenceSummaryResult(BaseModel):
-    success: bool = True
-    preferences: dict[str, Any]
-
-
-class PhrMedicationRegistrationItem(BaseModel):
-    item_name: str
-    dosage: str = ""
-
-
-class PhrPatientRegistrationRequest(BaseModel):
-    medications: list[PhrMedicationRegistrationItem] = Field(default_factory=list)
-
-
-class PhrRegisteredMedication(BaseModel):
-    item_name: str
-    dosage: str = ""
-    active: bool = True
-    precautions_text: str = ""
-
-
-class PhrPatientRegistrationResult(BaseModel):
-    phr_patient_key: str
-    medications: list[PhrRegisteredMedication] = Field(default_factory=list)
-
-
-class PolicyApplyItemResult(BaseModel):
-    slot_label: str
-    applied: bool
-    message: str
-
-
-class PolicyApplyRequest(BaseModel):
-    policies: list[NotificationPolicyDelta] = Field(default_factory=list)
-    policy: NotificationPolicyDelta | None = None
-    idempotency_key: str
-    source_trace_id: str | None = None
-    source_event_type: str = "agent_tool"
-
-
-class PolicyApplyResult(BaseModel):
-    idempotency_key: str
-    results: list[PolicyApplyItemResult]
-    all_applied: bool
-
-
-class SystemPolicyApplyItemResult(BaseModel):
-    policy_key: str
-    value: str = ""
-    applied: bool
-    message: str
-
-
-class SystemPolicyApplyRequest(BaseModel):
-    policies: list[SystemPolicyDelta] = Field(default_factory=list)
-    policy: SystemPolicyDelta | None = None
-    idempotency_key: str
-    source_trace_id: str | None = None
-    source_event_type: str = "agent_tool"
-
-
-class SystemPolicyApplyResult(BaseModel):
-    idempotency_key: str
-    results: list[SystemPolicyApplyItemResult]
-    all_applied: bool
 
 
 class AgentNotificationRequest(BaseModel):
@@ -721,27 +513,3 @@ class AgentNotificationRequest(BaseModel):
     visible_at: datetime | None = None
     chat_category: str | None = None
     idempotency_key: str | None = None
-
-
-class NutritionRecommendRequest(BaseModel):
-    patient_id: str | None = None
-    constraints: dict[str, str] = Field(default_factory=dict)
-    meal_type: str | None = None
-    limit: int = Field(default=5, ge=1, le=20)
-    randomize: bool = True
-
-
-class NutritionRecommendResult(BaseModel):
-    success: bool = True
-    disease: str = ""
-    ckd_risk: str = ""
-    constraints_applied: dict[str, str] = Field(default_factory=dict)
-    limits_used: dict[str, Any] = Field(default_factory=dict)
-    recommendations: list[dict[str, Any]] = Field(default_factory=list)
-    blocked_count: int = 0
-    total_candidates: int = 0
-    randomized: bool = False
-    meal_type_requested: str = ""
-    meal_candidate_count: int = 0
-    non_meal_candidate_count: int = 0
-    error: str = ""

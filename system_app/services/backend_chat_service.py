@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 from datetime import UTC, datetime
-from uuid import uuid4
 
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
@@ -13,7 +12,8 @@ from shared.chat_contracts import (
     parse_input_box_message,
 )
 from shared.json_utils import dump_json, parse_json_object
-from system_app.contracts_v12 import BackendChatRequest, BackendChatResponse
+from shared.public_ids import new_public_id
+from system_app.contracts_v13 import BackendChatRequest, BackendChatResponse
 from system_app.models import ChatMessage, new_message_public_id
 from system_app.services.agent_client import AgentClient
 
@@ -33,7 +33,7 @@ def persist_user_message(
     session: Session,
     payload: BackendChatRequest,
 ) -> tuple[ChatMessage, str, datetime]:
-    request_id = payload.request_id or f"chat-{uuid4()}"
+    request_id = payload.request_id or new_public_id("request")
     message_at = payload.message_at or datetime.now(UTC)
     existing = session.scalar(
         select(ChatMessage).where(
@@ -45,20 +45,26 @@ def persist_user_message(
         metadata = parse_json_object(existing.metadata_json)
         if (
             existing.patient_id != payload.patient_id
-            or existing.conversation_id != payload.conversation_id
             or existing.content != payload.message
             or metadata.get("requested_return_type") != payload.requested_return_type
+            or (
+                payload.source_message_id is not None
+                and metadata.get("source_chat_message_id")
+                != payload.source_message_id
+            )
         ):
             raise BackendChatConflict("IDEMPOTENCY_CONFLICT")
+        if existing.processing_status == "retryable_failed":
+            _resume_retryable_user_message(session, existing, metadata)
         persisted_at = _aware_from_metadata(metadata.get("message_at")) or message_at
         return existing, request_id, persisted_at
 
     pending_response = pending_response_for_submission(
         session,
         patient_id=payload.patient_id,
-        conversation_id=payload.conversation_id,
         requested_return_type=payload.requested_return_type,
         message=payload.message,
+        source_message_id=payload.source_message_id,
     )
     metadata = {
         "message_at": message_at.isoformat(),
@@ -71,17 +77,20 @@ def persist_user_message(
     message = ChatMessage(
         public_id=new_message_public_id("user"),
         patient_id=payload.patient_id,
-        conversation_id=payload.conversation_id,
         ai_request_id=request_id,
         role="user",
         sender_type="patient",
         category="multiturn_chat",
-        message_type=payload.requested_return_type or "text",
+        message_type=payload.requested_return_type,
         content=payload.message,
         message_payload_json=dump_json({"text": payload.message}),
+        reply_to_message_id=(
+            pending_response.id if pending_response is not None else None
+        ),
         processing_status="pending",
         metadata_json=dump_json(metadata),
         created_at=_naive_utc(message_at),
+        display_at=_naive_utc(message_at),
     )
     session.add(message)
     session.flush()
@@ -114,7 +123,6 @@ def existing_backend_chat_response(
     return BackendChatResponse.model_validate(
         {
             "request_id": request_id,
-            "conversation_id": assistant.conversation_id,
             "user_message_id": user.public_id,
             "assistant_message_id": assistant.public_id,
             "message_type": assistant.message_type,
@@ -129,12 +137,11 @@ def build_agent_chat_request(
     user_message: ChatMessage,
     request_id: str,
     message_at: datetime,
-    requested_return_type: str | None,
+    requested_return_type: str,
 ) -> ChatSyncRequest:
     return ChatSyncRequest(
         request_id=request_id,
         message_id=user_message.public_id,
-        conversation_id=user_message.conversation_id,
         patient_id=user_message.patient_id,
         requested_return_type=requested_return_type,
         message=user_message.content,
@@ -183,7 +190,6 @@ def persist_assistant_response(
         _supersede_pending_responses(
             session,
             patient_id=user_message.patient_id,
-            conversation_id=user_message.conversation_id,
         )
         response_metadata.update(
             {
@@ -194,7 +200,6 @@ def persist_assistant_response(
     assistant = ChatMessage(
         public_id=new_message_public_id("assistant"),
         patient_id=user_message.patient_id,
-        conversation_id=user_message.conversation_id,
         ai_request_id=response.request_id,
         role="assistant",
         sender_type="assistant",
@@ -206,13 +211,13 @@ def persist_assistant_response(
         processing_status="completed",
         metadata_json=dump_json(response_metadata),
         created_at=_naive_utc(response.message_at),
+        display_at=_naive_utc(response.message_at),
     )
     session.add(assistant)
     user_message.processing_status = "completed"
     session.flush()
     return BackendChatResponse(
         request_id=response.request_id,
-        conversation_id=user_message.conversation_id,
         user_message_id=user_message.public_id,
         assistant_message_id=assistant.public_id,
         message_type=response.message_type,
@@ -225,22 +230,41 @@ def pending_response_for_submission(
     session: Session,
     *,
     patient_id: str,
-    conversation_id: str,
-    requested_return_type: str | None,
+    requested_return_type: str,
     message: str,
     source_chat_request_id: str | None = None,
+    source_message_id: str | None = None,
 ) -> ChatMessage | None:
-    pending_response = _latest_pending_response(
-        session,
-        patient_id=patient_id,
-        conversation_id=conversation_id,
-    )
-    if source_chat_request_id:
+    if (
+        requested_return_type == "text"
+        and not source_message_id
+        and not source_chat_request_id
+    ):
+        # v1.3 defines text as a new free-text request, not an implicit reply
+        # to whichever structured card happened to remain open.
+        _supersede_pending_responses(
+            session,
+            patient_id=patient_id,
+        )
+        return None
+    if (
+        requested_return_type != "text"
+        and not source_message_id
+        and not source_chat_request_id
+    ):
+        raise PendingChatResponseError(
+            "PENDING_RESPONSE_SOURCE_REQUIRED",
+            "source_message_id is required for a structured response.",
+        )
+    if source_message_id or source_chat_request_id:
         source_response = session.scalar(
             select(ChatMessage).where(
                 ChatMessage.patient_id == patient_id,
-                ChatMessage.conversation_id == conversation_id,
-                ChatMessage.ai_request_id == source_chat_request_id,
+                (
+                    ChatMessage.public_id == source_message_id
+                    if source_message_id
+                    else ChatMessage.ai_request_id == source_chat_request_id
+                ),
                 ChatMessage.role == "assistant",
             )
         )
@@ -261,15 +285,14 @@ def pending_response_for_submission(
                 "PENDING_RESPONSE_NOT_FOUND",
                 "The source message is not waiting for a structured response.",
             )
-        if pending_response is None or pending_response.id != source_response.id:
-            raise PendingChatResponseError(
-                "PENDING_RESPONSE_STALE",
-                "A newer structured response is waiting in this conversation.",
-            )
         pending_response = source_response
-
+    else:
+        pending_response = _latest_pending_response(
+            session,
+            patient_id=patient_id,
+        )
     if pending_response is None:
-        if requested_return_type is None:
+        if requested_return_type == "text":
             return None
         raise PendingChatResponseError(
             "PENDING_RESPONSE_NOT_FOUND",
@@ -312,13 +335,11 @@ def _latest_pending_response(
     session: Session,
     *,
     patient_id: str,
-    conversation_id: str,
 ) -> ChatMessage | None:
     rows = session.scalars(
         select(ChatMessage)
         .where(
             ChatMessage.patient_id == patient_id,
-            ChatMessage.conversation_id == conversation_id,
             ChatMessage.role == "assistant",
             ChatMessage.message_type.in_(("selection_box", "input_box")),
         )
@@ -334,12 +355,10 @@ def _supersede_pending_responses(
     session: Session,
     *,
     patient_id: str,
-    conversation_id: str,
 ) -> None:
     rows = session.scalars(
         select(ChatMessage).where(
             ChatMessage.patient_id == patient_id,
-            ChatMessage.conversation_id == conversation_id,
             ChatMessage.role == "assistant",
             ChatMessage.message_type.in_(("selection_box", "input_box")),
         )
@@ -455,6 +474,91 @@ def mark_user_message_failed(
     metadata = parse_json_object(row.metadata_json)
     metadata.update({"error_code": error_code, "retryable": retryable})
     row.metadata_json = dump_json(metadata)
+    _restore_pending_response_after_failed_submission(session, row, metadata)
+    session.flush()
+
+
+def _restore_pending_response_after_failed_submission(
+    session: Session,
+    failed_user_message: ChatMessage,
+    user_metadata: dict,
+) -> None:
+    """Re-open a structured card when its follow-up produced no AI response."""
+
+    source_message_id = str(
+        user_metadata.get("source_chat_message_id") or ""
+    ).strip()
+    source_request_id = str(
+        user_metadata.get("source_chat_request_id") or ""
+    ).strip()
+    if not source_message_id and not source_request_id:
+        return
+
+    assistant_exists = session.scalar(
+        select(ChatMessage.id).where(
+            ChatMessage.patient_id == failed_user_message.patient_id,
+            ChatMessage.ai_request_id == failed_user_message.ai_request_id,
+            ChatMessage.role == "assistant",
+        )
+    )
+    if assistant_exists is not None:
+        return
+
+    source_predicate = (
+        ChatMessage.public_id == source_message_id
+        if source_message_id
+        else ChatMessage.ai_request_id == source_request_id
+    )
+    source = session.scalar(
+        select(ChatMessage).where(
+            ChatMessage.patient_id == failed_user_message.patient_id,
+            ChatMessage.role == "assistant",
+            source_predicate,
+        )
+    )
+    if source is None:
+        return
+    source_metadata = parse_json_object(source.metadata_json)
+    if (
+        source_metadata.get("pending_response_status") != "answered"
+        or source_metadata.get("response_message_id")
+        != failed_user_message.public_id
+        or source_metadata.get("response_request_id")
+        != failed_user_message.ai_request_id
+    ):
+        return
+    source_metadata["pending_response_status"] = "pending"
+    source_metadata.pop("response_message_id", None)
+    source_metadata.pop("response_request_id", None)
+    source.metadata_json = dump_json(source_metadata)
+
+
+def _resume_retryable_user_message(
+    session: Session,
+    user_message: ChatMessage,
+    metadata: dict,
+) -> None:
+    source_message_id = str(
+        metadata.get("source_chat_message_id") or ""
+    ).strip()
+    if source_message_id:
+        source = session.scalar(
+            select(ChatMessage).where(
+                ChatMessage.public_id == source_message_id,
+                ChatMessage.patient_id == user_message.patient_id,
+                ChatMessage.role == "assistant",
+            )
+        )
+        if source is not None:
+            mark_pending_response_answered(
+                source,
+                response_message_id=user_message.public_id,
+                response_request_id=user_message.ai_request_id,
+            )
+    user_message.processing_status = "pending"
+    metadata.pop("error_code", None)
+    metadata.pop("retryable", None)
+    user_message.metadata_json = dump_json(metadata)
     session.flush()
 
 
@@ -464,29 +568,12 @@ def _message_for_agent_response(
 ) -> ChatMessage | None:
     predicates = (
         ChatMessage.patient_id == request.patient_id,
-        ChatMessage.conversation_id == request.conversation_id,
         ChatMessage.ai_request_id == request.request_id,
         ChatMessage.role == "user",
     )
-    message = session.scalar(
+    return session.scalar(
         select(ChatMessage).where(ChatMessage.public_id == request.message_id, *predicates)
     )
-    if message is not None:
-        return message
-    legacy_id = _legacy_positive_id(request.message_id)
-    if legacy_id is None:
-        return None
-    return session.scalar(
-        select(ChatMessage).where(ChatMessage.id == legacy_id, *predicates)
-    )
-
-
-def _legacy_positive_id(value: str) -> int | None:
-    normalized = str(value or "").strip()
-    if not normalized.isascii() or not normalized.isdigit():
-        return None
-    parsed = int(normalized)
-    return parsed if parsed > 0 else None
 
 
 def _response_time(message: ChatMessage) -> datetime:

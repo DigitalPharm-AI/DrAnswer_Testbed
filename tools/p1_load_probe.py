@@ -21,16 +21,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the P1 pilot load probe for DA_drug services.")
     parser.add_argument("--system-base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--agent-base-url", default="http://127.0.0.1:8001")
-    parser.add_argument("--phr-base-url", default="http://127.0.0.1:8002")
     parser.add_argument("--internal-api-token", default="")
     parser.add_argument("--concurrency", type=int, default=50)
     parser.add_argument("--iterations", type=int, default=100)
     parser.add_argument("--timeout", type=float, default=10.0)
-    parser.add_argument("--include-phr-register", action="store_true", help="Also POST synthetic PHR registrations. This writes test rows.")
     parser.add_argument("--max-error-rate", type=float, default=0.01)
     parser.add_argument("--p95-health-ms", type=int, default=1000)
     parser.add_argument("--p95-async-accept-ms", type=int, default=2000)
-    parser.add_argument("--p95-phr-register-ms", type=int, default=3000)
+    parser.add_argument("--p95-ui-status-ms", type=int, default=2000)
     return parser
 
 
@@ -41,18 +39,8 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         ("system_health", "GET", f"{args.system_base_url.rstrip('/')}/health", None, {}),
         ("agent_health", "GET", f"{args.agent_base_url.rstrip('/')}/health", None, {}),
         ("agent_readiness", "GET", f"{args.agent_base_url.rstrip('/')}/agent/ops/readiness", None, headers),
-        ("phr_health", "GET", f"{args.phr_base_url.rstrip('/')}/health", None, {}),
+        ("ui_status", "GET", f"{args.system_base_url.rstrip('/')}/api/ui/v1/status", None, {}),
     ]
-    if args.include_phr_register:
-        workflows.append(
-            (
-                "phr_register",
-                "POST",
-                f"{args.phr_base_url.rstrip('/')}/phr/patients/register",
-                {"medications": [{"item_name": "영양제", "dosage": "synthetic-load-probe"}]},
-                {},
-            )
-        )
 
     async with httpx.AsyncClient(timeout=args.timeout) as client:
         tasks = []
@@ -67,7 +55,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         max_error_rate=args.max_error_rate,
         p95_health_ms=args.p95_health_ms,
         p95_async_accept_ms=args.p95_async_accept_ms,
-        p95_phr_register_ms=args.p95_phr_register_ms,
+        p95_ui_status_ms=args.p95_ui_status_ms,
     )
     budget_result = evaluate_load_budget(summary, budget)
     return {
@@ -78,7 +66,7 @@ async def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             "max_error_rate": budget.max_error_rate,
             "p95_health_ms": budget.p95_health_ms,
             "p95_async_accept_ms": budget.p95_async_accept_ms,
-            "p95_phr_register_ms": budget.p95_phr_register_ms,
+            "p95_ui_status_ms": budget.p95_ui_status_ms,
         },
         "alerts": budget_result["alerts"],
     }

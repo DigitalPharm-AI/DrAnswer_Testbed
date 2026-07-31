@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import re
-from typing import Any
-
 DELEGATE_TO_MEDICATION_AGENT = "delegate_to_medication_agent"
 DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT = "delegate_to_nutrition_management_agent"
 DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT = "delegate_to_nutrition_recommendation_agent"
+REQUEST_RECORD_APPROVAL = "request_record_approval"
 
 UPDATE_MEDICATION_DOSE_EVENT_STATUS = "update_medication_dose_event_status"
 GET_MEDICATION_DOSE_STATUS = "get_medication_dose_status"
@@ -40,34 +38,6 @@ SOURCE_NUTRITION_MANAGEMENT_AGENT = "nutrition_management_agent"
 SOURCE_NUTRITION_RECOMMENDATION_AGENT = "nutrition_recommendation_agent"
 SOURCE_MCP = "mcp"
 
-LEGACY_TO_CANONICAL_TOOL_NAMES = {
-    "call_medication_agent": DELEGATE_TO_MEDICATION_AGENT,
-    "call_nutrition_management_agent": DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT,
-    "call_nutrition_recommendation_agent": DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT,
-    "mark_dose_taken": UPDATE_MEDICATION_DOSE_EVENT_STATUS,
-    "lookup_side_effect_info": GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
-    "AE_pro_ctcae": GET_PRO_CTCAE_QUESTIONNAIRE,
-    "search_food_nutrition": SEARCH_NUTRITION_FOOD_CANDIDATES,
-    "record_meal": CREATE_NUTRITION_MEAL_RECORD,
-    "update_nutrition_meal": UPDATE_NUTRITION_MEAL_RECORD,
-    "delete_nutrition_meal": DELETE_NUTRITION_MEAL_RECORD,
-    "update_nutrition_food": UPDATE_NUTRITION_FOOD_RECORD,
-    "delete_nutrition_food": DELETE_NUTRITION_FOOD_RECORD,
-    "list_meals": GET_NUTRITION_MEAL_RECORD_LIST,
-    "get_daily_nutrition_summary": GET_NUTRITION_DAILY_SUMMARY,
-    "record_nutrition_preference": UPSERT_NUTRITION_PREFERENCE_FACT,
-    "get_nutrition_preferences": GET_NUTRITION_PREFERENCE_SUMMARY,
-    "recommend_diet": GET_NUTRITION_RECOMMENDATION_CANDIDATES,
-    "apply_notification_policy": PROPOSE_NOTIFICATION_POLICY,
-    "apply_system_policy": PROPOSE_SYSTEM_POLICY,
-}
-
-CANONICAL_TO_LEGACY_TOOL_NAMES = {value: key for key, value in LEGACY_TO_CANONICAL_TOOL_NAMES.items()}
-LEGACY_TOOL_NAMES = frozenset(LEGACY_TO_CANONICAL_TOOL_NAMES)
-_LEGACY_TOOL_NAME_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9_])(" + "|".join(re.escape(name) for name in sorted(LEGACY_TO_CANONICAL_TOOL_NAMES, key=len, reverse=True)) + r")(?![A-Za-z0-9_])"
-)
-
 DELEGATION_TOOL_NAMES = {
     DELEGATE_TO_MEDICATION_AGENT,
     DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT,
@@ -77,9 +47,10 @@ SIDE_EFFECT_TOOLS = {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTI
 MEDICATION_QUERY_TOOLS = {GET_MEDICATION_DOSE_STATUS, GET_SIDE_EFFECT_HISTORY}
 POLICY_TOOLS = {PROPOSE_NOTIFICATION_POLICY, PROPOSE_SYSTEM_POLICY}
 POLICY_QUERY_TOOLS = {GET_NOTIFICATION_POLICIES}
-BACKEND_V12_RECORD_WRITE_TOOLS = frozenset(
+BACKEND_V13_RECORD_WRITE_TOOLS = frozenset(
     {
         UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+        CREATE_MEDICATION_SIDE_EFFECT_RECORD,
         CREATE_NUTRITION_MEAL_RECORD,
         UPDATE_NUTRITION_MEAL_RECORD,
         DELETE_NUTRITION_MEAL_RECORD,
@@ -87,8 +58,13 @@ BACKEND_V12_RECORD_WRITE_TOOLS = frozenset(
         DELETE_NUTRITION_FOOD_RECORD,
     }
 )
-BACKEND_V12_POLICY_WRITE_TOOLS = frozenset({CHANGE_NOTIFICATION_POLICY})
-BACKEND_V12_SYNC_WRITE_TOOLS = BACKEND_V12_RECORD_WRITE_TOOLS | BACKEND_V12_POLICY_WRITE_TOOLS
+BACKEND_V13_POLICY_WRITE_TOOLS = frozenset({CHANGE_NOTIFICATION_POLICY})
+BACKEND_V13_SYNC_WRITE_TOOLS = BACKEND_V13_RECORD_WRITE_TOOLS | BACKEND_V13_POLICY_WRITE_TOOLS
+RECORD_APPROVAL_ACTIONS = (
+    BACKEND_V13_RECORD_WRITE_TOOLS
+    | BACKEND_V13_POLICY_WRITE_TOOLS
+    | frozenset({UPSERT_NUTRITION_PREFERENCE_FACT})
+)
 NUTRITION_TOOLS = {
     SEARCH_NUTRITION_FOOD_CANDIDATES,
     CREATE_NUTRITION_MEAL_RECORD,
@@ -103,12 +79,14 @@ NUTRITION_TOOLS = {
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
 }
 MEDICATION_CHAT_TOOLS = {
+    REQUEST_RECORD_APPROVAL,
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
     CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     *SIDE_EFFECT_TOOLS,
     *MEDICATION_QUERY_TOOLS,
 }
 NUTRITION_MANAGEMENT_TOOLS = {
+    REQUEST_RECORD_APPROVAL,
     SEARCH_NUTRITION_FOOD_CANDIDATES,
     CREATE_NUTRITION_MEAL_RECORD,
     UPDATE_NUTRITION_MEAL_RECORD,
@@ -132,7 +110,7 @@ ALL_TOOL_NAMES = (
     | POLICY_TOOLS
     | POLICY_QUERY_TOOLS
     | NUTRITION_TOOLS
-    | BACKEND_V12_POLICY_WRITE_TOOLS
+    | BACKEND_V13_POLICY_WRITE_TOOLS
 )
 
 
@@ -159,23 +137,31 @@ MODEL_VISIBLE_TOOL_METADATA: dict[str, dict[str, str]] = {
     DELEGATE_TO_MEDICATION_AGENT: _metadata("orchestration", "agent_app/orchestration/delegation.py", DELEGATE_TO_MEDICATION_AGENT, "none", "low"),
     DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT: _metadata("orchestration", "agent_app/orchestration/delegation.py", DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT, "none", "low"),
     DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT: _metadata("orchestration", "agent_app/orchestration/delegation.py", DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT, "none", "low"),
-    UPDATE_MEDICATION_DOSE_EVENT_STATUS: _metadata("medication", "system_app/routes/agent_api.py", "agent_update_medication_dose_event_status", "write", "medium"),
-    GET_MEDICATION_DOSE_STATUS: _metadata("medication", "system_app/routes/agent_api.py", "agent_medication_dose_status", "read", "low"),
-    GET_MEDICATION_SIDE_EFFECT_ASSESSMENT: _metadata("medication_safety", "agent_app/tools/mcp_server.py", "phr_side_effect_assessment", "read", "medium"),
-    CREATE_MEDICATION_SIDE_EFFECT_RECORD: _metadata("medication_safety", "system_app/routes/agent_api.py", "agent_side_effect_record", "write", "medium"),
-    GET_SIDE_EFFECT_HISTORY: _metadata("medication_safety", "system_app/routes/agent_api.py", "agent_side_effect_history", "read", "medium"),
+    REQUEST_RECORD_APPROVAL: _metadata(
+        "record_approval",
+        "agent_app/tools/mcp_server.py",
+        REQUEST_RECORD_APPROVAL,
+        "propose",
+        "medium",
+        confirmation_policy="user_required",
+    ),
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS: _metadata("medication", "agent_app/tools/backend_write.py", UPDATE_MEDICATION_DOSE_EVENT_STATUS, "write", "medium"),
+    GET_MEDICATION_DOSE_STATUS: _metadata("medication", "agent_app/tools/backend_query.py", GET_MEDICATION_DOSE_STATUS, "read", "low"),
+    GET_MEDICATION_SIDE_EFFECT_ASSESSMENT: _metadata("medication_safety", "agent_app/tools/mcp_server.py", "snapshot_side_effect_assessment", "read", "medium"),
+    CREATE_MEDICATION_SIDE_EFFECT_RECORD: _metadata("medication_safety", "agent_app/tools/backend_write.py", CREATE_MEDICATION_SIDE_EFFECT_RECORD, "write", "medium"),
+    GET_SIDE_EFFECT_HISTORY: _metadata("medication_safety", "agent_app/tools/backend_query.py", GET_SIDE_EFFECT_HISTORY, "read", "medium"),
     GET_PRO_CTCAE_QUESTIONNAIRE: _metadata("medication_safety", "agent_app/ae_pro_ctcae.py", "match_pro_ctcae_symptom", "read", "medium"),
-    SEARCH_NUTRITION_FOOD_CANDIDATES: _metadata("nutrition", "system_app/routes/agent_api.py", "agent_search_nutrition_food_candidates", "read", "low"),
-    CREATE_NUTRITION_MEAL_RECORD: _metadata("nutrition", "system_app/routes/agent_api.py", "agent_create_nutrition_meal_record", "write", "medium"),
-    UPDATE_NUTRITION_MEAL_RECORD: _metadata("nutrition", "system_app/routes/agent_api.py", "agent_update_nutrition_meal_record", "write", "medium"),
-    DELETE_NUTRITION_MEAL_RECORD: _metadata("nutrition", "system_app/routes/agent_api.py", "agent_delete_nutrition_meal_record", "delete", "medium"),
-    UPDATE_NUTRITION_FOOD_RECORD: _metadata("nutrition", "system_app/routes/agent_api.py", "agent_update_nutrition_food_record", "write", "medium"),
-    DELETE_NUTRITION_FOOD_RECORD: _metadata("nutrition", "system_app/routes/agent_api.py", "agent_delete_nutrition_food_record", "delete", "medium"),
-    GET_NUTRITION_MEAL_RECORD_LIST: _metadata("nutrition", "system_app/routes/agent_api.py", "agent_get_nutrition_meal_record_list", "read", "low"),
-    GET_NUTRITION_DAILY_SUMMARY: _metadata("nutrition", "system_app/routes/agent_api.py", "agent_get_nutrition_daily_summary", "read", "low"),
-    UPSERT_NUTRITION_PREFERENCE_FACT: _metadata("nutrition", "system_app/routes/agent_api.py", "agent_upsert_nutrition_preference_fact", "write", "medium"),
-    GET_NUTRITION_PREFERENCE_SUMMARY: _metadata("nutrition", "system_app/routes/agent_api.py", "agent_get_nutrition_preference_summary", "read", "low"),
-    GET_NUTRITION_RECOMMENDATION_CANDIDATES: _metadata("nutrition", "system_app/routes/agent_api.py", "agent_get_nutrition_recommendation_candidates", "read", "low"),
+    SEARCH_NUTRITION_FOOD_CANDIDATES: _metadata("nutrition", "agent_app/tools/backend_query.py", SEARCH_NUTRITION_FOOD_CANDIDATES, "read", "low"),
+    CREATE_NUTRITION_MEAL_RECORD: _metadata("nutrition", "agent_app/tools/backend_write.py", CREATE_NUTRITION_MEAL_RECORD, "write", "medium"),
+    UPDATE_NUTRITION_MEAL_RECORD: _metadata("nutrition", "agent_app/tools/backend_write.py", UPDATE_NUTRITION_MEAL_RECORD, "write", "medium"),
+    DELETE_NUTRITION_MEAL_RECORD: _metadata("nutrition", "agent_app/tools/backend_write.py", DELETE_NUTRITION_MEAL_RECORD, "delete", "medium"),
+    UPDATE_NUTRITION_FOOD_RECORD: _metadata("nutrition", "agent_app/tools/backend_write.py", UPDATE_NUTRITION_FOOD_RECORD, "write", "medium"),
+    DELETE_NUTRITION_FOOD_RECORD: _metadata("nutrition", "agent_app/tools/backend_write.py", DELETE_NUTRITION_FOOD_RECORD, "delete", "medium"),
+    GET_NUTRITION_MEAL_RECORD_LIST: _metadata("nutrition", "agent_app/tools/backend_query.py", GET_NUTRITION_MEAL_RECORD_LIST, "read", "low"),
+    GET_NUTRITION_DAILY_SUMMARY: _metadata("nutrition", "agent_app/tools/backend_query.py", GET_NUTRITION_DAILY_SUMMARY, "read", "low"),
+    UPSERT_NUTRITION_PREFERENCE_FACT: _metadata("nutrition", "agent_app/tools/mcp_server.py", "AgentMcpToolServer._execute_tool_result", "write", "medium"),
+    GET_NUTRITION_PREFERENCE_SUMMARY: _metadata("nutrition", "agent_app/tools/backend_query.py", GET_NUTRITION_PREFERENCE_SUMMARY, "read", "low"),
+    GET_NUTRITION_RECOMMENDATION_CANDIDATES: _metadata("nutrition", "agent_app/tools/backend_query.py", GET_NUTRITION_RECOMMENDATION_CANDIDATES, "read", "low"),
     PROPOSE_NOTIFICATION_POLICY: _metadata("policy", "agent_app/tools/policy.py", "deferred_policy_tool_result", "propose", "high"),
     PROPOSE_SYSTEM_POLICY: _metadata("policy", "agent_app/tools/policy.py", "deferred_policy_tool_result", "propose", "high"),
     GET_NOTIFICATION_POLICIES: _metadata(
@@ -191,24 +177,6 @@ MODEL_VISIBLE_TOOL_METADATA: dict[str, dict[str, str]] = {
         CHANGE_NOTIFICATION_POLICY,
         "write",
         "high",
-        confirmation_policy="explicit_user_message",
+        confirmation_policy="user_required",
     ),
 }
-
-
-def canonical_tool_name(name: str) -> str:
-    return LEGACY_TO_CANONICAL_TOOL_NAMES.get(str(name or ""), str(name or ""))
-
-
-def legacy_tool_name(name: str) -> str:
-    return CANONICAL_TO_LEGACY_TOOL_NAMES.get(str(name or ""), str(name or ""))
-
-
-def replace_legacy_tool_names(value: Any) -> Any:
-    if isinstance(value, str):
-        return _LEGACY_TOOL_NAME_PATTERN.sub(lambda match: LEGACY_TO_CANONICAL_TOOL_NAMES[match.group(1)], value)
-    if isinstance(value, list):
-        return [replace_legacy_tool_names(item) for item in value]
-    if isinstance(value, dict):
-        return {key: replace_legacy_tool_names(item) for key, item in value.items()}
-    return value

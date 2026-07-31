@@ -1,0 +1,41 @@
+[Unit]
+Description=DRAnswer AI v1.3 Contract Callback Worker
+After=network-online.target dranswer-agent-contract-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dranswer-contract
+Group=dranswer-contract
+WorkingDirectory=/opt/dranswer-agent-contract/current
+EnvironmentFile=/etc/dranswer-agent-contract/contract.env
+EnvironmentFile=/etc/dranswer-agent-contract/release.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/dranswer-agent-contract/current/.venv/bin/python -m contract_test_server.worker_main
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+KillSignal=SIGTERM
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

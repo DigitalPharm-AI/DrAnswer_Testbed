@@ -1,0 +1,70 @@
+{
+  "schema_version": "1",
+  "label": "pg_before_conformance",
+  "captured_at": "2026-07-30T00:32:24.267586+00:00",
+  "release": "20260730T002607Z",
+  "current_target": "/opt/dranswer-agent-contract/releases/20260730T002607Z",
+  "archive_sha256": "fdcd63caddae399ac027a0ed2f07f1a2be6bff4c944f594915f5103e784c5f35",
+  "services": {
+    "dranswer-agent-contract-api.service": {
+      "Id": "dranswer-agent-contract-api.service",
+      "MainPID": "277940",
+      "Result": "success",
+      "NRestarts": "0",
+      "ExecMainStartTimestamp": "Thu 2026-07-30 09:32:10 KST",
+      "ActiveState": "active",
+      "SubState": "running",
+      "UnitFileState": "enabled",
+      "InvocationID": "7935c9f4abe345528eb93d680e6fcc9f",
+      "show_exit_code": 0
+    },
+    "dranswer-agent-contract-callback.service": {
+      "Id": "dranswer-agent-contract-callback.service",
+      "MainPID": "0",
+      "Result": "success",
+      "NRestarts": "0",
+      "ExecMainStartTimestamp": "",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "UnitFileState": "disabled",
+      "InvocationID": "",
+      "show_exit_code": 0
+    },
+    "chat-server.service": {
+      "Id": "chat-server.service",
+      "MainPID": "163828",
+      "Result": "success",
+      "NRestarts": "0",
+      "ExecMainStartTimestamp": "Mon 2026-07-27 21:51:13 KST",
+      "ActiveState": "active",
+      "SubState": "running",
+      "UnitFileState": "enabled",
+      "InvocationID": "0a85d9e85efa493485e068d94d8c8951",
+      "show_exit_code": 0
+    }
+  },
+  "listeners": [
+    "LISTEN 0      5            0.0.0.0:8766      0.0.0.0:*    users:((\"python\",pid=163828,fd=3))",
+    "LISTEN 0      2048       127.0.0.1:8701      0.0.0.0:*    users:((\"uvicorn\",pid=277940,fd=6))"
+  ],
+  "database": {
+    "kind": "postgresql",
+    "schema_version": 1,
+    "tables": [
+      "callback_jobs",
+      "contract_schema_version",
+      "request_records"
+    ],
+    "request_records": 15,
+    "callback_jobs": 6,
+    "callback_statuses": {
+      "held": 6
+    },
+    "callback_kinds": {
+      "missed_dose_result": 2,
+      "notification_policy_proposal": 4
+    }
+  },
+  "callback_mode": "hold",
+  "backend_callback_configured": false
+}

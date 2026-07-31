@@ -11,16 +11,13 @@ from shared.settings import get_settings
 backend_api_bearer = HTTPBearer(
     auto_error=False,
     scheme_name="BackendApiBearer",
-    description="AI Server가 Backend v1.2 쓰기 API를 호출할 때 사용하는 Bearer token",
+    description="AI Server가 Backend v1.3 쓰기 API를 호출할 때 사용하는 Bearer token",
 )
 
 
 def require_internal_api_token(x_internal_api_token: str | None = Header(default=None)) -> None:
     settings = get_settings()
-    settings.require_internal_api_token_in_production()
-    expected_token = settings.internal_api_token
-    if not expected_token:
-        return
+    expected_token = settings.require_internal_api_token()
     if not x_internal_api_token or not hmac.compare_digest(x_internal_api_token, expected_token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

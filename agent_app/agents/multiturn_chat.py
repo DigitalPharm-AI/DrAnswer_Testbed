@@ -26,13 +26,16 @@ from agent_app.llm.messages import (
     build_chat_messages,
     langchain_tools_from_catalog,
     model_output_from_ai_message,
+    model_output_with_tool_calls,
     patient_summary_with_source,
+    public_text_from_ai_message,
     tool_calls_from_ai_message,
     tool_messages_from_results,
 )
-from agent_app.orchestration.continuation import async_continuation_summary, async_continuation_type
+from agent_app.orchestration.continuation import continuation_type
 from agent_app.errors import AgentExecutionError
 from agent_app.llm.generation import PROMPT_VERSION_ID, agent_error
+from agent_app.observability.model_calls import traced_model_ainvoke
 from agent_app.llm.validation import validate_llm_output, validate_mutation_confirmation_reply_output
 from agent_app.llm.prompts import (
     multiturn_chat_prompt,
@@ -41,18 +44,97 @@ from agent_app.llm.prompts import (
     mutation_resolution_prompt,
 )
 from agent_app.providers.base import BaseLLMProvider
-from agent_app.llm.responses import finalized_chat_summary, natural_chat_summary, string_list
-from agent_app.tools.catalog import ToolCatalog
-from agent_app.tools.names import DELEGATE_TO_MEDICATION_AGENT, SIDE_EFFECT_TOOLS
-from agent_app.tools.permissions import POLICY_TOOLS
+from agent_app.llm.responses import finalized_chat_summary, natural_chat_summary
+from shared.tool_catalog import ToolCatalog
+from shared.tool_names import (
+    CHANGE_NOTIFICATION_POLICY,
+    CREATE_MEDICATION_SIDE_EFFECT_RECORD,
+    DELEGATE_TO_MEDICATION_AGENT,
+    GET_NOTIFICATION_POLICIES,
+    RECORD_APPROVAL_ACTIONS,
+    REQUEST_RECORD_APPROVAL,
+    SIDE_EFFECT_TOOLS,
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+)
+from shared.tool_permissions import POLICY_TOOLS
 from agent_app.tools.policy import has_deferred_policy_tool_call, normalize_policy_tool_calls
-from agent_app.tools.results import tool_calls_payload, tool_result_summary
+from agent_app.tools.policy_gate import (
+    ToolCallContext,
+    ToolCallOrigin,
+    tool_call_fingerprint,
+)
+from agent_app.tools.results import public_tool_calls, tool_calls_payload
 from agent_app.tools.runtime import ToolRuntime
+from shared.chat_contracts import has_structured_ui_response
 from shared.redaction import safe_exception_summary
 from shared.schemas import AgentResponse, MultiturnChatRequest, ToolCallResult
 
-SUPERVISOR_DIRECT_TOOLS = tuple(sorted(POLICY_TOOLS))
+SUPERVISOR_DIRECT_TOOLS = tuple(
+    sorted(
+        {
+            *POLICY_TOOLS,
+            GET_NOTIFICATION_POLICIES,
+            REQUEST_RECORD_APPROVAL,
+            CHANGE_NOTIFICATION_POLICY,
+        }
+    )
+)
 MULTITURN_CHAT_AGENT_NAME = "multiturn_chat_agent"
+
+
+def _required_llm_summary(
+    message: Any,
+    output: dict[str, Any],
+    *,
+    trace_id: str,
+    decision_type: str,
+    finalized: bool = False,
+) -> tuple[str, str]:
+    if finalized:
+        summary = finalized_chat_summary(output)
+        source = str(output.get("fallback") or "model_output")
+        if not summary:
+            summary, source = patient_summary_with_source(
+                message,
+                "",
+                fallback_source="model_output",
+            )
+    else:
+        summary, source = patient_summary_with_source(
+            message,
+            natural_chat_summary(output),
+            fallback_source="model_output",
+        )
+    summary = summary.strip()
+    if not summary:
+        raise AgentExecutionError(
+            "llm_final_answer_missing",
+            error_type="llm_final_answer_missing",
+            trace_id=trace_id,
+            agent_name=MULTITURN_CHAT_AGENT_NAME,
+            decision_type=decision_type,
+        )
+    return summary, source
+
+
+def _normalize_mutation_confirmation_output(
+    output: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize provider wording into the canonical confirmation message field."""
+
+    normalized = dict(output)
+    message = str(normalized.get("message") or "").strip()
+    if not message:
+        question = str(normalized.get("question") or "").strip()
+        if question:
+            normalized["message"] = question
+        else:
+            advice = str(normalized.get("advice") or "").strip()
+            if advice:
+                normalized["message"] = advice
+    normalized.pop("question", None)
+    normalized.pop("advice", None)
+    return normalized
 
 
 class MultiturnGraphState(TypedDict, total=False):
@@ -63,11 +145,14 @@ class MultiturnGraphState(TypedDict, total=False):
     bound_model: Any
     current_ai_message: Any
     current_model_output: dict[str, Any]
+    current_final_text: str
     initial_model_output: dict[str, Any]
     pending_tool_calls: list[dict[str, Any]]
     continuation_type: str
-    forced_specialist_tool_calls: list[dict[str, Any]]
-    forced_tool_calls_seeded: bool
+    specialist_continuation_tool_calls: list[dict[str, Any]]
+    seeded_tool_calls_consumed: bool
+    seeded_tool_origin: ToolCallOrigin
+    pending_tool_call_origin: ToolCallOrigin
     all_supervisor_tool_calls: list[dict[str, Any]]
     all_supervisor_tool_results: list[ToolCallResult]
     all_tool_messages: list[Any]
@@ -103,13 +188,58 @@ class MultiturnChatAgent:
             request = MultiturnChatRequest.model_validate(payload)
             request_payload = request.model_dump(mode="json")
             context = request.context if isinstance(request.context, dict) else {}
+            approved_action = context.get("approved_user_action")
+            approved_action_name = (
+                str(approved_action.get("action_name") or "")
+                if isinstance(approved_action, dict)
+                else ""
+            )
+            if (
+                isinstance(approved_action, dict)
+                and approved_action.get("status") == "confirmed"
+                and approved_action_name in RECORD_APPROVAL_ACTIONS
+            ):
+                model_arguments = approved_action.get("arguments")
+                if not isinstance(model_arguments, dict):
+                    raise ValueError("approved_user_action_arguments_missing")
+                approved_tool_call = {
+                    "id": f"approved_{approved_action_name}",
+                    "name": approved_action_name,
+                    "arguments": model_arguments,
+                }
+                if approved_action_name == CHANGE_NOTIFICATION_POLICY:
+                    return await self._execute_approved_supervisor_write(
+                        trace_id,
+                        request_payload,
+                        approved_tool_call,
+                    )
+                else:
+                    target_agent = (
+                        self.medication_agent
+                        if approved_action_name
+                        in {
+                            CREATE_MEDICATION_SIDE_EFFECT_RECORD,
+                            UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+                        }
+                        else self.nutrition_management_agent
+                    )
+                    specialist_response = (
+                        await target_agent.execute_approved_write(
+                            trace_id,
+                            request_payload,
+                            tool_call=approved_tool_call,
+                        )
+                    )
+                    return specialist_response
             final_state = await self.graph.ainvoke(
                 {
                     "trace_id": trace_id,
                     "request_payload": request_payload,
                     "context": context,
-                    "forced_specialist_tool_calls": [],
-                    "forced_tool_calls_seeded": False,
+                    "specialist_continuation_tool_calls": [],
+                    "seeded_tool_calls_consumed": False,
+                    "seeded_tool_origin": ToolCallOrigin.MODEL,
+                    "pending_tool_call_origin": ToolCallOrigin.MODEL,
                     "all_supervisor_tool_calls": [],
                     "all_supervisor_tool_results": [],
                     "all_tool_messages": [],
@@ -138,6 +268,114 @@ class MultiturnChatAgent:
         except Exception as exc:
             raise agent_error(trace_id, MULTITURN_CHAT_AGENT_NAME, "system_guidance", exc) from exc
 
+    async def _execute_approved_supervisor_write(
+        self,
+        trace_id: str,
+        request_payload: dict[str, Any],
+        tool_call: dict[str, Any],
+    ) -> AgentResponse:
+        executed_calls, results = await self.tool_runtime.execute(
+            [tool_call],
+            trace_id=trace_id,
+            source_event_type="multiturn_chat",
+            payload=request_payload,
+            call_context=ToolCallContext(
+                origin=ToolCallOrigin.APPROVED_WRITE
+            ),
+            routing_context={
+                "routing_mode": "approved_write",
+                "executed_by": MULTITURN_CHAT_AGENT_NAME,
+                "supervisor_agent": MULTITURN_CHAT_AGENT_NAME,
+                "tool_loop_mode": "direct_approved_write",
+                "agent_graph_mode": TOOL_LOOP_MODE,
+                "tool_names": [str(tool_call.get("name") or "")],
+            },
+        )
+        if len(executed_calls) != 1 or len(results) != 1:
+            raise AgentExecutionError(
+                "approved_write_execution_result_count_mismatch",
+                error_type="mutation_tool_not_applied",
+                trace_id=trace_id,
+                agent_name=MULTITURN_CHAT_AGENT_NAME,
+                decision_type="system_guidance",
+            )
+        result = results[0]
+        if result.status != "success":
+            raise AgentExecutionError(
+                (
+                    "approved_write_not_applied:"
+                    f"{result.tool_name}:{result.status}"
+                ),
+                error_type="mutation_tool_not_applied",
+                trace_id=trace_id,
+                agent_name=MULTITURN_CHAT_AGENT_NAME,
+                decision_type="system_guidance",
+            )
+
+        finalizer_messages = build_chat_messages(
+            multiturn_chat_prompt(),
+            {
+                **request_payload,
+                "response_mode": "approved_write_finalization",
+                "decision_type": "system_guidance",
+                "approved_write_result": result.model_dump(mode="json"),
+            },
+        )
+        ai_message = await traced_model_ainvoke(
+            self.provider.chat_model(),
+            finalizer_messages,
+            name="multiturn_chat.approved_write_finalizer",
+            prompt_version_id=PROMPT_VERSION_ID,
+        )
+        followup_calls = normalize_policy_tool_calls(
+            tool_calls_from_ai_message(ai_message),
+            source_event_type="multiturn_chat",
+        )
+        if followup_calls:
+            raise AgentExecutionError(
+                "approved_write_followup_tool_forbidden",
+                error_type="approved_write_followup_tool_forbidden",
+                trace_id=trace_id,
+                agent_name=MULTITURN_CHAT_AGENT_NAME,
+                decision_type="system_guidance",
+            )
+        final_text = public_text_from_ai_message(ai_message)
+        if not final_text:
+            raise AgentExecutionError(
+                "llm_final_answer_missing",
+                error_type="llm_final_answer_missing",
+                trace_id=trace_id,
+                agent_name=MULTITURN_CHAT_AGENT_NAME,
+                decision_type="system_guidance",
+            )
+        return AgentResponse(
+            trace_id=trace_id,
+            agent_name=MULTITURN_CHAT_AGENT_NAME,
+            prompt_version_id=PROMPT_VERSION_ID,
+            decision_type="system_guidance",
+            structured_payload={
+                "routing_mode": "approved_write",
+                "tool_loop_mode": "direct_approved_write",
+                "agent_graph_mode": TOOL_LOOP_MODE,
+                "executed_by": MULTITURN_CHAT_AGENT_NAME,
+                "supervisor_agent": MULTITURN_CHAT_AGENT_NAME,
+                "supervisor_tool_calls": public_tool_calls(
+                    executed_calls
+                ),
+                **tool_calls_payload(executed_calls, results),
+                "final_answer_source": (
+                    "approved_write_finalizer"
+                ),
+                "message_flow": [
+                    "ApprovedToolCall",
+                    "ToolResult",
+                    "AIMessage(final_answer)",
+                ],
+            },
+            human_summary=final_text,
+            requires_conversation_alert=False,
+        )
+
     def _build_graph(self):
         graph = StateGraph(MultiturnGraphState)
         graph.add_node("entry_router", self._entry_router)
@@ -152,7 +390,10 @@ class MultiturnChatAgent:
         graph.add_node("prepare_mutation_resolution_model", self._prepare_mutation_resolution_model)
         graph.add_node("mutation_resolution_response", self._mutation_resolution_response)
         graph.add_node("final_response", self._final_response)
-        graph.add_node("async_continuation_response", self._async_continuation_response)
+        graph.add_node(
+            "continuation_required_response",
+            self._continuation_required_response,
+        )
         graph.add_node("max_iterations_response", self._max_iterations_response)
         graph.add_edge(START, "entry_router")
         graph.add_conditional_edges(
@@ -181,7 +422,7 @@ class MultiturnChatAgent:
                 "supervisor_tool_node": "supervisor_tool_node",
                 "final_response": "final_response",
                 "mutation_resolution_response": "mutation_resolution_response",
-                "async_continuation_response": "async_continuation_response",
+                "continuation_required_response": "continuation_required_response",
                 "max_iterations_response": "max_iterations_response",
             },
         )
@@ -191,16 +432,17 @@ class MultiturnChatAgent:
             {
                 "supervisor_llm": "supervisor_llm",
                 "confirmation_llm": "confirmation_llm",
+                "final_response": "final_response",
             },
         )
         graph.add_edge("confirmation_llm", "confirmation_response")
         graph.add_edge("prepare_mutation_resolution_model", "supervisor_llm")
         graph.add_edge("final_response", END)
-        graph.add_edge("async_continuation_response", END)
-        graph.add_edge("max_iterations_response", END)
-        graph.add_edge("confirmation_response", END)
         graph.add_edge("mutation_resolution_response", END)
         graph.add_edge("confirmation_reply_response", END)
+        graph.add_edge("continuation_required_response", END)
+        graph.add_edge("max_iterations_response", END)
+        graph.add_edge("confirmation_response", END)
         return graph.compile()
 
     @staticmethod
@@ -244,7 +486,12 @@ class MultiturnChatAgent:
 
     async def _confirmation_reply_llm(self, state: MultiturnGraphState) -> dict[str, Any]:
         started = perf_counter()
-        ai_message = await self.provider.chat_model().ainvoke(state["messages"])
+        ai_message = await traced_model_ainvoke(
+            self.provider.chat_model(),
+            state["messages"],
+            name="multiturn_chat.confirmation_reply",
+            prompt_version_id=PROMPT_VERSION_ID,
+        )
         elapsed_ms = round((perf_counter() - started) * 1000)
         native_tool_calls = tool_calls_from_ai_message(ai_message)
         output = model_output_from_ai_message(ai_message)
@@ -281,7 +528,6 @@ class MultiturnChatAgent:
             context.pop("pending_mutation_confirmation", None)
             request_metadata = dict(context.get("request_metadata") or {})
             request_metadata.pop("pending_mutation_confirmation", None)
-            request_metadata.pop("pending_mutation_confirmation_id", None)
             context["request_metadata"] = request_metadata
             context["pending_mutation_confirmation_reply_resolved"] = validated["intent"]
             if validated["intent"] == "revise" and isinstance(pending_confirmation, dict):
@@ -305,12 +551,8 @@ class MultiturnChatAgent:
     @staticmethod
     def _confirmation_reply_response(state: MultiturnGraphState) -> dict[str, AgentResponse]:
         output = state["confirmation_reply_model_output"]
-        human_summary, final_answer_source = patient_summary_with_source(
-            state["confirmation_reply_ai_message"],
-            natural_chat_summary(output),
-            fallback_source="model_output",
-        )
         intent = str(output["intent"])
+        human_summary = str(output["message"]).strip()
         return {
             "response": AgentResponse(
                 trace_id=state["trace_id"],
@@ -326,7 +568,7 @@ class MultiturnChatAgent:
                     "tool_calls": [],
                     "tool_results": [],
                     "tools_executed": False,
-                    "final_answer_source": final_answer_source,
+                    "final_answer_source": "confirmation_reply_llm",
                     "message_flow": ["HumanMessage", "AIMessage(confirmation_reply)"],
                     "agent_graph_mode": TOOL_LOOP_MODE,
                     "tool_loop_mode": TOOL_LOOP_MODE,
@@ -345,7 +587,7 @@ class MultiturnChatAgent:
     def _prepare_mutation_resolution_model(self, state: MultiturnGraphState) -> dict[str, Any]:
         resolution = state.get("context", {}).get("mutation_resolution")
         request_payload = state["request_payload"]
-        catalog_tools = [*ToolCatalog.tools_for(*SUPERVISOR_DIRECT_TOOLS), *delegation_tools_payload()]
+        catalog_tools = [*ToolCatalog.model_tools_for(*SUPERVISOR_DIRECT_TOOLS), *delegation_tools_payload()]
         messages = build_chat_messages(
             mutation_resolution_prompt(),
             {
@@ -361,17 +603,13 @@ class MultiturnChatAgent:
 
     @staticmethod
     def _mutation_resolution_response(state: MultiturnGraphState) -> dict[str, AgentResponse]:
-        ai_message = state["current_ai_message"]
         output = state.get("current_model_output", {})
-        human_summary, final_answer_source = patient_summary_with_source(
-            ai_message,
-            natural_chat_summary(output),
-            fallback_source="model_output",
-        )
         resolution = state.get("context", {}).get("mutation_resolution")
         supervisor_calls = state.get("all_supervisor_tool_calls", [])
         supervisor_results = state.get("all_supervisor_tool_results", [])
         delegated_responses = state.get("delegated_responses", [])
+        human_summary = state.get("current_final_text", "").strip()
+        final_answer_source = "agent_loop_final_text"
         specialist_payload: dict[str, Any] = {}
         for response in delegated_responses:
             specialist_payload.update(response.structured_payload)
@@ -426,7 +664,7 @@ class MultiturnChatAgent:
 
     def _prepare_model(self, state: MultiturnGraphState) -> dict[str, Any]:
         request_payload = state["request_payload"]
-        catalog_tools = [*ToolCatalog.tools_for(*SUPERVISOR_DIRECT_TOOLS), *delegation_tools_payload()]
+        catalog_tools = [*ToolCatalog.model_tools_for(*SUPERVISOR_DIRECT_TOOLS), *delegation_tools_payload()]
         messages = build_chat_messages(
             multiturn_chat_prompt(),
             {
@@ -442,34 +680,67 @@ class MultiturnChatAgent:
     async def _supervisor_llm(self, state: MultiturnGraphState) -> dict[str, Any]:
         request_payload = state["request_payload"]
         context = state.get("context", {})
-        async_tool_calls = context.get("async_tool_calls")
-        forced_tool_calls_seeded = state.get("forced_tool_calls_seeded", False)
-        forced_specialist_tool_calls = state.get("forced_specialist_tool_calls", [])
+        continuation_tool_calls = context.get("continuation_tool_calls")
+        seeded_tool_calls_consumed = state.get(
+            "seeded_tool_calls_consumed",
+            False,
+        )
+        specialist_continuation_tool_calls = state.get(
+            "specialist_continuation_tool_calls",
+            [],
+        )
+        seeded_tool_origin = state.get(
+            "seeded_tool_origin",
+            ToolCallOrigin.MODEL,
+        )
         resolution_elapsed_ms: int | None = None
 
-        if context.get("execute_async_continuation") is True and isinstance(async_tool_calls, list) and not forced_tool_calls_seeded:
-            output = {"message": request_payload.get("message"), "observations": ["async_continuation"]}
-            tool_calls = normalize_policy_tool_calls(async_tool_calls, source_event_type="multiturn_chat")
+        if (
+            context.get("execute_tool_continuation") is True
+            and isinstance(continuation_tool_calls, list)
+            and not seeded_tool_calls_consumed
+        ):
+            try:
+                seeded_tool_origin = ToolCallOrigin(
+                    str(
+                        context.get("continuation_tool_origin")
+                        or ToolCallOrigin.CLINICAL_CONTINUATION.value
+                    )
+                )
+            except ValueError:
+                seeded_tool_origin = ToolCallOrigin.CLINICAL_CONTINUATION
+            tool_calls = normalize_policy_tool_calls(
+                continuation_tool_calls,
+                source_event_type="multiturn_chat",
+            )
             if any(str(call.get("name") or "") in SIDE_EFFECT_TOOLS for call in tool_calls):
-                forced_specialist_tool_calls = tool_calls
+                specialist_continuation_tool_calls = tool_calls
                 tool_calls = [
                     {
                         "name": DELEGATE_TO_MEDICATION_AGENT,
                         "arguments": {
                             "task": "Continue the deferred medication side-effect assessment.",
-                            "reason": "async_medication_continuation",
+                            "reason": "medication_tool_continuation",
                         },
                     }
                 ]
+            output = model_output_with_tool_calls({}, tool_calls)
             ai_message = ai_message_from_tool_calls(
                 tool_calls,
-                content=str(request_payload.get("message") or ""),
+                content="",
                 model_output=output,
             )
-            forced_tool_calls_seeded = True
+            final_text = ""
+            seeded_tool_calls_consumed = True
+            pending_tool_call_origin = seeded_tool_origin
         else:
             started = perf_counter()
-            ai_message = await state["bound_model"].ainvoke(state["messages"])
+            ai_message = await traced_model_ainvoke(
+                state["bound_model"],
+                state["messages"],
+                name="multiturn_chat.supervisor",
+                prompt_version_id=PROMPT_VERSION_ID,
+            )
             if state.get("entry_mode") == "mutation_resolution":
                 resolution_elapsed_ms = round((perf_counter() - started) * 1000)
                 trace_logging.log_info(
@@ -480,28 +751,64 @@ class MultiturnChatAgent:
                     elapsed_ms=resolution_elapsed_ms,
                     tools_bound=True,
                 )
-            output = model_output_from_ai_message(ai_message)
             tool_calls = normalize_policy_tool_calls(
                 tool_calls_from_ai_message(ai_message),
                 source_event_type="multiturn_chat",
             )
+            if tool_calls:
+                output = model_output_with_tool_calls({}, tool_calls)
+                final_text = ""
+            else:
+                output = {}
+                final_text = public_text_from_ai_message(ai_message)
+                if not final_text:
+                    raise AgentExecutionError(
+                        "llm_final_answer_missing",
+                        error_type="llm_final_answer_missing",
+                        trace_id=state["trace_id"],
+                        agent_name=MULTITURN_CHAT_AGENT_NAME,
+                        decision_type="system_guidance",
+                    )
+            pending_tool_call_origin = ToolCallOrigin.MODEL
+            if (
+                seeded_tool_origin is ToolCallOrigin.APPROVED_WRITE
+                and seeded_tool_calls_consumed
+                and tool_calls
+            ):
+                raise AgentExecutionError(
+                    "approved_write_followup_tool_forbidden",
+                    error_type="approved_write_followup_tool_forbidden",
+                    trace_id=state["trace_id"],
+                    agent_name=MULTITURN_CHAT_AGENT_NAME,
+                    decision_type="system_guidance",
+                )
 
-        validation_output = _model_output_with_tool_calls(output, tool_calls)
-        self._validate_output(state["trace_id"], validation_output, request_payload)
+        validation_output = model_output_with_tool_calls(output, tool_calls)
+        if tool_calls:
+            self._validate_output(
+                state["trace_id"],
+                validation_output,
+                request_payload,
+            )
         if tool_calls:
             ai_message = ai_message_from_tool_calls(
                 tool_calls,
-                content=str(ai_message.content or ""),
+                content=ai_message.content,
                 model_output=validation_output,
             )
 
         updates: dict[str, Any] = {
             "current_ai_message": ai_message,
             "current_model_output": validation_output,
+            "current_final_text": final_text,
             "pending_tool_calls": tool_calls,
-            "continuation_type": async_continuation_type(tool_calls),
-            "forced_specialist_tool_calls": forced_specialist_tool_calls,
-            "forced_tool_calls_seeded": forced_tool_calls_seeded,
+            "continuation_type": continuation_type(tool_calls),
+            "specialist_continuation_tool_calls": (
+                specialist_continuation_tool_calls
+            ),
+            "seeded_tool_calls_consumed": seeded_tool_calls_consumed,
+            "seeded_tool_origin": seeded_tool_origin,
+            "pending_tool_call_origin": pending_tool_call_origin,
         }
         if "initial_model_output" not in state:
             updates["initial_model_output"] = dict(validation_output)
@@ -516,8 +823,11 @@ class MultiturnChatAgent:
     def _route_after_llm(state: MultiturnGraphState) -> str:
         tool_calls = state.get("pending_tool_calls", [])
         continuation_type = state.get("continuation_type", "")
-        if continuation_type and state.get("context", {}).get("execute_async_continuation") is not True:
-            return "async_continuation_response"
+        if (
+            continuation_type
+            and state.get("context", {}).get("execute_tool_continuation") is not True
+        ):
+            return "continuation_required_response"
         if not tool_calls:
             if state.get("entry_mode") == "mutation_resolution":
                 return "mutation_resolution_response"
@@ -534,7 +844,10 @@ class MultiturnChatAgent:
         delegated_responses: list[AgentResponse] = []
         direct_calls: list[dict[str, Any]] = []
         direct_results: list[ToolCallResult] = []
-        forced_specialist_tool_calls = state.get("forced_specialist_tool_calls", [])
+        specialist_continuation_tool_calls = state.get(
+            "specialist_continuation_tool_calls",
+            [],
+        )
         prior_delegation_count = len(state.get("delegation_calls", []))
 
         for call_index, call in enumerate(pending_calls):
@@ -544,9 +857,11 @@ class MultiturnChatAgent:
                     state["trace_id"],
                     delegation_payload,
                     call,
-                    forced_tool_calls=forced_specialist_tool_calls or None,
+                    continuation_tool_calls=(
+                        specialist_continuation_tool_calls or None
+                    ),
                 )
-                forced_specialist_tool_calls = []
+                specialist_continuation_tool_calls = []
                 result = self._delegation_tool_result(
                     state["trace_id"],
                     call,
@@ -573,6 +888,19 @@ class MultiturnChatAgent:
                 trace_id=state["trace_id"],
                 source_event_type="multiturn_chat",
                 payload=state["request_payload"],
+                call_context=ToolCallContext(
+                    origin=state.get(
+                        "pending_tool_call_origin",
+                        ToolCallOrigin.MODEL,
+                    ),
+                    prior_call_fingerprints=frozenset(
+                        tool_call_fingerprint(previous_call)
+                        for previous_call in state.get(
+                            "all_supervisor_tool_calls",
+                            [],
+                        )
+                    ),
+                ),
                 routing_context={
                     "routing_mode": "supervisor_tool_loop",
                     "executed_by": MULTITURN_CHAT_AGENT_NAME,
@@ -607,7 +935,7 @@ class MultiturnChatAgent:
         output = state.get("current_model_output", {})
         executed_ai_message = ai_message_from_tool_calls(
             executed_calls,
-            content=str(ai_message.content or ""),
+            content=ai_message.content,
             model_output=output,
         )
         tool_messages = tool_messages_from_results(executed_ai_message, executed_calls, results)
@@ -623,13 +951,25 @@ class MultiturnChatAgent:
             "tool_round_result_counts": [*state.get("tool_round_result_counts", []), len(results)],
             "iterations": state.get("iterations", 0) + 1,
             "pending_tool_calls": [],
-            "forced_specialist_tool_calls": forced_specialist_tool_calls,
+            "specialist_continuation_tool_calls": (
+                specialist_continuation_tool_calls
+            ),
             "confirmation_required": any(result.status == "confirmation_required" for result in results),
         }
 
     @staticmethod
     def _route_after_tool(state: MultiturnGraphState) -> str:
-        return "confirmation_llm" if state.get("confirmation_required") else "supervisor_llm"
+        if state.get("confirmation_required"):
+            return "confirmation_llm"
+        delegated = state.get("delegated_responses", [])
+        if delegated:
+            last_response = delegated[-1]
+            if (
+                last_response.decision_type == "continuation_required"
+                or has_structured_ui_response(last_response)
+            ):
+                return "final_response"
+        return "supervisor_llm"
 
     @staticmethod
     def _append_blocked_supervisor_calls(
@@ -664,9 +1004,16 @@ class MultiturnChatAgent:
                 "mutation_confirmation": proposal,
             },
         )
-        ai_message = await self.provider.chat_model().ainvoke(messages)
+        ai_message = await traced_model_ainvoke(
+            self.provider.chat_model(),
+            messages,
+            name="multiturn_chat.mutation_confirmation",
+            prompt_version_id=PROMPT_VERSION_ID,
+        )
         native_tool_calls = tool_calls_from_ai_message(ai_message)
-        output = model_output_from_ai_message(ai_message)
+        output = _normalize_mutation_confirmation_output(
+            model_output_from_ai_message(ai_message)
+        )
         serialized_tool_calls = output.get("tool_calls")
         if native_tool_calls or isinstance(output.get("tool_call"), dict) or (
             isinstance(serialized_tool_calls, list) and serialized_tool_calls
@@ -678,7 +1025,6 @@ class MultiturnChatAgent:
                 agent_name=MULTITURN_CHAT_AGENT_NAME,
                 decision_type="mutation_confirmation_required",
             )
-        self._validate_output(state["trace_id"], output, state["request_payload"])
         return {
             "confirmation_ai_message": ai_message,
             "confirmation_model_output": output,
@@ -689,10 +1035,12 @@ class MultiturnChatAgent:
         proposal = _mutation_confirmation_from_state(state)
         ai_message = state["confirmation_ai_message"]
         output = state.get("confirmation_model_output", {})
-        human_summary, final_answer_source = patient_summary_with_source(
+        human_summary, final_answer_source = _required_llm_summary(
             ai_message,
-            natural_chat_summary(output),
-            fallback_source="model_output",
+            output,
+            trace_id=state["trace_id"],
+            decision_type="mutation_confirmation_required",
+            finalized=True,
         )
         specialist_tool_calls, specialist_tool_results, specialist_tool_messages = _specialist_tool_payloads(
             state.get("delegated_responses", [])
@@ -739,14 +1087,19 @@ class MultiturnChatAgent:
         request_payload: dict[str, Any],
         delegated_call: dict[str, Any],
         *,
-        forced_tool_calls: list[dict[str, Any]] | None = None,
+        continuation_tool_calls: list[dict[str, Any]] | None = None,
     ) -> AgentResponse:
         target = delegation_target(delegated_call)
         if target == "medication_agent":
+            if continuation_tool_calls:
+                return await self.medication_agent.continue_with_tool_calls(
+                    trace_id,
+                    request_payload,
+                    tool_calls=continuation_tool_calls,
+                )
             return await self.medication_agent.run(
                 trace_id,
                 request_payload,
-                forced_tool_calls=forced_tool_calls,
             )
         if target == "nutrition_management_agent":
             return await self.nutrition_management_agent.run(trace_id, request_payload)
@@ -815,12 +1168,7 @@ class MultiturnChatAgent:
     @staticmethod
     def _direct_answer_response(state: MultiturnGraphState) -> dict[str, AgentResponse]:
         output = state.get("current_model_output", {})
-        ai_message = state["current_ai_message"]
-        human_summary, final_answer_source = patient_summary_with_source(
-            ai_message,
-            natural_chat_summary(output),
-            fallback_source="model_output",
-        )
+        final_text = state.get("current_final_text", "").strip()
         return {
             "response": AgentResponse(
                 trace_id=state["trace_id"],
@@ -832,25 +1180,27 @@ class MultiturnChatAgent:
                     "supervisor_agent": MULTITURN_CHAT_AGENT_NAME,
                     "executed_by": MULTITURN_CHAT_AGENT_NAME,
                     "supervisor_tool_calls": [],
-                    "observations": string_list(output.get("observations")),
                     "model_output": output,
                     "tool_calls": [],
                     "tool_results": [],
                     "tools_executed": False,
-                    "final_answer_source": final_answer_source,
+                    "final_answer_source": "agent_loop_final_text",
+                    "finalization_mode": ITERATIVE_FINALIZATION_MODE,
                     "message_flow": ["HumanMessage", "AIMessage(final_answer)"],
                     "agent_graph_mode": TOOL_LOOP_MODE,
                     "tool_loop_mode": TOOL_LOOP_MODE,
                     "tool_execution_mode": ITERATIVE_TOOL_EXECUTION_MODE,
                     "iterations": 0,
                 },
-                human_summary=human_summary,
+                human_summary=final_text,
                 requires_conversation_alert=False,
             )
         }
 
     @staticmethod
-    def _async_continuation_response(state: MultiturnGraphState) -> dict[str, AgentResponse]:
+    def _continuation_required_response(
+        state: MultiturnGraphState,
+    ) -> dict[str, AgentResponse]:
         continuation_type = state.get("continuation_type", "")
         pending_calls = state.get("pending_tool_calls", [])
         executed_calls = state.get("all_supervisor_tool_calls", [])
@@ -861,9 +1211,9 @@ class MultiturnChatAgent:
                 trace_id=state["trace_id"],
                 agent_name=MULTITURN_CHAT_AGENT_NAME,
                 prompt_version_id=PROMPT_VERSION_ID,
-                decision_type="async_continuation_requested",
+                decision_type="continuation_required",
                 structured_payload={
-                    "routing_mode": "direct_async_continuation",
+                    "routing_mode": "direct_tool_continuation",
                     "supervisor_agent": MULTITURN_CHAT_AGENT_NAME,
                     "executed_by": MULTITURN_CHAT_AGENT_NAME,
                     "model_output": state.get("initial_model_output", {}),
@@ -876,15 +1226,15 @@ class MultiturnChatAgent:
                         state.get("tool_round_result_counts", []),
                         pending_tool_call=True,
                     ),
-                    "async_continuation_required": True,
-                    "async_continuation_type": continuation_type,
+                    "continuation_required": True,
+                    "continuation_type": continuation_type,
                     "policy_confirmation_required": has_deferred_policy_tool_call(pending_calls),
                     "agent_graph_mode": TOOL_LOOP_MODE,
                     "tool_loop_mode": TOOL_LOOP_MODE,
                     "tool_execution_mode": ITERATIVE_TOOL_EXECUTION_MODE,
                     "iterations": state.get("iterations", 0),
                 },
-                human_summary=async_continuation_summary(continuation_type),
+                human_summary="",
                 requires_conversation_alert=False,
             )
         }
@@ -929,7 +1279,6 @@ class MultiturnChatAgent:
         all_tool_messages = state.get("all_tool_messages", [])
         initial_output = state.get("initial_model_output", {})
         final_output = state.get("current_model_output", {})
-        final_ai_message = state["current_ai_message"]
         structured_payload = {
             "routing_mode": "direct_tool",
             "supervisor_agent": MULTITURN_CHAT_AGENT_NAME,
@@ -947,30 +1296,8 @@ class MultiturnChatAgent:
             "finalization_mode": ITERATIVE_FINALIZATION_MODE,
             "iterations": state.get("iterations", 0),
         }
-        fallback_summary = tool_result_summary(
-            results,
-            natural_chat_summary(initial_output) or "요청한 도구를 실행했습니다.",
-        )
-        final_summary = finalized_chat_summary(final_output)
-        if final_summary:
-            final_answer_source = str(final_output.get("fallback") or "model_output")
-        else:
-            final_summary, final_answer_source = patient_summary_with_source(
-                final_ai_message,
-                fallback_summary,
-                fallback_source="tool_result_summary",
-            )
-        structured_payload["final_answer_source"] = final_answer_source
-        structured_payload["tool_result_summary_used"] = final_answer_source == "tool_result_summary"
-        if final_answer_source == "tool_result_summary":
-            trace_logging.log_info(
-                "agent_final_answer_fallback_used",
-                trace_id=state["trace_id"],
-                agent_name=MULTITURN_CHAT_AGENT_NAME,
-                routing_mode=structured_payload["routing_mode"],
-                fallback_source=final_answer_source,
-                tool_names=[str(call.get("name") or "") for call in executed_calls],
-            )
+        final_text = state.get("current_final_text", "").strip()
+        structured_payload["final_answer_source"] = "agent_loop_final_text"
         return {
             "response": AgentResponse(
                 trace_id=state["trace_id"],
@@ -978,7 +1305,7 @@ class MultiturnChatAgent:
                 prompt_version_id=PROMPT_VERSION_ID,
                 decision_type="tool_call",
                 structured_payload=structured_payload,
-                human_summary=final_summary,
+                human_summary=final_text,
                 requires_conversation_alert=False,
             )
         }
@@ -989,7 +1316,6 @@ class MultiturnChatAgent:
         delegation_calls = state.get("delegation_calls", [])
         last_response = delegated_responses[-1]
         last_call = delegation_calls[-1]
-        final_ai_message = state["current_ai_message"]
         final_output = state.get("current_model_output", {})
 
         structured: dict[str, Any] = {}
@@ -1009,18 +1335,21 @@ class MultiturnChatAgent:
             if isinstance(messages, list):
                 specialist_tool_messages.extend(message for message in messages if isinstance(message, dict))
 
-        final_summary = finalized_chat_summary(final_output)
-        if final_summary:
-            final_answer_source = str(final_output.get("fallback") or "model_output")
-        else:
-            final_summary, final_answer_source = patient_summary_with_source(
-                final_ai_message,
-                last_response.human_summary,
-                fallback_source="delegated_agent_summary",
-            )
-
         response_decision_type = last_response.decision_type
-        if response_decision_type != "async_continuation_requested" and any(str(call.get("name") or "") in SIDE_EFFECT_TOOLS for call in specialist_tool_calls):
+        if response_decision_type == "continuation_required":
+            final_summary = ""
+            final_answer_source = "internal_control"
+        else:
+            final_summary = state.get("current_final_text", "").strip()
+            if final_summary:
+                final_answer_source = "agent_loop_final_text"
+            elif has_structured_ui_response(last_response):
+                final_summary = last_response.human_summary
+                final_answer_source = "specialist_handoff"
+            else:
+                final_answer_source = "missing"
+
+        if response_decision_type != "continuation_required" and any(str(call.get("name") or "") in SIDE_EFFECT_TOOLS for call in specialist_tool_calls):
             response_decision_type = "side_effect_assessment"
 
         all_supervisor_calls = state.get("all_supervisor_tool_calls", [])
@@ -1094,17 +1423,6 @@ class MultiturnChatAgent:
                 agent_name=MULTITURN_CHAT_AGENT_NAME,
                 decision_type="system_guidance",
             ) from exc
-
-
-def _model_output_with_tool_calls(
-    model_output: dict[str, Any],
-    tool_calls: list[dict[str, Any]],
-) -> dict[str, Any]:
-    merged = dict(model_output)
-    if tool_calls:
-        merged.pop("tool_call", None)
-        merged["tool_calls"] = tool_calls
-    return merged
 
 
 def _supervisor_message_flow(

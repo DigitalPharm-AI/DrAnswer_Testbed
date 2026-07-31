@@ -1,0 +1,10 @@
+{
+  "schema_version": "1",
+  "completed_at": "2026-07-30T00:30:34.415148+00:00",
+  "operation": "verify_roles",
+  "runtime_role": "contract_app_rw",
+  "migration_role": "contract_migration",
+  "database": "dranswer_contract",
+  "runtime_dml_canary": "rolled_back",
+  "runtime_create_denied": true
+}

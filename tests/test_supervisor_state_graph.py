@@ -5,13 +5,13 @@ from datetime import datetime
 
 from agent_app.agents.tool_chat import AGENT_TOOL_LOOP_LIMIT
 from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
-from agent_app.tools.names import (
+from shared.tool_names import (
     DELEGATE_TO_MEDICATION_AGENT,
     DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT,
     DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT,
     GET_MEDICATION_DOSE_STATUS,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
-    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+    REQUEST_RECORD_APPROVAL,
     UPSERT_NUTRITION_PREFERENCE_FACT,
 )
 from shared.schemas import MultiturnChatRequest
@@ -24,7 +24,7 @@ from tests.test_agent_app_langgraph_native import (
 )
 
 
-def test_supervisor_state_graph_direct_answer_uses_one_bound_model_call():
+def test_supervisor_state_graph_direct_answer_uses_one_agent_loop_call():
     provider = NativeRecentChatProvider()
     orchestrator = AgentLangGraphNativeOrchestrator(provider, NativeFakeToolExecutor())
     request = MultiturnChatRequest(
@@ -44,10 +44,11 @@ def test_supervisor_state_graph_direct_answer_uses_one_bound_model_call():
     assert response.structured_payload["routing_mode"] == "direct_answer"
     assert response.structured_payload["agent_graph_mode"] == "langgraph_state_graph"
     assert response.structured_payload["tool_execution_mode"] == "iterative"
-    assert "finalization_mode" not in response.structured_payload
+    assert response.structured_payload["finalization_mode"] == "llm_without_tool_calls"
+    assert response.structured_payload["final_answer_source"] == "agent_loop_final_text"
 
 
-def test_supervisor_delegation_returns_to_bound_llm_before_final_response():
+def test_supervisor_delegated_write_returns_to_tool_free_confirmation_llm():
     provider = NativeDelegatingMedicationProvider()
     executor = NativeFakeToolExecutor()
     orchestrator = AgentLangGraphNativeOrchestrator(provider, executor)
@@ -55,13 +56,18 @@ def test_supervisor_delegation_returns_to_bound_llm_before_final_response():
     response = asyncio.run(orchestrator.invoke("multiturn_chat", build_taken_chat_request().model_dump(mode="json")))
 
     supervisor_decision_calls = [tools for tools in provider.chat_model_bound_tool_history if DELEGATE_TO_MEDICATION_AGENT in tools]
-    assert len(supervisor_decision_calls) == 2
-    assert DELEGATE_TO_MEDICATION_AGENT in provider.chat_model_bound_tool_history[-1]
-    assert [call["name"] for call in executor.calls] == [UPDATE_MEDICATION_DOSE_EVENT_STATUS]
-    assert response.structured_payload["routing_mode"] == "delegated_agent"
+    assert len(supervisor_decision_calls) == 1
+    assert DELEGATE_TO_MEDICATION_AGENT in provider.chat_model_bound_tool_history[0]
+    assert provider.chat_model_bound_tool_history[-1] == []
+    assert [call["name"] for call in executor.calls] == [REQUEST_RECORD_APPROVAL]
+    assert response.decision_type == "mutation_confirmation_required"
+    assert response.structured_payload["routing_mode"] == "mutation_confirmation_required"
     assert response.structured_payload["agent_graph_mode"] == "langgraph_state_graph"
     assert response.structured_payload["tool_execution_mode"] == "iterative"
-    assert response.structured_payload["finalization_mode"] == "llm_without_tool_calls"
+    assert (
+        response.structured_payload["finalization_mode"]
+        == "confirmation_llm_without_tools"
+    )
     assert response.structured_payload["tool_loop_mode"] == "langgraph_state_graph"
     assert response.structured_payload["iterations"] == 1
     assert response.structured_payload["message_flow"] == [
@@ -167,7 +173,8 @@ def test_supervisor_loops_across_preference_management_and_recommendation():
     ]
     assert structured["iterations"] == 2
     assert structured["tool_execution_mode"] == "iterative"
-    assert "apple allergy" in response.human_summary
+    assert "excluding apples" in response.human_summary
+    assert "candidates" in response.human_summary
 
 
 class BatchedNutritionSupervisorProvider(SequentialNutritionSupervisorProvider):
@@ -226,6 +233,19 @@ def test_supervisor_executes_every_delegation_from_one_model_response():
 
 
 class RepeatingMedicationDelegationProvider(NativeDelegatingMedicationProvider):
+    async def model_output(self, system_prompt, user_payload):
+        if user_payload.get("response_mode") == "medication_chat":
+            self.seen_payloads.append(user_payload)
+            self.bound_tool_history.append(list(self.bound_tool_names))
+            return {
+                "message": "I will read the medication status.",
+                "tool_call": {
+                    "name": GET_MEDICATION_DOSE_STATUS,
+                    "arguments": {},
+                },
+            }
+        return await super().model_output(system_prompt, user_payload)
+
     async def finalize_tool_results(self, system_prompt, user_payload, tool_results):
         if user_payload.get("response_mode") == "multiturn_chat":
             return {
@@ -283,12 +303,25 @@ class MedicationStatusSummaryProvider(NativeDelegatingMedicationProvider):
                     "arguments": {"target_date": "2026-04-20"},
                 },
             }
+        if response_mode == "final_answer":
+            return {
+                "message": (
+                    "\uc624\ub298 \ubcf5\uc57d \ud604\ud669\uc740 "
+                    "\uc544\uce68 08:00 \uc57d 1\ud68c \ubcf5\uc6a9 "
+                    "\uc644\ub8cc\uc785\ub2c8\ub2e4. "
+                    "\ub2e4\uc74c \ubcf5\uc57d \uc77c\uc815\ub3c4 "
+                    "\uc78a\uc9c0 \ub9d0\uace0 \ucc59\uaca8\uc8fc\uc138\uc694."
+                )
+            }
         return {"message": "\uc694\uccad\uc744 \ud655\uc778\ud588\uc2b5\ub2c8\ub2e4."}
 
     async def finalize_tool_results(self, system_prompt, user_payload, tool_results):
         return {
-            "message": "\uc624\ub298 \ubcf5\uc57d \ud604\ud669\uc740 \uc544\uce68 08:00 \uc57d 1\ud68c \ubcf5\uc6a9 \uc644\ub8cc\uc785\ub2c8\ub2e4.",
-            "advice": "\ub2e4\uc74c \ubcf5\uc57d \uc77c\uc815\ub3c4 \uc78a\uc9c0 \ub9d0\uace0 \ucc59\uaca8\uc8fc\uc138\uc694.",
+            "message": (
+                "\uc624\ub298 \ubcf5\uc57d \ud604\ud669\uc740 \uc544\uce68 08:00 \uc57d 1\ud68c "
+                "\ubcf5\uc6a9 \uc644\ub8cc\uc785\ub2c8\ub2e4. \ub2e4\uc74c \ubcf5\uc57d \uc77c\uc815\ub3c4 "
+                "\uc78a\uc9c0 \ub9d0\uace0 \ucc59\uaca8\uc8fc\uc138\uc694."
+            ),
         }
 
 

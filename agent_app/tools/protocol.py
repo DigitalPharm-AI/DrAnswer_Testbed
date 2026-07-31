@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
-from agent_app.tools.names import ALL_TOOL_NAMES
+from shared.tool_names import ALL_TOOL_NAMES
 from shared.redaction import redact_for_logging, redacted_clinical_text_label
 from shared.schemas import ToolCallResult
 
@@ -70,7 +70,7 @@ def mcp_error_response(request_id: str | int | None, code: int, message: str, da
 def mcp_result_from_json_rpc_response(response: dict[str, Any]) -> dict[str, Any]:
     if isinstance(response.get("error"), dict):
         error = response["error"]
-        safe_error = _safe_tool_error(error.get("message") or "mcp_error")
+        safe_error = safe_tool_error(error.get("message") or "mcp_error")
         return {
             "content": [{"type": "text", "text": safe_error}],
             "structuredContent": {
@@ -89,7 +89,7 @@ def mcp_result_from_json_rpc_response(response: dict[str, Any]) -> dict[str, Any
 def mcp_result_from_tool_result(result: ToolCallResult) -> dict[str, Any]:
     is_error = result.status == "error"
     response = _safe_error_response(result.response) if is_error else result.response
-    error = _safe_tool_error(result.error) if is_error else result.error
+    error = safe_tool_error(result.error) if is_error else result.error
     structured_content = {
         "tool_name": result.tool_name,
         "status": result.status,
@@ -113,9 +113,9 @@ def tool_result_from_mcp_result(tool_name: str, mcp_result: dict[str, Any], *, i
     structured = mcp_result.get("structuredContent") if isinstance(mcp_result.get("structuredContent"), dict) else {}
     status = "error" if mcp_result.get("isError") is True else str(structured.get("status") or "success")
     response = structured.get("response") if isinstance(structured.get("response"), dict) else structured
-    error = _safe_tool_error(structured.get("error")) if status == "error" else str(structured.get("error") or "")
+    error = safe_tool_error(structured.get("error")) if status == "error" else str(structured.get("error") or "")
     if not error and status == "error":
-        error = _safe_tool_error(_first_text_content(mcp_result))
+        error = safe_tool_error(_first_text_content(mcp_result))
     return ToolCallResult(
         tool_name=str(structured.get("tool_name") or tool_name),
         status=(
@@ -161,7 +161,7 @@ def _safe_error_response(response: dict[str, Any]) -> dict[str, Any]:
     return redact_for_logging(response) if isinstance(response, dict) else {}
 
 
-def _safe_tool_error(value: Any) -> str:
+def safe_tool_error(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
         return ""

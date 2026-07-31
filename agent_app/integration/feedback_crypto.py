@@ -24,7 +24,6 @@ class FeedbackEncryptionContext:
     api_path: str
     request_id: str
     message_id: str
-    conversation_id: str
     patient_id_hash: str
     feedback_at: str
 

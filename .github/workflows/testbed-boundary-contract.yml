@@ -13,6 +13,10 @@ jobs:
     timeout-minutes: 20
     env:
       BACKEND_POSTGRES_BOUNDARY_TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/dranswer_boundary
+      SYSTEM_POSTGRES_TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/dranswer_system_test
+      AGENT_POSTGRES_TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/dranswer_agent_test
+      CONTRACT_POSTGRES_TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/dranswer_contract_test
+      BROWSER_POSTGRES_TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/dranswer_browser_test
 
     services:
       postgres:
@@ -47,8 +51,41 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
+      - name: Create isolated PostgreSQL test databases
+        shell: python
+        run: |
+          import psycopg
+          from psycopg import sql
+
+          with psycopg.connect(
+              "postgresql://postgres:postgres@127.0.0.1:5432/postgres",
+              autocommit=True,
+          ) as connection:
+              for database_name in (
+                  "dranswer_system_test",
+                  "dranswer_agent_test",
+                  "dranswer_contract_test",
+                  "dranswer_browser_test",
+              ):
+                  exists = connection.execute(
+                      "SELECT 1 FROM pg_database WHERE datname = %s",
+                      (database_name,),
+                  ).fetchone()
+                  if exists is None:
+                      connection.execute(
+                          sql.SQL("CREATE DATABASE {}").format(
+                              sql.Identifier(database_name)
+                          )
+                      )
+
       - name: Install browser test dependencies
         run: npm ci
+
+      - name: Install React frontend dependencies
+        run: npm --prefix frontend ci
+
+      - name: Build React frontend
+        run: npm --prefix frontend run build
 
       - name: Validate Compose expansion
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet
@@ -59,26 +96,38 @@ jobs:
       - name: Verify service and database boundaries
         run: python tools/verify_testbed_contract.py --scope config
 
-      - name: Check Backend v1.2 OpenAPI drift
-        run: python tools/export_backend_v12_openapi.py --check
+      - name: Check Backend v1.3 OpenAPI drift
+        run: python tools/export_backend_v13_openapi.py --check
 
-      - name: Check AI v1.2 chat OpenAPI drift
-        run: python tools/export_agent_v12_openapi.py --check
+      - name: Check AI v1.3 OpenAPI drift
+        run: python tools/export_agent_v13_openapi.py --check
 
-      - name: Check frontend JavaScript syntax
-        run: |
-          node --check system_app/static/htmx-lite.js
-          node --check system_app/static/notifications.js
-          node --check system_app/static/notifications/panels.js
-          node --check system_app/static/notifications/shared.js
+      - name: Check React-Backend UI v1 OpenAPI drift
+        run: python tools/export_ui_v1_openapi.py --check
 
       - name: Run PostgreSQL reader-role boundary gate
-        run: python -m pytest -q -p no:cacheprovider tests/test_backend_v12_postgres_boundary.py
+        run: python -m pytest -q -p no:cacheprovider tests/test_backend_v13_postgres_boundary.py
+
+      - name: Run PostgreSQL Agent migration and concurrency gate
+        run: python -m pytest -q -p no:cacheprovider tests/test_agent_postgresql_core.py
+
+      - name: Run PostgreSQL-only runtime and cutover gates
+        run: >-
+          python -m pytest -q -p no:cacheprovider
+          tests/test_postgresql_database_runtime.py
+
+      - name: Run PostgreSQL contract-test-server gate
+        run: >-
+          python -m pytest -q -p no:cacheprovider
+          tests/test_contract_test_server.py
 
       - name: Run full Python regression suite
         run: python -m pytest -q -p no:cacheprovider tests
 
-      - name: Run real-browser UI regression
+      - name: Run React runtime browser scenarios
+        run: npm --prefix frontend run test
+
+      - name: Run deployed-root read-only browser smoke
         run: npm run test:browser
 
       - name: Upload browser failure artifact

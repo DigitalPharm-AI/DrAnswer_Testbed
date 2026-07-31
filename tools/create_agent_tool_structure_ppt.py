@@ -142,7 +142,11 @@ def slide_xml(shapes: list[str]) -> str:
 def slide_overview() -> str:
     s = [title(2, "Agent & Tool Structure", "요청 종류별 Agent 라우팅과 Tool 호출 흐름"), legend(3, 6.65, 6.72)]
     sid = 10
-    apis = [("/agent/async/daily-patterns", 0.35, 1.25), ("/agent/async/missed-dose-events", 0.35, 2.15), ("/agent/multiturn-chat", 0.35, 3.05)]
+    apis = [
+        ("/agent/async/medication-events\ndaily_pattern", 0.35, 1.25),
+        ("/agent/async/medication-events\nmissed_dose", 0.35, 2.15),
+        ("/agent/sync/chat", 0.35, 3.05),
+    ]
     for label, x, y in apis:
         s.append(shape(sid, label, x, y, 2.05, 0.48, label, "api", size=850))
         sid += 1
@@ -184,7 +188,7 @@ def slide_overview() -> str:
         sid += 1
     s.append(shape(sid, "PolicyIntent", 8.25, 4.85, 1.95, 0.45, "policy_change_intent\n구조화", "heuristic", size=760))
     sid += 1
-    s.append(shape(sid, "Tools", 10.60, 2.25, 2.10, 1.35, "Tools\napply_notification_policy\nAE_pro_ctcae\nlookup_side_effect_info\nmark_dose_taken", "tool", size=720, bold=True))
+    s.append(shape(sid, "Tools", 10.60, 2.25, 2.10, 1.35, "Tools\npropose_notification_policy\nget_pro_ctcae_questionnaire\nget_medication_side_effect_assessment\nupdate_medication_dose_event_status", "tool", size=720, bold=True))
     sid += 1
     for x1, y1, x2, y2 in [(11.00, 1.78, 11.45, 2.25), (8.65, 2.63, 10.60, 2.70), (8.65, 4.13, 10.60, 2.95), (11.00, 4.53, 11.45, 3.60)]:
         s.append(arrow(sid, x1, y1, x2, y2))
@@ -193,28 +197,28 @@ def slide_overview() -> str:
 
 
 def slide_tools() -> str:
-    s = [title(2, "Agent별 Tool 접근 권한", "정책 변경은 후보 생성, 부작용은 PHR 조회, 복약 체크는 system_app action"), legend(3, 7.0, 0.93)]
+    s = [title(2, "Agent별 Tool 접근 권한", "정책 변경은 승인 후 쓰기, 부작용은 Backend Snapshot 조회, 복약 체크는 Backend action"), legend(3, 7.0, 0.93)]
     sid = 20
     agents = [
         ("policy_planner\nDaily / Multiturn 정책 전문", 0.55, 1.35),
         ("missed_dose_coach\n미복용 최초 알림", 0.55, 2.25),
         ("multiturn_chat_agent\n자유 대화, 미복용 후속 답변", 0.55, 3.60),
-        ("side_effect_response_writer\nPHR 결과 환자 답변화", 0.55, 4.95),
+        ("side_effect_response_writer\n평가 결과 환자 답변화", 0.55, 4.95),
     ]
     for label, x, y in agents:
         s.append(shape(sid, label, x, y, 2.75, 0.58, label, "llm", size=820, bold=True))
         sid += 1
     tools = [
-        ("apply_notification_policy\n정책 변경 후보 생성\n확인 알림으로 이어짐", 5.05, 1.35),
-        ("lookup_side_effect_info\nPHR 주의사항/부작용 조회", 5.05, 2.95),
-        ("mark_dose_taken\n복약 완료 체크 요청", 5.05, 4.35),
+        ("propose_notification_policy\n정책 변경 후보 생성\n확인 알림으로 이어짐", 5.05, 1.35),
+        ("get_medication_side_effect_assessment\n의약품 기준정보/부작용 조회", 5.05, 2.95),
+        ("update_medication_dose_event_status\n복약 완료 체크 요청", 5.05, 4.35),
     ]
     for label, x, y in tools:
         s.append(shape(sid, label, x, y, 2.65, 0.78, label, "tool", size=800, bold=True))
         sid += 1
     systems = [
         ("system_app\n정책 확인 알림\nDB override 저장", 9.30, 1.35),
-        ("PHR service\n/phr/side-effects/assess", 9.30, 2.95),
+        ("Backend Snapshot\n+ AI 기준정보", 9.30, 2.95),
         ("system_app\nDoseEvent taken 처리", 9.30, 4.35),
     ]
     for label, x, y in systems:
@@ -246,7 +250,7 @@ def slide_policy_handoff() -> str:
         ("SystemPolicyRequestService\n정책 요청 여부 감지", 0.55, 2.25, "service"),
         ("policy_change_intent\nrequested_changes 리스트 생성\nneeds_clarification 포함", 3.65, 2.25, "heuristic"),
         ("policy_planner\n정책 전문 LLM\ntool_calls[] 표준 출력", 6.75, 2.25, "llm"),
-        ("apply_notification_policy\nslot별 정책 후보 리스트", 9.85, 2.25, "tool"),
+        ("propose_notification_policy\nslot별 정책 후보 리스트", 9.85, 2.25, "tool"),
         ("정책 변경 확인 알림\n1. 변경 / 2. 현행 유지", 9.85, 3.65, "system"),
     ]
     for label, x, y, kind in boxes:
@@ -257,7 +261,7 @@ def slide_policy_handoff() -> str:
         sid += 1
     s.append(shape(sid, "IntentExample", 0.65, 4.35, 5.25, 1.30, "policy_change_intent 예시\nrequested_changes: [\n  {slot_hint: 아침, direction: increase},\n  {slot_hint: 점심, direction: keep},\n  {slot_hint: 저녁, direction: decrease}\n]\nneeds_clarification: [저녁=야간 21:00인지, 구체 횟수/간격]", "white", size=690, geom="rect"))
     sid += 1
-    s.append(shape(sid, "ToolCallsExample", 6.25, 4.35, 5.70, 1.30, "policy_planner output 표준\n{\n  tool_calls: [\n    {name: apply_notification_policy, arguments: {...}}\n  ],\n  unchanged_slots: [...],\n  needs_clarification: [...]\n}", "white", size=720, geom="rect"))
+    s.append(shape(sid, "ToolCallsExample", 6.25, 4.35, 5.70, 1.30, "policy_planner output 표준\n{\n  tool_calls: [\n    {name: propose_notification_policy, arguments: {...}}\n  ],\n  unchanged_slots: [...],\n  needs_clarification: [...]\n}", "white", size=720, geom="rect"))
     return slide_xml(s)
 
 

@@ -15,7 +15,7 @@ def test_summarize_probe_samples_and_load_budget_pass():
         {"workflow": "system_health", "ok": True, "elapsed_ms": 100, "status_code": 200},
         {"workflow": "system_health", "ok": True, "elapsed_ms": 120, "status_code": 200},
         {"workflow": "agent_readiness", "ok": True, "elapsed_ms": 300, "status_code": 200},
-        {"workflow": "phr_health", "ok": True, "elapsed_ms": 90, "status_code": 200},
+        {"workflow": "ui_status", "ok": True, "elapsed_ms": 90, "status_code": 200},
     ]
 
     summary = summarize_probe_samples(samples)
@@ -26,7 +26,7 @@ def test_summarize_probe_samples_and_load_budget_pass():
             max_error_rate=0.01,
             p95_health_ms=1000,
             p95_async_accept_ms=2000,
-            p95_phr_register_ms=3000,
+            p95_ui_status_ms=2000,
         ),
     )
 
@@ -52,7 +52,7 @@ def test_load_budget_flags_error_rate_and_latency():
             max_error_rate=0.01,
             p95_health_ms=1000,
             p95_async_accept_ms=2000,
-            p95_phr_register_ms=3000,
+            p95_ui_status_ms=2000,
         ),
     )
 

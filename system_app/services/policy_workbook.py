@@ -15,7 +15,6 @@ from system_app.services.policy_workbook_schema import (
     BOUNDARY_REQUIRED_COLUMNS,
     BOUNDARY_SHEET_NAME,
     DAILY_PATTERN_CONVERSATION_TIME_KEY,
-    LEGACY_DAILY_PATTERN_ANALYSIS_TIME_KEY,
     PLACEHOLDER_PATTERN,
     POLICY_COLUMN_DEFAULTS,
     POLICY_REQUIRED_COLUMNS,
@@ -186,7 +185,6 @@ class PolicyWorkbookManager:
         else:
             system_policy_sheet = workbook[SYSTEM_POLICY_SHEET_NAME]
             changed = self._append_missing_system_policy_columns(system_policy_sheet) or changed
-            changed = self._normalize_system_policy_keys(system_policy_sheet) or changed
             changed = self._ensure_default_system_policy_row(system_policy_sheet) or changed
         if changed:
             try:
@@ -226,18 +224,6 @@ class PolicyWorkbookManager:
                 return False
         sheet.append(default_system_policy_row())
         return True
-
-    def _normalize_system_policy_keys(self, sheet) -> bool:
-        headers = self._headers(sheet)
-        if "policy_key" not in headers:
-            return False
-        key_column = headers.index("policy_key") + 1
-        changed = False
-        for row_number in range(2, sheet.max_row + 1):
-            if sheet.cell(row=row_number, column=key_column).value == LEGACY_DAILY_PATTERN_ANALYSIS_TIME_KEY:
-                sheet.cell(row=row_number, column=key_column).value = DAILY_PATTERN_CONVERSATION_TIME_KEY
-                changed = True
-        return changed
 
     def _append_missing_policy_columns(self, sheet) -> bool:
         headers = self._headers(sheet)

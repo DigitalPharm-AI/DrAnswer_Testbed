@@ -2,42 +2,149 @@ from __future__ import annotations
 
 from typing import Final
 
-BACKEND_READ_CONTRACT_VERSION: Final = "1.2"
+BACKEND_READ_CONTRACT_VERSION: Final = "1.3"
 
 # These projections are the only Backend DB objects the AI Server is allowed to
 # query. Keep their column order stable: readiness checks compare the live views
 # to this contract and fail closed on missing or unexpected columns.
 BACKEND_READ_VIEW_DEFINITIONS: Final[dict[str, dict[str, object]]] = {
-    "ai_v12_chat_messages": {
+    "ai_v13_chat_messages": {
         "sources": {
             "chat_messages": (
+                "id",
                 "public_id",
                 "patient_id",
-                "conversation_id",
                 "role",
                 "content",
                 "created_at",
                 "message_type",
+                "message_payload_json",
+                "reply_to_message_id",
+                "metadata_json",
             ),
         },
         "columns": (
             "id",
             "patient_id",
-            "conversation_id",
             "role",
             "content",
             "created_at",
             "message_type",
+            "message_payload_json",
+            "reply_to_message_id",
+            "metadata_json",
         ),
         "select": """
-            SELECT public_id AS id, patient_id, conversation_id, role, content,
-                   created_at, message_type
-            FROM chat_messages
+            SELECT message.public_id AS id,
+                   message.patient_id,
+                   message.role,
+                   message.content,
+                   message.created_at,
+                   message.message_type,
+                   (
+                       COALESCE(
+                           NULLIF(message.message_payload_json, ''),
+                           '{}'
+                       )::jsonb
+                       - 'conversation_id'
+                       - 'conversationId'
+                   )::text AS message_payload_json,
+                   source.public_id AS reply_to_message_id,
+                   (
+                       COALESCE(
+                           NULLIF(message.metadata_json, ''),
+                           '{}'
+                       )::jsonb
+                       - 'conversation_id'
+                       - 'conversationId'
+                   )::text AS metadata_json
+            FROM chat_messages message
+            LEFT JOIN chat_messages source
+              ON source.id = message.reply_to_message_id
         """,
     },
-    "ai_v12_dose_events": {
+    "ai_v13_patient_profiles": {
+        "sources": {
+            "nutrition_profiles": (
+                "patient_id",
+                "age",
+                "gender",
+                "height",
+                "weight",
+                "disease",
+                "activity_level",
+                "egfr",
+                "ckd_stage",
+                "ckd_risk",
+                "updated_at",
+            ),
+        },
+        "columns": (
+            "patient_id",
+            "age",
+            "gender",
+            "height",
+            "weight",
+            "disease",
+            "activity_level",
+            "egfr",
+            "ckd_stage",
+            "ckd_risk",
+            "updated_at",
+        ),
+        "select": """
+            SELECT patient_id, age, gender, height, weight, disease,
+                   activity_level, egfr, ckd_stage, ckd_risk, updated_at
+            FROM nutrition_profiles
+        """,
+    },
+    "ai_v13_active_medication_schedules": {
+        "sources": {
+            "medication_plans": (
+                "id",
+                "patient_id",
+                "medication_name",
+                "dosage",
+                "instructions",
+                "treatment_area",
+                "start_date",
+                "end_date",
+                "active",
+                "source_type",
+                "source_key",
+            ),
+            "dose_schedules": (
+                "plan_id",
+                "slot_label",
+                "scheduled_time",
+            ),
+        },
+        "columns": (
+            "patient_id",
+            "medication_name",
+            "dosage",
+            "instructions",
+            "treatment_area",
+            "start_date",
+            "end_date",
+            "slot_label",
+            "scheduled_time",
+            "source_type",
+            "source_key",
+        ),
+        "select": """
+            SELECT p.patient_id, p.medication_name, p.dosage, p.instructions,
+                   p.treatment_area, p.start_date, p.end_date,
+                   s.slot_label, s.scheduled_time, p.source_type, p.source_key
+            FROM medication_plans p
+            JOIN dose_schedules s ON s.plan_id = p.id
+            WHERE p.active = TRUE
+        """,
+    },
+    "ai_v13_dose_events": {
         "sources": {
             "dose_events": (
+                "id",
                 "public_id",
                 "patient_id",
                 "medication_name",
@@ -47,6 +154,14 @@ BACKEND_READ_VIEW_DEFINITIONS: Final[dict[str, dict[str, object]]] = {
                 "taken_at",
                 "note",
                 "version",
+            ),
+            "agent_jobs": (
+                "id",
+                "request_id",
+                "job_type",
+                "payload_json",
+                "related_dose_event_id",
+                "created_at",
             ),
         },
         "columns": (
@@ -59,14 +174,42 @@ BACKEND_READ_VIEW_DEFINITIONS: Final[dict[str, dict[str, object]]] = {
             "taken_at",
             "note",
             "version",
+            "missed_dose_request_id",
+            "adherence_pattern_context_json",
+            "tone_policy_context_json",
         ),
         "select": """
-            SELECT public_id AS id, patient_id, medication_name, slot_label, scheduled_for,
-                   status, taken_at, note, version
-            FROM dose_events
+            SELECT event.public_id AS id, event.patient_id,
+                   event.medication_name, event.slot_label,
+                   event.scheduled_for, event.status, event.taken_at,
+                   event.note, event.version,
+                   missed_job.request_id AS missed_dose_request_id,
+                   COALESCE(
+                       (
+                           NULLIF(missed_job.payload_json, '')::jsonb
+                           -> 'adherence_pattern_context'
+                       )::text,
+                       '{}'
+                   ) AS adherence_pattern_context_json,
+                   COALESCE(
+                       (
+                           NULLIF(missed_job.payload_json, '')::jsonb
+                           -> 'tone_policy_context'
+                       )::text,
+                       '{}'
+                   ) AS tone_policy_context_json
+            FROM dose_events event
+            LEFT JOIN LATERAL (
+                SELECT job.request_id, job.payload_json
+                FROM agent_jobs job
+                WHERE job.related_dose_event_id = event.id
+                  AND job.job_type = 'missed_dose'
+                ORDER BY job.created_at DESC, job.id DESC
+                LIMIT 1
+            ) missed_job ON TRUE
         """,
     },
-    "ai_v12_nutrition_meals": {
+    "ai_v13_nutrition_meals": {
         "sources": {
             "nutrition_meals": (
                 "public_id",
@@ -95,7 +238,7 @@ BACKEND_READ_VIEW_DEFINITIONS: Final[dict[str, dict[str, object]]] = {
             FROM nutrition_meals
         """,
     },
-    "ai_v12_nutrition_foods": {
+    "ai_v13_nutrition_foods": {
         "sources": {
             "nutrition_foods": (
                 "public_id",
@@ -136,7 +279,7 @@ BACKEND_READ_VIEW_DEFINITIONS: Final[dict[str, dict[str, object]]] = {
             JOIN nutrition_meals m ON m.id = f.meal_id
         """,
     },
-    "ai_v12_nutrition_food_ref": {
+    "ai_v13_nutrition_food_ref": {
         "sources": {
             "nutrition_food_ref": (
                 "food_ref_id",
@@ -171,23 +314,22 @@ BACKEND_READ_VIEW_DEFINITIONS: Final[dict[str, dict[str, object]]] = {
             FROM nutrition_food_ref
         """,
     },
-    "ai_v12_side_effect_records": {
+    "ai_v13_side_effect_records": {
         "sources": {
             "side_effect_records": (
-                "id",
+                "public_id",
                 "patient_id",
-                "phr_patient_key",
                 "medication_name",
                 "symptom_text",
+                "symptom_onset_text",
                 "suspected",
-                "severity",
+                "severity_result_json",
                 "matched_effects_json",
                 "matched_items_json",
-                "evidence",
-                "recommendation",
-                "source_event_type",
                 "related_dose_event_id",
+                "version",
                 "created_at",
+                "updated_at",
             ),
             "dose_events": (
                 "id",
@@ -197,30 +339,30 @@ BACKEND_READ_VIEW_DEFINITIONS: Final[dict[str, dict[str, object]]] = {
         "columns": (
             "id",
             "patient_id",
-            "phr_patient_key",
             "medication_name",
             "symptom_text",
+            "symptom_onset_text",
             "suspected",
-            "severity",
+            "severity_result_json",
             "matched_effects_json",
             "matched_items_json",
-            "evidence",
-            "recommendation",
-            "source_event_type",
             "related_dose_event_id",
+            "version",
             "created_at",
+            "updated_at",
         ),
         "select": """
-            SELECT s.id, s.patient_id, s.phr_patient_key, s.medication_name,
-                   s.symptom_text, s.suspected, s.severity, s.matched_effects_json,
-                   s.matched_items_json, s.evidence, s.recommendation,
-                   s.source_event_type, d.public_id AS related_dose_event_id,
-                   s.created_at
+            SELECT s.public_id AS id, s.patient_id, s.medication_name,
+                   s.symptom_text, s.symptom_onset_text, s.suspected,
+                   s.severity_result_json, s.matched_effects_json,
+                   s.matched_items_json,
+                   d.public_id AS related_dose_event_id,
+                   s.version, s.created_at, s.updated_at
             FROM side_effect_records s
             LEFT JOIN dose_events d ON d.id = s.related_dose_event_id
         """,
     },
-    "ai_v12_nutrition_preferences": {
+    "ai_v13_nutrition_preferences": {
         "sources": {
             "nutrition_patient_preference_triples": (
                 "patient_id",
@@ -261,10 +403,9 @@ BACKEND_READ_VIEW_DEFINITIONS: Final[dict[str, dict[str, object]]] = {
             JOIN nutrition_ontology_nodes n ON n.id = p.object_node_id
         """,
     },
-    "ai_v12_reminder_policies": {
+    "ai_v13_reminder_policies": {
         "sources": {
             "reminder_policies": (
-                "id",
                 "patient_id",
                 "public_id",
                 "policy_key",
@@ -283,7 +424,6 @@ BACKEND_READ_VIEW_DEFINITIONS: Final[dict[str, dict[str, object]]] = {
         "columns": (
             "id",
             "patient_id",
-            "public_id",
             "policy_key",
             "slot_label",
             "extra_reminders",
@@ -297,44 +437,11 @@ BACKEND_READ_VIEW_DEFINITIONS: Final[dict[str, dict[str, object]]] = {
             "version",
         ),
         "select": """
-            SELECT id, patient_id, public_id, policy_key, slot_label,
+            SELECT public_id AS id, patient_id, policy_key, slot_label,
                    extra_reminders, interval_minutes, missed_dose_after_minutes,
                    primary_reminder_timing, primary_reminder_offset_minutes,
                    effective_start_date, effective_end_date, active, version
             FROM reminder_policies
-        """,
-    },
-    # Compatibility-only lookup for in-flight v1.2 requests that still carry
-    # the former numeric IDs. Tool code resolves through this view, then uses
-    # only public IDs in subsequent queries and responses.
-    "ai_v12_legacy_id_map": {
-        "sources": {
-            "chat_messages": ("id", "public_id"),
-            "dose_events": ("id", "public_id"),
-            "nutrition_meals": ("id", "public_id"),
-            "nutrition_foods": ("id", "public_id"),
-        },
-        "columns": (
-            "entity_type",
-            "legacy_id",
-            "public_id",
-        ),
-        "select": """
-            SELECT 'message' AS entity_type, CAST(id AS VARCHAR(80)) AS legacy_id,
-                   public_id
-            FROM chat_messages
-            UNION ALL
-            SELECT 'dose_event' AS entity_type, CAST(id AS VARCHAR(80)) AS legacy_id,
-                   public_id
-            FROM dose_events
-            UNION ALL
-            SELECT 'meal' AS entity_type, CAST(id AS VARCHAR(80)) AS legacy_id,
-                   public_id
-            FROM nutrition_meals
-            UNION ALL
-            SELECT 'food' AS entity_type, CAST(id AS VARCHAR(80)) AS legacy_id,
-                   public_id
-            FROM nutrition_foods
         """,
     },
 }
@@ -345,17 +452,24 @@ BACKEND_READ_VIEW_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
 }
 
 # Values required for patient scoping, public identifiers, and optimistic
-# concurrency must never be NULL. SQLite cannot safely add NOT NULL to an
-# existing column in place, so both Backend migration backfill and AI readiness
-# enforce these live-data invariants.
+# concurrency must never be NULL. Backend migration backfill and AI readiness
+# both enforce these live-data invariants.
 BACKEND_READ_NON_NULL_INVARIANTS: Final[dict[str, tuple[str, ...]]] = {
-    "ai_v12_chat_messages": ("id", "patient_id", "conversation_id"),
-    "ai_v12_dose_events": ("id", "patient_id", "version"),
-    "ai_v12_nutrition_meals": ("id", "patient_id", "version"),
-    "ai_v12_nutrition_foods": ("id", "meal_id", "version"),
-    "ai_v12_nutrition_food_ref": ("food_ref_id",),
-    "ai_v12_side_effect_records": ("id", "patient_id"),
-    "ai_v12_nutrition_preferences": ("patient_id", "status"),
-    "ai_v12_reminder_policies": ("id", "patient_id", "public_id", "version"),
-    "ai_v12_legacy_id_map": ("entity_type", "legacy_id", "public_id"),
+    "ai_v13_chat_messages": ("id", "patient_id"),
+    "ai_v13_patient_profiles": ("patient_id",),
+    "ai_v13_active_medication_schedules": (
+        "patient_id",
+        "medication_name",
+        "start_date",
+        "end_date",
+        "slot_label",
+        "scheduled_time",
+    ),
+    "ai_v13_dose_events": ("id", "patient_id", "version"),
+    "ai_v13_nutrition_meals": ("id", "patient_id", "version"),
+    "ai_v13_nutrition_foods": ("id", "meal_id", "version"),
+    "ai_v13_nutrition_food_ref": ("food_ref_id",),
+    "ai_v13_side_effect_records": ("id", "patient_id", "version"),
+    "ai_v13_nutrition_preferences": ("patient_id", "status"),
+    "ai_v13_reminder_policies": ("id", "patient_id", "version"),
 }

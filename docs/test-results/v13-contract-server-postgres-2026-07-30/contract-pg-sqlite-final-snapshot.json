@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "completed_at": "2026-07-30T00:29:43.927676+00:00",
+  "operation": "snapshot",
+  "snapshot": "/var/backups/dranswer-agent-contract/pre-postgres-20260730T001818Z/contract-final.sqlite3",
+  "snapshot_sha256": "623d687fe83976ce76b791fdb8aba8f8b6600f17ef81d7e90b639ebab61e8733",
+  "request_records": 15,
+  "callback_jobs": 6,
+  "callback_statuses": {
+    "held": 6
+  },
+  "request_digest": "18b1378c29e07fb60878d2876c201ccb6cf61bc56d35109fa74c05906d54e4e8",
+  "callback_digest": "2623e63a8ccd28f14efb3e832cf4f6ce3bf12f78d89ff5bc029909bd5a2c486a"
+}

@@ -4,23 +4,28 @@ import argparse
 import difflib
 import json
 import os
-import sqlite3
+import secrets
 import sys
 import urllib.error
 import urllib.request
-import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode
 
 import yaml
+from sqlalchemy.engine import make_url
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ENV_FILE = PROJECT_ROOT / ".env.9000.rule_based.example"
+DEFAULT_ENV_FILE = PROJECT_ROOT / ".env.9000.example"
 COMPOSE_FILE = PROJECT_ROOT / "docker-compose.yml"
 DEV_COMPOSE_FILE = PROJECT_ROOT / "docker-compose.dev.yml"
-OPENAPI_FILE = PROJECT_ROOT / "docs" / "BACKEND_V12_WRITE_OPENAPI.json"
+OPENAPI_FILE = PROJECT_ROOT / "docs" / "BACKEND_V13_WRITE_OPENAPI.json"
+AGENT_CREDENTIAL_ENV_FILE = ".env.agent_app.secret"
+BEDROCK_BEARER_ENV_KEY = "AWS_BEARER_TOKEN_BEDROCK"
+
+
+def _new_request_id() -> str:
+    return f"req_{secrets.token_hex(8)}"
 
 
 @dataclass(frozen=True)
@@ -31,17 +36,37 @@ class VolumeMount:
     mount_type: str
 
 
-def read_env_file(path: Path) -> dict[str, str]:
+def env_file_paths(path: Path | str) -> tuple[Path, ...]:
+    raw_parts = [
+        part.strip()
+        for part in str(path).replace(";", ",").split(",")
+        if part.strip()
+    ]
+    paths: list[Path] = []
+    for raw_part in raw_parts:
+        candidate = Path(raw_part)
+        if not candidate.is_absolute():
+            candidate = PROJECT_ROOT / candidate
+        paths.append(candidate.resolve())
+    return tuple(paths)
+
+
+def read_env_file(path: Path | str) -> dict[str, str]:
     values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-        values[key.strip()] = value
+    for env_path in env_file_paths(path):
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            value = value.strip()
+            if (
+                len(value) >= 2
+                and value[0] == value[-1]
+                and value[0] in {"'", '"'}
+            ):
+                value = value[1:-1]
+            values[key.strip()] = value
     return values
 
 
@@ -90,10 +115,22 @@ def service_mounts(service: dict) -> list[VolumeMount]:
     return mounts
 
 
+def service_env_file_sources(service: dict) -> set[str]:
+    sources: set[str] = set()
+    for value in service.get("env_file") or []:
+        if isinstance(value, dict):
+            source = str(value.get("path") or "")
+        else:
+            source = str(value)
+        if source:
+            sources.add(_normalize_source(source))
+    return sources
+
+
 def verify_config(
     compose_path: Path = COMPOSE_FILE,
     dev_compose_path: Path = DEV_COMPOSE_FILE,
-    env_path: Path = DEFAULT_ENV_FILE,
+    env_path: Path | str = DEFAULT_ENV_FILE,
 ) -> dict:
     compose = load_yaml(compose_path)
     dev_compose = load_yaml(dev_compose_path)
@@ -106,27 +143,36 @@ def verify_config(
     return {
         "ok": not violations,
         "check": "testbed_boundary_config",
-        "inputs": [str(compose_path), str(dev_compose_path), str(env_path)],
+        "inputs": [
+            str(compose_path),
+            str(dev_compose_path),
+            *(str(path) for path in env_file_paths(env_path)),
+        ],
         "violations": violations,
     }
 
 
 def verify_openapi(
     openapi_path: Path = OPENAPI_FILE,
-    env_path: Path = DEFAULT_ENV_FILE,
+    env_path: Path | str = DEFAULT_ENV_FILE,
 ) -> dict:
     contract_env = read_env_file(env_path)
-    for key in ("AGENT_SYNC_API_TOKEN", "BACKEND_API_TOKEN", "BACKEND_READ_DATABASE_URL"):
+    for key in (
+        "AGENT_SYNC_API_TOKEN",
+        "BACKEND_API_TOKEN",
+        "BACKEND_READ_DATABASE_URL",
+        "INTERNAL_API_TOKEN",
+    ):
         if contract_env.get(key):
             os.environ[key] = contract_env[key]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
 
     from system_app.main import create_app
-    from system_app.openapi_v12 import build_backend_v12_write_openapi
+    from system_app.openapi_v13 import build_backend_v13_write_openapi
 
     expected = json.loads(openapi_path.read_text(encoding="utf-8"))
-    actual = build_backend_v12_write_openapi(create_app())
+    actual = build_backend_v13_write_openapi(create_app())
     violations: list[str] = []
     diff: list[str] = []
     if actual != expected:
@@ -137,105 +183,341 @@ def verify_openapi(
                 expected_text,
                 actual_text,
                 fromfile=str(openapi_path),
-                tofile="generated Backend v1.2 OpenAPI",
+                tofile="generated Backend v1.3 OpenAPI",
                 lineterm="",
             )
         )[:120]
         violations.append(
-            "Backend v1.2 OpenAPI drift detected; run "
-            "`python tools/export_backend_v12_openapi.py` and review the contract change."
+            "Backend v1.3 OpenAPI drift detected; run "
+            "`python tools/export_backend_v13_openapi.py` and review the contract change."
         )
     return {
         "ok": not violations,
-        "check": "backend_v12_openapi_drift",
+        "check": "backend_v13_openapi_drift",
         "inputs": [str(openapi_path)],
         "violations": violations,
         "diff": diff,
     }
 
 
-def verify_runtime(env_path: Path = DEFAULT_ENV_FILE) -> dict:
+def verify_runtime(
+    env_path: Path | str = DEFAULT_ENV_FILE,
+) -> dict:
     env = read_env_file(env_path)
-    violations: list[str] = []
-    database_paths: dict[str, str] = {}
-    for key in ("SYSTEM_DATABASE_URL", "AGENT_DATABASE_URL", "PHR_DATABASE_URL"):
+    return _verify_postgresql_runtime(env, env_path=env_path)
+
+
+def _verify_postgresql_runtime(
+    env: dict[str, str],
+    *,
+    env_path: Path | str,
+) -> dict:
+    from sqlalchemy import create_engine, text
+
+    violations = _postgresql_env_violations(env)
+    database_probes: dict[str, object] = {}
+    for key in ("SYSTEM_DATABASE_URL", "AGENT_DATABASE_URL"):
+        if violations:
+            break
+        engine = create_engine(
+            env[key],
+            pool_pre_ping=True,
+            future=True,
+        )
         try:
-            database_paths[key] = _sqlite_path(env.get(key, ""))
-        except ValueError as exc:
-            violations.append(f"{key}: {exc}")
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1")).scalar_one()
+                version_info = (
+                    connection.dialect.server_version_info or ()
+                )
+                database_probes[key] = {
+                    "read_ok": True,
+                    "dialect": connection.dialect.name,
+                    "server_version": (
+                        ".".join(str(part) for part in version_info)
+                        or "unknown"
+                    ),
+                }
+        except Exception as exc:
+            violations.append(
+                f"{key} runtime probe failed: {type(exc).__name__}"
+            )
+        finally:
+            engine.dispose()
 
-    resolved_paths = {
-        key: (PROJECT_ROOT / value).resolve() if not Path(value).is_absolute() else Path(value).resolve()
-        for key, value in database_paths.items()
+    backend_probe: dict[str, object] = {
+        "read_ok": False,
+        "write_denied": False,
     }
-    if len(set(resolved_paths.values())) != len(resolved_paths):
-        violations.append("runtime databases must resolve to three distinct files")
-    for key, path in resolved_paths.items():
-        if not path.is_file():
-            violations.append(f"{key} runtime database does not exist: {path}")
-
-    backend_url = env.get("BACKEND_READ_DATABASE_URL", "")
-    backend_probe: dict[str, object] = {"read_ok": False, "write_denied": False}
-    http_e2e: dict[str, object] = {"ok": False}
     if not violations:
         try:
-            backend_probe = _probe_sqlite_read_only(backend_url)
-        except (ValueError, sqlite3.Error) as exc:
-            violations.append(f"BACKEND_READ_DATABASE_URL runtime probe failed: {exc}")
-    if backend_probe.get("read_ok") and not backend_probe.get("write_denied"):
-        violations.append("BACKEND_READ_DATABASE_URL accepted a main-database write probe")
+            backend_probe = _probe_postgresql_read_only(
+                env["BACKEND_READ_DATABASE_URL"]
+            )
+        except Exception as exc:
+            violations.append(
+                "BACKEND_READ_DATABASE_URL runtime probe failed: "
+                f"{type(exc).__name__}"
+            )
+    if backend_probe.get("read_ok") and not backend_probe.get(
+        "write_denied"
+    ):
+        violations.append(
+            "BACKEND_READ_DATABASE_URL role is not effectively read-only"
+        )
+
+    http_e2e: dict[str, object] = {"ok": False}
     if not violations:
         try:
             http_e2e = _probe_http_service_boundary(env)
         except (ValueError, OSError) as exc:
-            violations.append(f"Backend -> AI HTTP boundary probe failed: {exc}")
-
+            violations.append(
+                "Backend -> AI HTTP boundary probe failed: "
+                f"{type(exc).__name__}"
+            )
     return {
         "ok": not violations,
-        "check": "sqlite_runtime_boundary",
-        "inputs": [str(env_path)],
-        "database_paths": {key: str(value) for key, value in resolved_paths.items()},
+        "check": "postgresql_runtime_boundary",
+        "inputs": [
+            str(path)
+            for path in env_file_paths(env_path)
+        ],
+        "database_probes": database_probes,
         "backend_probe": backend_probe,
         "http_e2e": http_e2e,
         "violations": violations,
     }
 
 
+def _probe_postgresql_read_only(
+    database_url: str,
+) -> dict[str, object]:
+    from sqlalchemy import create_engine, text
+
+    from shared.backend_read_contract import (
+        BACKEND_READ_VIEW_COLUMNS,
+        BACKEND_READ_VIEW_DEFINITIONS,
+    )
+
+    engine = create_engine(
+        database_url,
+        pool_pre_ping=True,
+        future=True,
+    )
+    try:
+        with engine.connect() as connection:
+            transaction_read_only = str(
+                connection.execute(
+                    text("SHOW transaction_read_only")
+                ).scalar_one()
+            ).lower() in {"on", "true", "1"}
+            default_read_only = str(
+                connection.execute(
+                    text("SHOW default_transaction_read_only")
+                ).scalar_one()
+            ).lower() in {"on", "true", "1"}
+            database_create = bool(
+                connection.execute(
+                    text(
+                        "SELECT has_database_privilege("
+                        "current_user, current_database(), 'CREATE')"
+                    )
+                ).scalar_one()
+            )
+            schema_create = bool(
+                connection.execute(
+                    text(
+                        "SELECT has_schema_privilege("
+                        "current_user, current_schema(), 'CREATE')"
+                    )
+                ).scalar_one()
+            )
+            write_privileges = []
+            for view_name in BACKEND_READ_VIEW_COLUMNS:
+                connection.execute(
+                    text(f"SELECT * FROM {view_name} WHERE 1 = 0")
+                )
+                can_write = any(
+                    bool(
+                        connection.execute(
+                            text(
+                                "SELECT has_table_privilege("
+                                "current_user, :view_name, :privilege)"
+                            ),
+                            {
+                                "view_name": view_name,
+                                "privilege": privilege,
+                            },
+                        ).scalar_one()
+                    )
+                    for privilege in (
+                        "INSERT",
+                        "UPDATE",
+                        "DELETE",
+                        "TRUNCATE",
+                    )
+                )
+                if can_write:
+                    write_privileges.append(view_name)
+            source_read_privileges = []
+            source_tables = {
+                str(table_name)
+                for definition in BACKEND_READ_VIEW_DEFINITIONS.values()
+                for table_name in dict(definition["sources"])
+            }
+            for table_name in source_tables:
+                if bool(
+                    connection.execute(
+                        text(
+                            "SELECT has_table_privilege("
+                            "current_user, :table_name, 'SELECT')"
+                        ),
+                        {"table_name": table_name},
+                    ).scalar_one()
+                ):
+                    source_read_privileges.append(table_name)
+            version_info = connection.dialect.server_version_info or ()
+        return {
+            "read_ok": True,
+            "write_denied": (
+                transaction_read_only
+                and default_read_only
+                and not database_create
+                and not schema_create
+                and not write_privileges
+                and not source_read_privileges
+            ),
+            "transaction_read_only": transaction_read_only,
+            "default_transaction_read_only": default_read_only,
+            "database_create_denied": not database_create,
+            "schema_create_denied": not schema_create,
+            "view_write_denied": not write_privileges,
+            "source_table_read_denied": not source_read_privileges,
+            "dialect": "postgresql",
+            "server_version": (
+                ".".join(str(part) for part in version_info)
+                or "unknown"
+            ),
+        }
+    finally:
+        engine.dispose()
+
+
 def _compose_boundary_violations(compose: dict) -> list[str]:
     violations: list[str] = []
     services = compose.get("services") or {}
-    required_services = {"system-app", "agent-app", "agent-worker", "phr-app"}
+    required_services = {
+        "system-migrate",
+        "system-app",
+        "agent-migrate",
+        "agent-app",
+        "agent-worker",
+    }
     missing = sorted(required_services - set(services))
     if missing:
         return [f"docker-compose.yml is missing services: {', '.join(missing)}"]
+    if "phr-app" in services:
+        violations.append(
+            "docker-compose.yml must not run the legacy phr-app in the active v1.3 stack"
+        )
 
     volumes = compose.get("volumes") or {}
-    required_volumes = {"system-runtime", "agent-runtime", "phr-runtime"}
+    required_volumes = {"system-runtime", "agent-runtime"}
     if missing_volumes := sorted(required_volumes - set(volumes)):
         violations.append(f"docker-compose.yml is missing runtime volumes: {', '.join(missing_volumes)}")
+    if "phr-runtime" in volumes:
+        violations.append(
+            "docker-compose.yml must not declare the legacy phr-runtime volume"
+        )
 
-    expected_urls = {
-        ("system-app", "SYSTEM_DATABASE_URL"): "sqlite:////app/runtime/system/system.db",
-        ("agent-app", "AGENT_DATABASE_URL"): "sqlite:////app/runtime/agent/agent.db",
-        ("agent-worker", "AGENT_DATABASE_URL"): "sqlite:////app/runtime/agent/agent.db",
-        ("phr-app", "PHR_DATABASE_URL"): "sqlite:////app/runtime/phr/phr.db",
+    database_keys = {
+        "system-migrate": {
+            "SYSTEM_DATABASE_URL",
+            "SYSTEM_MIGRATION_DATABASE_URL",
+        },
+        "agent-migrate": {
+            "AGENT_DATABASE_URL",
+            "AGENT_MIGRATION_DATABASE_URL",
+        },
+        "agent-app": {
+            "AGENT_DATABASE_URL",
+            "BACKEND_READ_DATABASE_URL",
+        },
+        "agent-worker": {
+            "AGENT_DATABASE_URL",
+            "BACKEND_READ_DATABASE_URL",
+        },
+        "system-app": {"SYSTEM_DATABASE_URL"},
     }
-    for (service_name, key), expected in expected_urls.items():
-        actual = service_environment(services[service_name]).get(key)
-        if actual != expected:
-            violations.append(f"{service_name}.{key} must be {expected!r}, got {actual!r}")
+    expected_env_files = {
+        "system-migrate": {".env.system_app"},
+        "agent-migrate": {".env.agent_app"},
+        "agent-app": {".env.agent_app", AGENT_CREDENTIAL_ENV_FILE},
+        "agent-worker": {".env.agent_app", AGENT_CREDENTIAL_ENV_FILE},
+        "agent-langfuse-exporter": {".env.agent_app"},
+        "system-app": {".env.system_app"},
+    }
+    for service_name, keys in database_keys.items():
+        service_env = service_environment(services[service_name])
+        for key in keys:
+            if key in service_env:
+                violations.append(
+                    f"{service_name}.{key} must come from service env_file "
+                    "so .env.agent_app/.env.system_app is not overwritten"
+                )
+    for service_name, expected in expected_env_files.items():
+        if service_name not in services:
+            continue
+        actual_env_files = service_env_file_sources(
+            services[service_name]
+        )
+        missing_env_files = expected - actual_env_files
+        if missing_env_files:
+            violations.append(
+                f"{service_name} is missing env_file entries: "
+                f"{', '.join(sorted(missing_env_files))}"
+            )
+        unexpected_env_files = actual_env_files - expected
+        if unexpected_env_files:
+            violations.append(
+                f"{service_name} has unexpected env_file entries: "
+                f"{', '.join(sorted(unexpected_env_files))}"
+            )
+
+    agent_runtime_services = {"agent-app", "agent-worker"}
+    for service_name in agent_runtime_services:
+        if BEDROCK_BEARER_ENV_KEY in service_environment(
+            services[service_name]
+        ):
+            violations.append(
+                f"{service_name}.{BEDROCK_BEARER_ENV_KEY} must come from "
+                f"{AGENT_CREDENTIAL_ENV_FILE}, never inline environment"
+            )
+    for service_name in (
+        "system-migrate",
+        "agent-migrate",
+        "agent-langfuse-exporter",
+        "system-app",
+    ):
+        if service_name not in services:
+            continue
+        service_env = service_environment(services[service_name])
+        if service_env.get(BEDROCK_BEARER_ENV_KEY) != "":
+            violations.append(
+                f"{service_name}.{BEDROCK_BEARER_ENV_KEY} must be explicitly "
+                "overridden with an empty value"
+            )
 
     expected_mounts = {
+        "system-migrate": {},
+        "agent-migrate": {},
         "system-app": {"/app/runtime/system": ("system-runtime", False)},
         "agent-app": {
             "/app/runtime/agent": ("agent-runtime", False),
-            "/app/backend-read": ("system-runtime", True),
         },
         "agent-worker": {
             "/app/runtime/agent": ("agent-runtime", False),
-            "/app/backend-read": ("system-runtime", True),
         },
-        "phr-app": {"/app/runtime/phr": ("phr-runtime", False)},
     }
     for service_name, target_expectations in expected_mounts.items():
         mount_by_target = {mount.target: mount for mount in service_mounts(services[service_name])}
@@ -247,18 +529,29 @@ def _compose_boundary_violations(compose: dict) -> list[str]:
                 mode = "ro" if read_only else "rw"
                 violations.append(f"{service_name}:{target} must mount {source} as {mode}")
 
-    reader_urls = {
-        name: service_environment(services[name]).get("BACKEND_READ_DATABASE_URL", "")
-        for name in ("agent-app", "agent-worker")
-    }
-    for service_name, database_url in reader_urls.items():
-        violations.extend(_read_only_url_violations(service_name, database_url, "/app/backend-read/system.db"))
-
     agent_dependencies = services["agent-app"].get("depends_on") or {}
+    migration_dependency = agent_dependencies.get("agent-migrate") or {}
+    if (
+        migration_dependency.get("condition")
+        != "service_completed_successfully"
+    ):
+        violations.append(
+            "agent-app must wait for the dedicated agent-migrate step"
+        )
     system_dependency = agent_dependencies.get("system-app") or {}
     if system_dependency.get("condition") != "service_healthy":
         violations.append("agent-app must wait for system-app health before verifying the Backend read contract")
     system_dependencies = services["system-app"].get("depends_on") or {}
+    system_migration_dependency = (
+        system_dependencies.get("system-migrate") or {}
+    )
+    if (
+        system_migration_dependency.get("condition")
+        != "service_completed_successfully"
+    ):
+        violations.append(
+            "system-app must wait for the dedicated system-migrate step"
+        )
     if "agent-app" in system_dependencies:
         violations.append("system-app must not depend on agent-app; that creates a Backend read-contract startup cycle")
     worker_dependencies = services["agent-worker"].get("depends_on") or {}
@@ -268,6 +561,13 @@ def _compose_boundary_violations(compose: dict) -> list[str]:
     agent_health_command = " ".join(str(part) for part in agent_healthcheck.get("test") or [])
     if "/health/ready" not in agent_health_command:
         violations.append("agent-app healthcheck must use the fail-closed /health/ready endpoint")
+    for service_name in required_services:
+        service_env = service_environment(services[service_name])
+        for legacy_key in ("PHR_BASE_URL", "PHR_DATABASE_URL"):
+            if legacy_key in service_env:
+                violations.append(
+                    f"{service_name} must not configure legacy {legacy_key}"
+                )
 
     writers: dict[str, set[str]] = {name: set() for name in required_volumes}
     for service_name, service in services.items():
@@ -279,8 +579,10 @@ def _compose_boundary_violations(compose: dict) -> list[str]:
                     violations.append(f"{service_name} must not receive the Backend ./data bind mount as writable")
     expected_writers = {
         "system-runtime": {"system-app"},
-        "agent-runtime": {"agent-app", "agent-worker"},
-        "phr-runtime": {"phr-app"},
+        "agent-runtime": {
+            "agent-app",
+            "agent-worker",
+        },
     }
     for source, expected in expected_writers.items():
         if writers[source] != expected:
@@ -291,12 +593,15 @@ def _compose_boundary_violations(compose: dict) -> list[str]:
 def _dev_compose_boundary_violations(compose: dict) -> list[str]:
     violations: list[str] = []
     services = compose.get("services") or {}
-    application_sources = {"./system_app", "./agent_app", "./phr_app"}
+    if "phr-app" in services:
+        violations.append(
+            "docker-compose.dev.yml must not run the legacy phr-app"
+        )
+    application_sources = {"./system_app", "./agent_app"}
     allowed_application_sources = {
         "system-app": {"./system_app"},
         "agent-app": {"./agent_app"},
         "agent-worker": {"./agent_app"},
-        "phr-app": {"./phr_app"},
     }
     for service_name, service in services.items():
         mounts = service_mounts(service)
@@ -319,24 +624,16 @@ def _dev_compose_boundary_violations(compose: dict) -> list[str]:
     return violations
 
 
-def _env_boundary_violations(env: dict[str, str]) -> list[str]:
+def _env_boundary_violations(
+    env: dict[str, str],
+) -> list[str]:
     violations: list[str] = []
-    expected_paths = {
-        "SYSTEM_DATABASE_URL": "./runtime/system/system.db",
-        "AGENT_DATABASE_URL": "./runtime/agent/agent.db",
-        "PHR_DATABASE_URL": "./runtime/phr/phr.db",
-    }
-    for key, expected in expected_paths.items():
-        try:
-            actual = _sqlite_path(env.get(key, ""))
-        except ValueError as exc:
-            violations.append(f"{key}: {exc}")
-            continue
-        if _normalize_source(actual) != _normalize_source(expected):
-            violations.append(f"{key} must resolve to {expected!r}, got {actual!r}")
-
-    reader_url = env.get("BACKEND_READ_DATABASE_URL", "")
-    violations.extend(_read_only_url_violations("9000 profile", reader_url, "./runtime/system/system.db"))
+    if BEDROCK_BEARER_ENV_KEY in env:
+        violations.append(
+            f"{BEDROCK_BEARER_ENV_KEY} must not be present in the common "
+            "9000 contract profile"
+        )
+    violations.extend(_postgresql_env_violations(env))
 
     agent_sync_token = env.get("AGENT_SYNC_API_TOKEN", "").strip()
     backend_api_token = env.get("BACKEND_API_TOKEN", "").strip()
@@ -350,81 +647,111 @@ def _env_boundary_violations(env: dict[str, str]) -> list[str]:
     if env.get("AGENT_EMBEDDED_WORKER_ENABLED", "").strip().lower() != "false":
         violations.append("AGENT_EMBEDDED_WORKER_ENABLED must be false")
     if env.get("LLM_PROVIDER", "").strip().lower() in {
-        "rule_based",
-        "rule-based",
-        "local",
-        "heuristic",
+        "deterministic_test",
+        "deterministic-test",
     } and env.get("APP_ENV", "").strip().lower() not in {
         "test",
         "testing",
         "testbed",
     }:
         violations.append(
-            "rule-based LLM_PROVIDER requires APP_ENV=test, testing, or testbed"
+            "deterministic-test LLM_PROVIDER requires "
+            "APP_ENV=test, testing, or testbed"
         )
     return violations
 
 
-def _read_only_url_violations(label: str, database_url: str, expected_path: str) -> list[str]:
+def _postgresql_env_violations(env: dict[str, str]) -> list[str]:
     violations: list[str] = []
-    try:
-        actual_path = _sqlite_path(database_url)
-    except ValueError as exc:
-        return [f"{label} BACKEND_READ_DATABASE_URL: {exc}"]
-    if _normalize_source(actual_path) != _normalize_source(expected_path):
-        violations.append(f"{label} BACKEND_READ_DATABASE_URL must point to {expected_path!r}, got {actual_path!r}")
-    query = _sqlite_query(database_url)
-    if query.get("mode") != ["ro"]:
-        violations.append(f"{label} BACKEND_READ_DATABASE_URL must include mode=ro")
-    if [value.lower() for value in query.get("uri", [])] != ["true"]:
-        violations.append(f"{label} BACKEND_READ_DATABASE_URL must include uri=true")
-    return violations
-
-
-def _sqlite_path(database_url: str) -> str:
-    prefix = "sqlite:///"
-    if not database_url.startswith(prefix):
-        raise ValueError("must be a sqlite:/// URL")
-    database = database_url.split("?", 1)[0][len(prefix) :]
-    if database.startswith("file:"):
-        database = database[len("file:") :]
-    if not database:
-        raise ValueError("database path is empty")
-    return database
-
-
-def _sqlite_query(database_url: str) -> dict[str, list[str]]:
-    _, separator, query = database_url.partition("?")
-    return parse_qs(query, keep_blank_values=True) if separator else {}
-
-
-def _probe_sqlite_read_only(database_url: str) -> dict[str, object]:
-    database = _sqlite_path(database_url)
-    query = _sqlite_query(database_url)
-    sqlite_uri = f"file:{database}"
-    sqlite_query = {key: values[-1] for key, values in query.items() if key != "uri" and values}
-    if sqlite_query:
-        sqlite_uri = f"{sqlite_uri}?{urlencode(sqlite_query)}"
-
-    connection = sqlite3.connect(sqlite_uri, uri=True, timeout=3)
-    try:
-        table_count = int(connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0])
-        user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        write_denied = False
+    parsed_urls = {}
+    for key in (
+        "SYSTEM_DATABASE_URL",
+        "SYSTEM_MIGRATION_DATABASE_URL",
+        "AGENT_DATABASE_URL",
+        "AGENT_MIGRATION_DATABASE_URL",
+        "BACKEND_READ_DATABASE_URL",
+    ):
+        raw_url = env.get(key, "").strip()
         try:
-            connection.execute("BEGIN")
-            connection.execute(f"PRAGMA user_version = {user_version}")
-        except sqlite3.OperationalError as exc:
-            write_denied = "readonly" in str(exc).lower() or "read-only" in str(exc).lower()
-        finally:
-            connection.rollback()
-        return {
-            "read_ok": True,
-            "write_denied": write_denied,
-            "sqlite_master_rows": table_count,
-        }
-    finally:
-        connection.close()
+            parsed = make_url(raw_url)
+        except Exception:
+            violations.append(f"{key} must be a valid PostgreSQL URL")
+            continue
+        if not parsed.drivername.startswith("postgresql"):
+            violations.append(f"{key} must use PostgreSQL")
+            continue
+        parsed_urls[key] = parsed
+
+    system_url = parsed_urls.get("SYSTEM_DATABASE_URL")
+    system_migration_url = parsed_urls.get(
+        "SYSTEM_MIGRATION_DATABASE_URL"
+    )
+    agent_url = parsed_urls.get("AGENT_DATABASE_URL")
+    agent_migration_url = parsed_urls.get(
+        "AGENT_MIGRATION_DATABASE_URL"
+    )
+    reader_url = parsed_urls.get("BACKEND_READ_DATABASE_URL")
+    if (
+        system_url is not None
+        and agent_url is not None
+        and system_url.database == agent_url.database
+    ):
+        violations.append(
+            "SYSTEM_DATABASE_URL and AGENT_DATABASE_URL must use "
+            "different databases"
+        )
+    if (
+        system_url is not None
+        and reader_url is not None
+        and system_url.database != reader_url.database
+    ):
+        violations.append(
+            "BACKEND_READ_DATABASE_URL must target the Backend database"
+        )
+    if (
+        system_url is not None
+        and reader_url is not None
+        and system_url.username == reader_url.username
+    ):
+        violations.append(
+            "BACKEND_READ_DATABASE_URL must use a dedicated reader role"
+        )
+    for runtime_key, migration_key, runtime_url, migration_url in (
+        (
+            "SYSTEM_DATABASE_URL",
+            "SYSTEM_MIGRATION_DATABASE_URL",
+            system_url,
+            system_migration_url,
+        ),
+        (
+            "AGENT_DATABASE_URL",
+            "AGENT_MIGRATION_DATABASE_URL",
+            agent_url,
+            agent_migration_url,
+        ),
+    ):
+        if runtime_url is None or migration_url is None:
+            continue
+        if runtime_url.database != migration_url.database:
+            violations.append(
+                f"{migration_key} must target the same database as "
+                f"{runtime_key}"
+            )
+        if runtime_url.username == migration_url.username:
+            violations.append(
+                f"{migration_key} must use a role distinct from "
+                f"{runtime_key}"
+            )
+
+    for key in (
+        "SYSTEM_STARTUP_MIGRATIONS_ENABLED",
+        "AGENT_STARTUP_MIGRATIONS_ENABLED",
+    ):
+        if env.get(key, "").strip().lower() != "false":
+            violations.append(
+                f"{key} must be false in every environment"
+            )
+    return violations
 
 
 def _probe_http_service_boundary(env: dict[str, str]) -> dict[str, object]:
@@ -433,41 +760,53 @@ def _probe_http_service_boundary(env: dict[str, str]) -> dict[str, object]:
     if not system_base_url or not agent_base_url:
         raise ValueError("SYSTEM_BASE_URL and AGENT_BASE_URL are required")
 
-    suffix = uuid.uuid4().hex
-    request_id = f"boundary-e2e-{suffix}"
-    conversation_id = f"boundary-e2e-conversation-{suffix}"
-    patient_id = "boundary-e2e-patient"
+    request_id = _new_request_id()
+    patient_id = (
+        env.get("PATIENT_ID", "").strip()
+        or "patient_0000000000000001"
+    )
     message = "테스트베드 Backend와 AI 서비스 경계를 확인합니다."
     payload = {
         "request_id": request_id,
-        "conversation_id": conversation_id,
-        "patient_id": patient_id,
         "message": message,
-        "requested_return_type": None,
+        "requested_return_type": "text",
     }
-    first_status, first = _post_json(f"{system_base_url}/api/chat/sync", payload)
-    if first_status != 200:
-        raise ValueError(f"Backend /api/chat/sync returned {first_status}: {first}")
-    second_status, second = _post_json(f"{system_base_url}/api/chat/sync", payload)
-    if second_status != 200:
+    first_status, first = _post_json(
+        f"{system_base_url}/api/ui/v1/chat/sync",
+        payload,
+    )
+    if first_status != 200 or first.get("success") is not True:
+        raise ValueError(
+            "Backend /api/ui/v1/chat/sync returned "
+            f"{first_status}: {first}"
+        )
+    second_status, second = _post_json(
+        f"{system_base_url}/api/ui/v1/chat/sync",
+        payload,
+    )
+    if second_status != 200 or second.get("success") is not True:
         raise ValueError(f"Backend idempotent replay returned {second_status}: {second}")
     if first != second:
         raise ValueError("Backend idempotent replay returned a different response")
-    if first.get("request_id") != request_id:
+    first_data = first.get("data")
+    if not isinstance(first_data, dict):
+        raise ValueError("Backend UI chat response data is missing")
+    if first_data.get("request_id") != request_id:
         raise ValueError("Backend chat response request_id mismatch")
-    user_message_id = str(first.get("user_message_id") or "")
-    assistant_message_id = str(first.get("assistant_message_id") or "")
+    user_message_id = str(first_data.get("user_message_id") or "")
+    assistant_message_id = str(first_data.get("assistant_message_id") or "")
+    if "conversation_id" in first_data:
+        raise ValueError("Backend chat response must not expose conversation_id")
     if not user_message_id or not assistant_message_id or user_message_id == assistant_message_id:
         raise ValueError("Backend must persist distinct user and assistant message IDs")
-    if "trace_id" in first:
+    if "trace_id" in first_data:
         raise ValueError("Backend client response must not expose AI internal trace_id")
 
     unauthenticated_agent_payload = {
-        "request_id": f"unauthenticated-{request_id}",
+        "request_id": _new_request_id(),
         "message_id": user_message_id,
-        "conversation_id": conversation_id,
         "patient_id": patient_id,
-        "requested_return_type": None,
+        "requested_return_type": "text",
         "message": message,
         "message_at": datetime.now(UTC).isoformat(),
     }
@@ -481,14 +820,12 @@ def _probe_http_service_boundary(env: dict[str, str]) -> dict[str, object]:
     agent_sync_token = env.get("AGENT_SYNC_API_TOKEN", "").strip()
     if not agent_sync_token:
         raise ValueError("AGENT_SYNC_API_TOKEN is required for the feedback boundary probe")
-    feedback_request_id = f"boundary-feedback-{suffix}"
+    feedback_request_id = _new_request_id()
     feedback_payload = {
         "request_id": feedback_request_id,
         "message_id": assistant_message_id,
-        "conversation_id": conversation_id,
         "patient_id": patient_id,
-        "feedback": True,
-        "feedback_text": "runtime boundary feedback",
+        "reaction": "like",
         "feedback_at": datetime.now(UTC).isoformat(),
     }
     feedback_headers = {"Authorization": f"Bearer {agent_sync_token}"}
@@ -497,7 +834,15 @@ def _probe_http_service_boundary(env: dict[str, str]) -> dict[str, object]:
         feedback_payload,
         headers=feedback_headers,
     )
-    if feedback_status != 202 or feedback_response != {"status": "accepted"}:
+    feedback_accepted_at = _aware_datetime_or_none(
+        feedback_response.get("accepted_at")
+    )
+    if (
+        feedback_status != 202
+        or feedback_response.get("status") != "accepted"
+        or feedback_response.get("reaction") != "like"
+        or feedback_accepted_at is None
+    ):
         raise ValueError(
             "Agent feedback acceptance contract mismatch: "
             f"status={feedback_status} body={feedback_response}"
@@ -516,7 +861,7 @@ def _probe_http_service_boundary(env: dict[str, str]) -> dict[str, object]:
             f"status={feedback_replay_status} body={feedback_replay_response}"
         )
     feedback_conflict_payload = dict(feedback_payload)
-    feedback_conflict_payload["feedback"] = False
+    feedback_conflict_payload["reaction"] = "dislike"
     feedback_conflict_status, _ = _post_json(
         f"{agent_base_url}/agent/async/chat_feedback",
         feedback_conflict_payload,
@@ -526,6 +871,56 @@ def _probe_http_service_boundary(env: dict[str, str]) -> dict[str, object]:
         raise ValueError(
             "Agent feedback request_id conflict returned "
             f"{feedback_conflict_status}, expected 409"
+        )
+
+    ui_feedback_request_id = _new_request_id()
+    ui_feedback_payload = {
+        "request_id": ui_feedback_request_id,
+        "assistant_message_id": assistant_message_id,
+        "reaction": "like",
+        "opinion_text": "runtime BFF opinion",
+        "feedback_at": datetime.now(UTC).isoformat(),
+    }
+    ui_feedback_status, ui_feedback_response = _post_json(
+        f"{system_base_url}/api/ui/v1/chat/feedback",
+        ui_feedback_payload,
+    )
+    if (
+        ui_feedback_status != 202
+        or ui_feedback_response.get("success") is not True
+        or not isinstance(ui_feedback_response.get("data"), dict)
+        or ui_feedback_response["data"].get("reaction") != "like"
+        or ui_feedback_response["data"].get("opinion_submitted")
+        is not True
+    ):
+        raise ValueError(
+            "Backend UI feedback acceptance mismatch: "
+            f"status={ui_feedback_status} body={ui_feedback_response}"
+        )
+    ui_feedback_replay_status, ui_feedback_replay = _post_json(
+        f"{system_base_url}/api/ui/v1/chat/feedback",
+        ui_feedback_payload,
+    )
+    if (
+        ui_feedback_replay_status != 202
+        or ui_feedback_replay != ui_feedback_response
+    ):
+        raise ValueError(
+            "Backend UI feedback replay mismatch: "
+            f"status={ui_feedback_replay_status} body={ui_feedback_replay}"
+        )
+    ui_feedback_conflict_payload = dict(ui_feedback_payload)
+    ui_feedback_conflict_payload["opinion_text"] = (
+        "runtime BFF opinion with a different body"
+    )
+    ui_feedback_conflict_status, _ = _post_json(
+        f"{system_base_url}/api/ui/v1/chat/feedback",
+        ui_feedback_conflict_payload,
+    )
+    if ui_feedback_conflict_status != 409:
+        raise ValueError(
+            "Backend UI feedback request_id conflict returned "
+            f"{ui_feedback_conflict_status}, expected 409"
         )
 
     return {
@@ -538,11 +933,30 @@ def _probe_http_service_boundary(env: dict[str, str]) -> dict[str, object]:
         "feedback_status": feedback_status,
         "feedback_idempotent_replay": feedback_replay_response == feedback_response,
         "feedback_conflict_status": feedback_conflict_status,
+        "ui_feedback_status": ui_feedback_status,
+        "ui_feedback_idempotent_replay": (
+            ui_feedback_replay == ui_feedback_response
+        ),
+        "ui_feedback_conflict_status": ui_feedback_conflict_status,
         "evidence": (
-            "Backend /api/chat/sync -> Agent /agent/sync/chat -> read-only Backend DB; "
-            "Backend feedback -> Agent /agent/async/chat_feedback"
+            "React /api/ui/v1/chat/sync -> Backend identity injection -> "
+            "Agent /agent/sync/chat -> read-only Backend DB; "
+            "Backend feedback -> Agent /agent/async/chat_feedback; "
+            "React /api/ui/v1/chat/feedback -> Backend identity injection -> Agent"
         ),
     }
+
+
+def _aware_datetime_or_none(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
 
 
 def _post_json(
@@ -593,7 +1007,7 @@ def _combined_result(results: list[dict]) -> dict:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Verify Backend/AI/PHR storage boundaries and the committed Backend v1.2 OpenAPI contract."
+        description="Verify Backend/AI storage boundaries and the committed Backend v1.3 OpenAPI contract."
     )
     parser.add_argument(
         "--scope",
@@ -601,22 +1015,38 @@ def parse_args() -> argparse.Namespace:
         default="all",
         help="all checks config + OpenAPI; runtime is intended for a running local 9000 stack",
     )
-    parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE)
-    parser.add_argument("--runtime", action="store_true", help="also execute the SQLite read/write-denial probe")
+    parser.add_argument(
+        "--env-file",
+        default=str(DEFAULT_ENV_FILE),
+        help="one env path or a comma/semicolon-separated precedence list",
+    )
+    parser.add_argument(
+        "--runtime",
+        action="store_true",
+        help="also execute PostgreSQL connectivity and reader-role probes",
+    )
     parser.add_argument("--json", action="store_true", help="emit only machine-readable JSON")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    env_path = args.env_file if args.env_file.is_absolute() else PROJECT_ROOT / args.env_file
+    env_path = args.env_file
     results: list[dict] = []
     if args.scope in {"all", "config"}:
-        results.append(verify_config(env_path=env_path))
+        results.append(
+            verify_config(
+                env_path=env_path,
+            )
+        )
     if args.scope in {"all", "openapi"}:
         results.append(verify_openapi(env_path=env_path))
     if args.scope == "runtime" or args.runtime:
-        results.append(verify_runtime(env_path=env_path))
+        results.append(
+            verify_runtime(
+                env_path=env_path,
+            )
+        )
     result = _combined_result(results)
 
     if args.json:

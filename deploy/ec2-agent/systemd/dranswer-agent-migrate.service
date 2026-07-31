@@ -1,0 +1,25 @@
+[Unit]
+Description=DRAnswer Agent database migration
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/dranswer-agent/current/agent_app/migrate.py
+ConditionPathExists=/opt/dranswer-agent/current/release.env
+ConditionPathExists=/etc/dranswer-agent/agent.env
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/opt/dranswer-agent/current
+EnvironmentFile=/etc/dranswer-agent/agent.env
+EnvironmentFile=/opt/dranswer-agent/current/release.env
+UnsetEnvironment=AWS_BEARER_TOKEN_BEDROCK
+Environment=DA_DRUG_SERVICE=agent_app
+Environment=AGENT_STARTUP_MIGRATIONS_ENABLED=false
+Environment=AGENT_EMBEDDED_WORKER_ENABLED=false
+ExecStart=/opt/dranswer-agent/current/venv/bin/python -m agent_app.migrate
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
