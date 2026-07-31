@@ -14,6 +14,7 @@ from agent_app.integration.idempotency import (
     canonical_request_hash,
 )
 from agent_app.routes import chat as agent_chat_route
+from agent_app.streaming import agent_text_publisher
 from shared.chat_contracts import (
     ChatMessageContent,
     ChatStreamEvent,
@@ -243,6 +244,52 @@ async def test_agent_ndjson_emits_agent_loop_text_and_one_terminal_event():
     assert len(gate.completed) == 1
     assert gate.failed == []
     assert len(trace_store.completed) == 1
+
+
+async def test_agent_ndjson_forwards_generated_token_deltas_without_duplicate():
+    request = _request("token-stream")
+
+    class _Orchestrator:
+        async def invoke(self, _kind, _payload, *, trace_id):
+            publisher = agent_text_publisher()
+            assert publisher is not None
+            await publisher("토큰 ")
+            await publisher("스트리밍")
+            return AgentResponse(
+                trace_id=trace_id,
+                agent_name="multiturn_chat_agent",
+                prompt_version_id="test",
+                decision_type="system_guidance",
+                structured_payload={},
+                human_summary="토큰 스트리밍",
+            )
+
+    response = agent_chat_route._stream_chat_response(
+        gate=_Gate(),
+        trace_store=_TraceStore(),
+        orchestrator=_Orchestrator(),
+        payload=request,
+        claim=_claim(request),
+        agent_payload={"message": request.message},
+        trace_id="trace-token-stream",
+        timeout_seconds=1.0,
+    )
+    rows = [
+        ChatStreamEvent.model_validate(row)
+        for row in _ndjson_rows(await _stream_body(response))
+    ]
+
+    assert [row.status for row in rows] == [
+        "streaming",
+        "streaming",
+        "completed",
+    ]
+    assert [row.sequence for row in rows] == [0, 1, 2]
+    assert [
+        row.delta for row in rows if row.status == "streaming"
+    ] == ["토큰 ", "스트리밍"]
+    assert rows[-1].message is not None
+    assert rows[-1].message.text == "토큰 스트리밍"
 
 
 async def test_structured_chat_streams_explanation_before_completed_payload():

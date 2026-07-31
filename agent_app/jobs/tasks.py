@@ -87,7 +87,9 @@ def enqueue_async_task(
         )
         if existing_by_request is not None:
             if existing_by_request.deduplication_key != deduplication_key:
-                raise ValueError("async_task_identity_collision")
+                raise ValueError(
+                    "async_task_identity_collision"
+                ) from None
             return existing_by_request, False
         existing_by_deduplication = (
             session.scalar(

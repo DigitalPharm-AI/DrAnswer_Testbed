@@ -437,7 +437,7 @@ def _attach_trace_context(exc: Exception, trace_id: str) -> None:
     if getattr(exc, "trace_id", None):
         return
     try:
-        setattr(exc, "trace_id", trace_id)
+        exc.trace_id = trace_id
     except Exception:
         return
 

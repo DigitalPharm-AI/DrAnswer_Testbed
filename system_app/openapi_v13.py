@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any
 
 from fastapi import FastAPI
 
-from shared.openapi_schema import referenced_schemas
+from shared.openapi_schema import (
+    openapi_components,
+    referenced_schemas,
+    selected_openapi_paths,
+)
 from system_app.services.backend_v13_service import (
     POLICY_CHANGE_PATH,
     RECORD_CHANGE_PATH,
@@ -27,7 +30,7 @@ def build_backend_v13_write_openapi(
     """Export the v1.3 AI-to-Backend synchronous write boundary."""
 
     source = app.openapi()
-    paths = _selected_paths(source, BACKEND_V13_WRITE_PATHS)
+    paths = selected_openapi_paths(source, BACKEND_V13_WRITE_PATHS)
     schemas = referenced_schemas(
         paths,
         source.get("components", {}).get("schemas", {}),
@@ -45,7 +48,7 @@ def build_backend_v13_write_openapi(
             ),
         },
         "paths": paths,
-        "components": _components(source, schemas),
+        "components": openapi_components(source, schemas),
         "x-ai-server-tool-boundary": {
             "contract_version": "1.3",
             "public_id_suffix": "16 lowercase hexadecimal characters",
@@ -77,7 +80,7 @@ def build_backend_v13_async_callback_openapi(
     """Export the v1.3 AI-to-Backend asynchronous result callbacks."""
 
     source = app.openapi()
-    paths = _selected_paths(
+    paths = selected_openapi_paths(
         source,
         BACKEND_V13_ASYNC_CALLBACK_PATHS,
     )
@@ -98,7 +101,7 @@ def build_backend_v13_async_callback_openapi(
             ),
         },
         "paths": paths,
-        "components": _components(source, schemas),
+        "components": openapi_components(source, schemas),
         "x-contract-scope": {
             "contract_version": "1.3",
             "public_id_suffix": "16 lowercase hexadecimal characters",
@@ -125,22 +128,6 @@ def install_system_v13_openapi(app: FastAPI) -> None:
     app.openapi = contract_aware_openapi
 
 
-def _selected_paths(
-    source: dict[str, Any],
-    required_paths: tuple[str, ...],
-) -> dict[str, Any]:
-    available = source.get("paths", {})
-    missing = [path for path in required_paths if path not in available]
-    if missing:
-        raise KeyError(
-            "missing_v13_openapi_paths:" + ",".join(missing)
-        )
-    return {
-        path: deepcopy(available[path])
-        for path in required_paths
-    }
-
-
 def _remove_v13_validation_responses(
     paths: dict[str, Any],
 ) -> None:
@@ -151,15 +138,3 @@ def _remove_v13_validation_responses(
     )
     if isinstance(responses, dict):
         responses.pop("422", None)
-
-
-def _components(
-    source: dict[str, Any],
-    schemas: dict[str, Any],
-) -> dict[str, Any]:
-    return {
-        "schemas": schemas,
-        "securitySchemes": deepcopy(
-            source.get("components", {}).get("securitySchemes", {})
-        ),
-    }

@@ -47,7 +47,7 @@ from agent_app.routes.tasks import (
 from agent_app.runtime import create_runtime_components
 from agent_app.security import require_agent_sync_bearer_token
 from shared.backend_v13_contracts import CommonErrorResponse, ContractError
-from shared.public_ids import is_public_id
+from shared.public_ids import request_id_from_body
 from shared.redaction import safe_exception_summary
 from shared.settings import get_settings
 
@@ -190,7 +190,7 @@ async def agent_execution_error_handler(
 async def request_validation_error_handler(request: Request, exc: RequestValidationError):
     if request.url.path in ASYNC_EVENT_ACCEPTANCE_PATHS:
         body = CommonErrorResponse(
-            request_id=_request_id_from_body(exc.body),
+            request_id=request_id_from_body(exc.body),
             error=ContractError(
                 code="INVALID_REQUEST",
                 message="Request schema or required field is invalid.",
@@ -237,7 +237,7 @@ async def request_validation_error_handler(request: Request, exc: RequestValidat
     body = chat_error(
         "INVALID_REQUEST",
         "Request schema or required field is invalid.",
-        request_id=_request_id_from_body(exc.body),
+        request_id=request_id_from_body(exc.body),
         retryable=False,
         details=details,
     ).model_dump(mode="json")
@@ -300,21 +300,12 @@ async def http_exception_contract_handler(request: Request, exc: HTTPException):
     return await http_exception_handler(request, exc)
 
 
-def _request_id_from_body(body) -> str | None:
-    if not isinstance(body, dict):
-        return None
-    value = body.get("request_id")
-    if not isinstance(value, str):
-        return None
-    return value if is_public_id(value, "request") else None
-
-
 async def _request_id_from_request(request: Request) -> str | None:
     try:
         body = await request.json()
     except Exception:
         return None
-    return _request_id_from_body(body)
+    return request_id_from_body(body)
 
 
 @app.get("/health", include_in_schema=False)

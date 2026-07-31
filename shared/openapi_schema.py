@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from copy import deepcopy
 from typing import Any
 
 SCHEMA_REF_PREFIX = "#/components/schemas/"
@@ -24,6 +25,34 @@ def referenced_schemas(
         selected[name] = schema
         pending.extend(_schema_references(schema))
     return {name: selected[name] for name in sorted(selected)}
+
+
+def selected_openapi_paths(
+    source: dict[str, Any],
+    required_paths: tuple[str, ...],
+) -> dict[str, Any]:
+    available = source.get("paths", {})
+    missing = [path for path in required_paths if path not in available]
+    if missing:
+        raise KeyError(
+            "missing_v13_openapi_paths:" + ",".join(missing)
+        )
+    return {
+        path: deepcopy(available[path])
+        for path in required_paths
+    }
+
+
+def openapi_components(
+    source: dict[str, Any],
+    schemas: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schemas": schemas,
+        "securitySchemes": deepcopy(
+            source.get("components", {}).get("securitySchemes", {})
+        ),
+    }
 
 
 def _schema_references(value: Any) -> Iterable[str]:

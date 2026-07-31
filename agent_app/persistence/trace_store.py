@@ -17,7 +17,7 @@ from agent_app.observability.outbox import enqueue_trace_attempt
 from shared.chat_contracts import ChatSyncRequest
 from agent_app.persistence.models import AgentRunStep, AgentRunTrace, AgentToolExecution
 from shared.tool_names import MODEL_VISIBLE_TOOL_METADATA
-from shared.json_utils import dump_json
+from shared.json_utils import dump_json, sha256_json
 from shared.readiness_budget import estimate_model_cost_usd
 from shared.redaction import redacted_clinical_text_label
 from shared.retention_policy import agent_observability_expires_at
@@ -202,7 +202,7 @@ class AgentTraceStore:
                     provider=self.settings.llm_provider,
                     model_tier=self.settings.llm_model_tier,
                     model_id=self.settings.model_id_for_tier(),
-                    input_hash=_sha256_json(payload),
+                    input_hash=sha256_json(payload),
                     metadata_json=dump_json(
                         {
                             "execution_mode": "async",
@@ -836,12 +836,12 @@ class AgentTraceStore:
                 tool_name=tool_name,
                 tool_version="",
                 argument_schema_version="v1",
-                argument_hash=_sha256_json(arguments),
+                argument_hash=sha256_json(arguments),
                 status=result_status,
                 side_effect_level=side_effect_level,
                 attempt_count=attempt_count,
                 latency_ms=latency_ms,
-                response_hash=_sha256_json(response_payload),
+                response_hash=sha256_json(response_payload),
                 error_code=error_code,
                 retryable=retryable,
                 metadata_json=dump_json(
@@ -891,7 +891,7 @@ class AgentTraceStore:
                 status=result_status,
                 tool_name=tool_name,
                 argument_schema_version="v1",
-                argument_hash=_sha256_json(arguments),
+                argument_hash=sha256_json(arguments),
                 side_effect_level=side_effect_level,
                 retry_count=max(0, attempt_count - 1),
                 latency_ms=latency_ms,
@@ -905,15 +905,15 @@ class AgentTraceStore:
                     if result.get("error")
                     else ""
                 ),
-                input_hash=_sha256_json(arguments),
-                output_hash=_sha256_json(response_payload),
+                input_hash=sha256_json(arguments),
+                output_hash=sha256_json(response_payload),
                 started_at=started_at,
                 completed_at=now,
                 created_at=now,
                 expires_at=trace_expires_at,
                 metadata_json=dump_json(
                     {
-                        "response_hash": _sha256_json(response_payload),
+                        "response_hash": sha256_json(response_payload),
                         "decision_evidence_encrypted": True,
                         "risk_level": metadata.get("risk_level", ""),
                         "retryable": retryable,
@@ -1168,17 +1168,6 @@ def _nonnegative_int(value: Any) -> int:
 
 def _sha256_text(value: Any) -> str:
     return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
-
-
-def _sha256_json(value: Any) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def _side_effect_level(metadata: dict[str, str]) -> str:

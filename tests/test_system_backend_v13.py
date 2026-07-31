@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,7 +11,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import sessionmaker
 
 from agent_app.tools.backend_query import BackendChatMessageNotFound, BackendQueryTools
-from shared.json_utils import dump_json, parse_json_object
+from shared.json_utils import dump_json
 from shared.public_ids import new_public_id
 from shared.tool_names import (
     CHANGE_NOTIFICATION_POLICY,

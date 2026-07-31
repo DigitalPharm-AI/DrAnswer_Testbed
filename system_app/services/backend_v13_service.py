@@ -164,7 +164,7 @@ def apply_record_change(
     session: Session,
     request: RecordChangeRequest,
 ) -> RecordChangeResponse | CommonErrorResponse:
-    context_error, confirmation = _validate_record_confirmation_binding(
+    context_error, confirmation = _validate_confirmation_binding(
         session,
         request,
     )
@@ -198,7 +198,7 @@ def apply_notification_policy_change(
     session: Session,
     request: NotificationPolicyChangeRequest,
 ) -> NotificationPolicyChangeResponse | CommonErrorResponse:
-    context_error, confirmation = _validate_policy_confirmation_binding(
+    context_error, confirmation = _validate_confirmation_binding(
         session,
         request,
     )
@@ -627,22 +627,9 @@ def _validate_confirmation_context(
     return None
 
 
-def _validate_record_confirmation_binding(
+def _validate_confirmation_binding(
     session: Session,
-    request: RecordChangeRequest,
-) -> tuple[str | None, None]:
-    error = _validate_confirmation_context(
-        session,
-        patient_id=request.patient_id,
-        confirmation_message_id=request.confirmation_message_id,
-        source_chat_request_id=request.source_chat_request_id,
-    )
-    return error, None
-
-
-def _validate_policy_confirmation_binding(
-    session: Session,
-    request: NotificationPolicyChangeRequest,
+    request: RecordChangeRequest | NotificationPolicyChangeRequest,
 ) -> tuple[str | None, None]:
     error = _validate_confirmation_context(
         session,

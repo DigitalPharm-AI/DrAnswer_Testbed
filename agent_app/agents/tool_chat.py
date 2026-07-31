@@ -20,7 +20,10 @@ from shared.tool_confirmations import ConfirmationActionRegistry
 from agent_app.orchestration.continuation import continuation_type
 from agent_app.errors import AgentExecutionError
 from agent_app.llm.generation import PROMPT_VERSION_ID
-from agent_app.observability.model_calls import traced_model_ainvoke
+from agent_app.observability.model_calls import (
+    traced_model_ainvoke,
+    traced_model_astream_message,
+)
 from agent_app.llm.validation import validate_llm_output
 from agent_app.providers.base import BaseLLMProvider
 from shared.tool_catalog import ToolCatalog
@@ -189,11 +192,12 @@ class ToolChatAgentGraph:
                 "approved_write_result": result.model_dump(mode="json"),
             },
         )
-        ai_message = await traced_model_ainvoke(
+        ai_message = await traced_model_astream_message(
             self.provider.chat_model(),
             finalizer_messages,
             name=f"{self.agent_name}.approved_write_finalizer",
             prompt_version_id=PROMPT_VERSION_ID,
+            publish_public_text=True,
         )
         followup_calls = normalize_policy_tool_calls(
             tool_calls_from_ai_message(ai_message),

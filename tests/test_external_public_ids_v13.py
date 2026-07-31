@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 

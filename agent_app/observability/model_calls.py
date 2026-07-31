@@ -10,6 +10,14 @@ from datetime import datetime
 from time import perf_counter
 from typing import Any
 
+from langchain_core.messages import BaseMessageChunk
+from langchain_core.messages.utils import message_chunk_to_message
+
+from agent_app.llm.messages import (
+    public_text_delta_from_ai_message,
+)
+from agent_app.streaming import agent_text_publisher
+from shared.json_utils import sha256_json
 from shared.redaction import safe_exception_summary
 from shared.schemas import AgentResponse
 from shared.time_utils import utc_now
@@ -136,6 +144,63 @@ async def traced_model_astream(
     )
 
 
+async def traced_model_astream_message(
+    model: Any,
+    messages: list[Any],
+    *,
+    name: str,
+    prompt_version_id: str,
+    publish_public_text: bool = False,
+) -> Any:
+    """Collect a model stream into its authoritative AI message.
+
+    Public text is forwarded exactly as generated. Reasoning blocks are
+    excluded by ``public_text_delta_from_ai_message``. A Tool-call stream is
+    an internal planning turn and therefore suppresses public text from that
+    chunk and every later chunk in the same model response.
+    """
+
+    chunks: list[Any] = []
+    tool_call_seen = False
+    public_text_started = False
+    publisher = (
+        agent_text_publisher()
+        if publish_public_text
+        else None
+    )
+    async for chunk in traced_model_astream(
+        model,
+        messages,
+        name=name,
+        prompt_version_id=prompt_version_id,
+    ):
+        chunks.append(chunk)
+        if _has_tool_call_signal(chunk):
+            tool_call_seen = True
+            if public_text_started:
+                _record_mixed_public_tool_stream(
+                    name=name,
+                    prompt_version_id=prompt_version_id,
+                )
+            continue
+        if tool_call_seen or publisher is None:
+            continue
+        delta = public_text_delta_from_ai_message(chunk)
+        if not delta:
+            continue
+        public_text_started = True
+        await publisher(delta)
+
+    if not chunks:
+        raise RuntimeError("model_stream_returned_no_chunks")
+    combined = chunks[0]
+    for chunk in chunks[1:]:
+        combined = combined + chunk
+    if isinstance(combined, BaseMessageChunk):
+        return message_chunk_to_message(combined)
+    return combined
+
+
 def response_with_model_calls(
     response: AgentResponse,
     observations: list[ModelCallObservation],
@@ -188,6 +253,60 @@ def _record_observation(observation: ModelCallObservation) -> None:
         collector.append(observation)
 
 
+def _has_tool_call_signal(chunk: Any) -> bool:
+    if getattr(chunk, "tool_call_chunks", None):
+        return True
+    if getattr(chunk, "tool_calls", None):
+        return True
+    content = getattr(chunk, "content", None)
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and str(item.get("type") or "") in {
+            "tool_use",
+            "tool_call",
+        }
+        for item in content
+    )
+
+
+def _record_mixed_public_tool_stream(
+    *,
+    name: str,
+    prompt_version_id: str,
+) -> None:
+    collector = _MODEL_CALL_COLLECTOR.get()
+    if collector is None:
+        return
+    collector.append(
+        {
+            "observation_id": uuid.uuid4().hex,
+            "observation_type": "stream_contract",
+            "name": name,
+            "status": "ERROR",
+            "level": "ERROR",
+            "status_message": (
+                "A model response emitted public text before a Tool call."
+            ),
+            "error_code": "MIXED_PUBLIC_TEXT_AND_TOOL_CALL",
+            "prompt_version_id": prompt_version_id,
+            "provider": "",
+            "model_id": "",
+            "model_parameters": {},
+            "input_hash": "",
+            "output_hash": "",
+            "decision_evidence": {},
+            "usage_details": {"input": 0, "output": 0},
+            "started_at": utc_now().isoformat(),
+            "completion_start_time": None,
+            "completed_at": utc_now().isoformat(),
+            "latency_ms": 0,
+            "time_to_first_token_ms": 0,
+        }
+    )
+
+
 def _model_observation(
     *,
     model: Any,
@@ -217,8 +336,8 @@ def _model_observation(
         "provider": identity["provider"],
         "model_id": identity["model_id"],
         "model_parameters": identity["model_parameters"],
-        "input_hash": _sha256_json(_message_projection(messages)),
-        "output_hash": _sha256_json(_result_projection(result)),
+        "input_hash": sha256_json(_message_projection(messages)),
+        "output_hash": sha256_json(_result_projection(result)),
         "decision_evidence": _decision_evidence(
             messages,
             result,
@@ -607,7 +726,7 @@ def _message_projection(messages: list[Any]) -> list[dict[str, Any]]:
     return [
         {
             "type": type(message).__name__,
-            "content_hash": _sha256_json(
+            "content_hash": sha256_json(
                 getattr(message, "content", "")
             ),
             "tool_call_count": len(
@@ -627,7 +746,7 @@ def _result_projection(result: Any) -> Any:
 def _single_result_projection(result: Any) -> dict[str, Any]:
     return {
         "type": type(result).__name__ if result is not None else "None",
-        "content_hash": _sha256_json(
+        "content_hash": sha256_json(
             getattr(result, "content", "")
         ),
         "tool_call_count": len(
@@ -637,10 +756,7 @@ def _single_result_projection(result: Any) -> dict[str, Any]:
 
 
 def _has_public_content(chunk: Any) -> bool:
-    content = getattr(chunk, "content", None)
-    if isinstance(content, str):
-        return bool(content)
-    return isinstance(content, list) and bool(content)
+    return bool(public_text_delta_from_ai_message(chunk))
 
 
 def _elapsed_ms(started: float) -> int:
@@ -652,14 +768,3 @@ def _nonnegative_int(value: Any) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
-
-
-def _sha256_json(value: Any) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()

@@ -16,7 +16,6 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
-    status,
 )
 from fastapi.exception_handlers import (
     http_exception_handler,

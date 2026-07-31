@@ -35,7 +35,10 @@ from agent_app.llm.messages import (
 from agent_app.orchestration.continuation import continuation_type
 from agent_app.errors import AgentExecutionError
 from agent_app.llm.generation import PROMPT_VERSION_ID, agent_error
-from agent_app.observability.model_calls import traced_model_ainvoke
+from agent_app.observability.model_calls import (
+    traced_model_ainvoke,
+    traced_model_astream_message,
+)
 from agent_app.llm.validation import validate_llm_output, validate_mutation_confirmation_reply_output
 from agent_app.llm.prompts import (
     multiturn_chat_prompt,
@@ -321,11 +324,12 @@ class MultiturnChatAgent:
                 "approved_write_result": result.model_dump(mode="json"),
             },
         )
-        ai_message = await traced_model_ainvoke(
+        ai_message = await traced_model_astream_message(
             self.provider.chat_model(),
             finalizer_messages,
             name="multiturn_chat.approved_write_finalizer",
             prompt_version_id=PROMPT_VERSION_ID,
+            publish_public_text=True,
         )
         followup_calls = normalize_policy_tool_calls(
             tool_calls_from_ai_message(ai_message),
@@ -735,11 +739,12 @@ class MultiturnChatAgent:
             pending_tool_call_origin = seeded_tool_origin
         else:
             started = perf_counter()
-            ai_message = await traced_model_ainvoke(
+            ai_message = await traced_model_astream_message(
                 state["bound_model"],
                 state["messages"],
                 name="multiturn_chat.supervisor",
                 prompt_version_id=PROMPT_VERSION_ID,
+                publish_public_text=True,
             )
             if state.get("entry_mode") == "mutation_resolution":
                 resolution_elapsed_ms = round((perf_counter() - started) * 1000)

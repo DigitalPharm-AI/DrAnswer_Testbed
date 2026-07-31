@@ -8,7 +8,6 @@ import pytest
 from agent_app.errors import AgentExecutionError
 from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
 from shared.tool_names import (
-    GET_PRO_CTCAE_QUESTIONNAIRE,
     PROPOSE_NOTIFICATION_POLICY,
 )
 from shared.schemas import ToolCallResult

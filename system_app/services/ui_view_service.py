@@ -24,7 +24,6 @@ from system_app.services.ui_feedback_service import (
 )
 from system_app.services.ui_policy_service import ui_policy_state
 from system_app.services.ui_time import (
-    as_seoul_datetime,
     as_seoul_iso,
     naive_utc_as_seoul,
 )

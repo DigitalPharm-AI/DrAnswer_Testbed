@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime, time
+from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
@@ -14,6 +14,7 @@ from shared.async_v13_contracts import (
 )
 from shared.public_ids import new_public_id, require_public_id
 from shared.schemas import AgentResponse, NotificationPolicyDelta
+from shared.time_utils import as_aware_utc, as_naive_utc
 
 DAILY_PATTERN_TIMEZONE = ZoneInfo("Asia/Seoul")
 DAILY_PATTERN_ANALYSIS_TASK = "daily_pattern_analysis"
@@ -32,7 +33,7 @@ def v13_proposal_delivery_run_after(*, received_at: datetime) -> datetime:
     timestamp in the past; the durable queue then delivers immediately.
     """
 
-    local_received = _as_aware_utc(received_at).astimezone(
+    local_received = as_aware_utc(received_at).astimezone(
         DAILY_PATTERN_TIMEZONE
     )
     delivery_local = datetime.combine(
@@ -40,7 +41,7 @@ def v13_proposal_delivery_run_after(*, received_at: datetime) -> datetime:
         DAILY_PATTERN_DEFAULT_DELIVERY_TIME,
         tzinfo=DAILY_PATTERN_TIMEZONE,
     )
-    return _naive_utc(delivery_local)
+    return as_naive_utc(delivery_local)
 
 
 def enqueue_proposal_delivery(
@@ -63,7 +64,7 @@ def enqueue_proposal_delivery(
         str(analysis_task_payload.get("delivery_run_after") or ""),
     )
     if delivery_run_after.tzinfo is not None:
-        delivery_run_after = _naive_utc(delivery_run_after)
+        delivery_run_after = as_naive_utc(delivery_run_after)
     proposal = _single_proposal(response)
     if proposal is None:
         return False
@@ -134,13 +135,3 @@ def _single_proposal(
             "daily_pattern_multiple_proposals_require_priority_contract"
         )
     return next(iter(candidates.values()))
-
-
-def _as_aware_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
-def _naive_utc(value: datetime) -> datetime:
-    return value.astimezone(UTC).replace(tzinfo=None)

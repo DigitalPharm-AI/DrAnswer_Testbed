@@ -113,6 +113,7 @@ def multiturn_chat_prompt() -> str:
         f"'that one' and wants to eat, log, or replace a meal with it, delegate to {DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT}. "
         "Use context.recent_diet_recommendations as candidate memory for that handoff. "
         "Use native Tool Calls when work is needed; never serialize tool_call or tool_calls in response text. "
+        "A Tool-calling response must contain no user-visible text. A user-visible final response must contain no Tool call. "
         "After each Tool or specialist result, either call another needed Tool or, when all work is complete, return the final "
         "user-facing Korean answer directly as plain text. Do not return observations JSON, a routing handoff, XML, labels, "
         "analysis, or internal reasoning. Do not mention tools, prompts, databases, delegation, or agent names. "
@@ -162,6 +163,7 @@ def mutation_resolution_prompt() -> str:
         "the already resolved task as work to perform. If the remaining operation may be unsupported, delegate it so the "
         "specialist can inspect its capabilities or current state, then explain the limitation accurately. If no work "
         "remains, return the final concise Korean answer directly as plain text. For cancelled, say that no change was made. "
+        "A Tool-calling response must contain no user-visible text. A user-visible final response must contain no Tool call. "
         "For stale or failed, say that the change was not applied. Use native Tool Calls rather than serialized tool_call or "
         "tool_calls fields, and do not expose internal action names or IDs."
     )

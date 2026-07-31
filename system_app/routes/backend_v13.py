@@ -118,11 +118,11 @@ def _process_record_change(runtime: SystemRuntime, session: Session, payload: Re
             return JSONResponse(status_code=status_code, content=body)
         except BackendRequestConflict as exc:
             session.rollback()
-            response = _record_error(payload.request_id, exc.code, retryable=exc.code == "REQUEST_IN_PROGRESS")
+            response = _contract_error(payload.request_id, exc.code, retryable=exc.code == "REQUEST_IN_PROGRESS")
             return JSONResponse(status_code=409, content=response.model_dump(mode="json"))
         except Exception:
             session.rollback()
-            response = _record_error(payload.request_id, "BACKEND_PROCESSING_ERROR", retryable=True)
+            response = _contract_error(payload.request_id, "BACKEND_PROCESSING_ERROR", retryable=True)
             return JSONResponse(status_code=500, content=response.model_dump(mode="json"))
 
 
@@ -158,11 +158,11 @@ def _process_policy_change(runtime: SystemRuntime, session: Session, payload: No
             return JSONResponse(status_code=status_code, content=body)
         except BackendRequestConflict as exc:
             session.rollback()
-            response = _policy_error(payload.request_id, exc.code, retryable=exc.code == "REQUEST_IN_PROGRESS")
+            response = _contract_error(payload.request_id, exc.code, retryable=exc.code == "REQUEST_IN_PROGRESS")
             return JSONResponse(status_code=409, content=response.model_dump(mode="json"))
         except Exception:
             session.rollback()
-            response = _policy_error(payload.request_id, "BACKEND_PROCESSING_ERROR", retryable=True)
+            response = _contract_error(payload.request_id, "BACKEND_PROCESSING_ERROR", retryable=True)
             return JSONResponse(status_code=500, content=response.model_dump(mode="json"))
 
 
@@ -178,25 +178,7 @@ def _contract_status(
     return contract_error_definition(response.error.code).status_code
 
 
-def _record_error(
-    request_id: str,
-    code: str,
-    *,
-    retryable: bool,
-) -> CommonErrorResponse:
-    definition = contract_error_definition(code)
-    return CommonErrorResponse(
-        request_id=request_id,
-        error=ContractError(
-            code=code,
-            message=definition.message,
-            retryable=retryable,
-            details=None,
-        ),
-    )
-
-
-def _policy_error(
+def _contract_error(
     request_id: str,
     code: str,
     *,

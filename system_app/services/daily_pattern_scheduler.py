@@ -100,9 +100,7 @@ def active_daily_pattern_patient_ids(
 
 def daily_pattern_request_id(analysis_date: date) -> str:
     digest = hashlib.sha256(
-        f"backend-daily-medication-pattern:{analysis_date.isoformat()}".encode(
-            "utf-8"
-        )
+        f"backend-daily-medication-pattern:{analysis_date.isoformat()}".encode()
     ).hexdigest()[:16]
     return f"req_{digest}"
 

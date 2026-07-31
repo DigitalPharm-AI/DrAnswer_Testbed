@@ -675,7 +675,7 @@ def create_nutrition_alert(session: Session, meal: NutritionMeal, summary: dict[
         meal_type=meal.meal_type,
     )
     if existing is not None:
-        setattr(existing, "_nutrition_alert_reused", True)
+        existing._nutrition_alert_reused = True
         return existing
     clock = ensure_clock(session)
     primary = daily_exceeded[0]
@@ -745,7 +745,7 @@ def create_missing_meal_alert(session: Session, meal_type: str = "lunch", scenar
         meal_type=meal_type,
     )
     if existing is not None:
-        setattr(existing, "_nutrition_alert_reused", True)
+        existing._nutrition_alert_reused = True
         return existing
     meal_label = MEAL_TYPE_LABELS.get(meal_type, meal_type)
     return create_notification(

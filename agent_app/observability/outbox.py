@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import uuid
 from dataclasses import dataclass
@@ -53,13 +52,13 @@ def deterministic_langfuse_trace_id(trace_id: str) -> str:
     """Return a stable W3C-compatible 32-character lowercase trace id."""
 
     return hashlib.sha256(
-        f"dranswer-langfuse-trace:{trace_id}".encode("utf-8")
+        f"dranswer-langfuse-trace:{trace_id}".encode()
     ).hexdigest()[:32]
 
 
 def deterministic_span_id(observation_id: str) -> str:
     return hashlib.sha256(
-        f"dranswer-langfuse-span:{observation_id}".encode("utf-8")
+        f"dranswer-langfuse-span:{observation_id}".encode()
     ).hexdigest()[:16]
 
 
@@ -290,7 +289,7 @@ def should_export_trace_attempt(
         return False
     bucket = int(
         hashlib.sha256(
-            f"{trace.trace_id}:{trace.attempt_count}".encode("utf-8")
+            f"{trace.trace_id}:{trace.attempt_count}".encode()
         ).hexdigest()[:8],
         16,
     ) / 0xFFFFFFFF

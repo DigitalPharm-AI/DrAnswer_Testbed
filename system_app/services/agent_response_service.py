@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from shared.tool_names import (
@@ -353,27 +352,17 @@ def maybe_apply_policy_response(session: Session, response: AgentResponse, sourc
             return record_executed_tool_results(session, response, source_event_type)
 
         if has_notification_policy_tool_call(response):
-            try:
-                deltas = policy_deltas_from_tool_response(response, source_event_type)
-            except (ValidationError, ValueError) as exc:
-                raise
+            deltas = policy_deltas_from_tool_response(response, source_event_type)
             return create_policy_confirmation_alert(session, response, source_event_type, deltas)
 
         if has_system_policy_tool_call(response):
-            try:
-                deltas = system_policy_deltas_from_tool_response(response, source_event_type)
-            except (ValidationError, ValueError) as exc:
-                raise
+            deltas = system_policy_deltas_from_tool_response(response, source_event_type)
             return create_system_policy_confirmation_alert(session, response, source_event_type, deltas)
 
         if response.structured_payload.get("tools_executed") is True:
             return record_executed_tool_results(session, response, source_event_type)
 
-        try:
-            deltas = policy_deltas_from_tool_response(response)
-        except (ValidationError, ValueError) as exc:
-            raise
-
+        deltas = policy_deltas_from_tool_response(response)
         return create_policy_confirmation_alert(session, response, source_event_type, deltas)
 
     if response.decision_type not in {
@@ -382,10 +371,7 @@ def maybe_apply_policy_response(session: Session, response: AgentResponse, sourc
     }:
         return False, response.human_summary or "정책 변경 대상이 아닌 응답입니다."
 
-    try:
-        deltas = policy_deltas_from_response_payload(response)
-    except ValidationError as exc:
-        raise
+    deltas = policy_deltas_from_response_payload(response)
     if not deltas:
         return False, response.human_summary or "정책 변경 후보가 없습니다."
 

@@ -110,7 +110,7 @@ class UiChatRequest(StrictUiContract):
         return normalized
 
     @model_validator(mode="after")
-    def require_structured_response_source(self) -> "UiChatRequest":
+    def require_structured_response_source(self) -> UiChatRequest:
         if (
             self.requested_return_type != "text"
             and self.source_message_id is None

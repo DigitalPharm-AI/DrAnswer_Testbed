@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any
 
 from fastapi import FastAPI
@@ -15,7 +14,11 @@ from agent_app.routes.tasks import (
     DAILY_MEDICATION_PATTERN_ANALYSIS_PATH,
     MISSED_DOSE_EVENT_PATH,
 )
-from shared.openapi_schema import referenced_schemas
+from shared.openapi_schema import (
+    openapi_components,
+    referenced_schemas,
+    selected_openapi_paths,
+)
 AGENT_V13_CHAT_PATHS = (
     SYNC_CHAT_PATH,
     FEEDBACK_API_PATH,
@@ -34,7 +37,7 @@ def build_agent_v13_chat_openapi(app: FastAPI) -> dict[str, Any]:
     """Export the v1.3 Backend-to-AI chat and feedback boundary."""
 
     source = app.openapi()
-    paths = _selected_paths(source, AGENT_V13_CHAT_PATHS)
+    paths = selected_openapi_paths(source, AGENT_V13_CHAT_PATHS)
     _remove_v13_validation_responses(paths)
     keep_only_ndjson_chat_success(
         paths,
@@ -59,7 +62,7 @@ def build_agent_v13_chat_openapi(app: FastAPI) -> dict[str, Any]:
             ),
         },
         "paths": paths,
-        "components": _components(source, schemas),
+        "components": openapi_components(source, schemas),
         "x-data-boundary": {
             "contract_version": "1.3",
             "public_id_suffix": "16 lowercase hexadecimal characters",
@@ -93,7 +96,7 @@ def build_agent_v13_async_medication_openapi(
     """Export v1.3 missed-dose and daily-pattern acceptance endpoints."""
 
     source = app.openapi()
-    paths = _selected_paths(
+    paths = selected_openapi_paths(
         source,
         AGENT_V13_ASYNC_MEDICATION_PATHS,
     )
@@ -115,7 +118,7 @@ def build_agent_v13_async_medication_openapi(
             ),
         },
         "paths": paths,
-        "components": _components(source, schemas),
+        "components": openapi_components(source, schemas),
         "x-contract-scope": {
             "contract_version": "1.3",
             "public_id_suffix": "16 lowercase hexadecimal characters",
@@ -151,22 +154,6 @@ def install_agent_v13_openapi(app: FastAPI) -> None:
     app.openapi = contract_aware_openapi
 
 
-def _selected_paths(
-    source: dict[str, Any],
-    required_paths: tuple[str, ...],
-) -> dict[str, Any]:
-    available = source.get("paths", {})
-    missing = [path for path in required_paths if path not in available]
-    if missing:
-        raise KeyError(
-            "missing_v13_openapi_paths:" + ",".join(missing)
-        )
-    return {
-        path: deepcopy(available[path])
-        for path in required_paths
-    }
-
-
 def _remove_v13_validation_responses(
     paths: dict[str, Any],
 ) -> None:
@@ -178,15 +165,3 @@ def _remove_v13_validation_responses(
         )
         if isinstance(responses, dict):
             responses.pop("422", None)
-
-
-def _components(
-    source: dict[str, Any],
-    schemas: dict[str, Any],
-) -> dict[str, Any]:
-    return {
-        "schemas": schemas,
-        "securitySchemes": deepcopy(
-            source.get("components", {}).get("securitySchemes", {})
-        ),
-    }

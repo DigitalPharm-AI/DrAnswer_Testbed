@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from agent_app.integration.write_state import canonical_payload_hash
 from agent_app.persistence.models import AgentPendingAction
+from shared.json_utils import canonical_json
 from shared.settings import Settings, get_settings
 from shared.time_utils import utc_now
 
@@ -48,7 +49,7 @@ class ApprovalEncryptionContext:
     action_fingerprint: str
 
     def associated_data(self) -> bytes:
-        return _canonical_json(asdict(self)).encode("utf-8")
+        return canonical_json(asdict(self)).encode("utf-8")
 
 
 class InternalApprovalCipher:
@@ -76,7 +77,7 @@ class InternalApprovalCipher:
     def payload_digest(self, payload: dict[str, Any]) -> str:
         return self._digest(
             b"agent-approval-payload-v1\0"
-            + _canonical_json(payload).encode("utf-8")
+            + canonical_json(payload).encode("utf-8")
         )
 
     def capability_key(
@@ -113,7 +114,7 @@ class InternalApprovalCipher:
         nonce = os.urandom(12)
         ciphertext = self._cipher.encrypt(
             nonce,
-            _canonical_json(payload).encode("utf-8"),
+            canonical_json(payload).encode("utf-8"),
             context.associated_data(),
         )
         return "v1." + base64.urlsafe_b64encode(
@@ -762,14 +763,4 @@ def _looks_like_approval_card(source_message: dict[str, Any]) -> bool:
         selections.intersection(
             {"기록", "수정", "삭제", "변경", "유지", "적용", "변경 적용"}
         )
-    )
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
     )

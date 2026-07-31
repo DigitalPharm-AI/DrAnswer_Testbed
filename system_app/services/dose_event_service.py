@@ -447,12 +447,3 @@ def mark_dose_taken_command(session: Session, dose_event_id: int, taken_at: date
     clear_missed_dose_flag_after_taken(session, event, taken_at=event.taken_at)
     session.flush()
     return event
-
-
-def mark_dose_taken(session: Session, dose_event_id: int, taken_at: datetime | None = None) -> DoseEvent | None:
-    event = mark_dose_taken_command(session, dose_event_id, taken_at=taken_at)
-    if event is None:
-        return None
-    session.commit()
-    session.refresh(event)
-    return event

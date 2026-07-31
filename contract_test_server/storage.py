@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from sqlalchemy import Engine, text

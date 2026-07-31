@@ -62,6 +62,7 @@ from agent_app.observability.model_calls import (
 )
 from agent_app.persistence.trace_store import AgentTraceStore
 from agent_app.security import require_agent_sync_bearer_token
+from agent_app.streaming import publish_agent_text_with
 from agent_app.tools.backend_query import (
     BackendChatMessageNotFound,
     BackendQueryTools,
@@ -905,7 +906,10 @@ def _stream_chat_response(
     async def run_chat() -> None:
         model_call_observations: list[dict[str, Any]] = []
         try:
-            with capture_model_calls(model_call_observations):
+            with (
+                capture_model_calls(model_call_observations),
+                publish_agent_text_with(publish_text),
+            ):
                 agent_response, external_response = (
                     await asyncio.wait_for(
                         _invoke_sync_chat_contract(

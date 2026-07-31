@@ -340,10 +340,11 @@ class BackendSyncWriteTools:
         except BackendV13ResponseError as exc:
             error_response = exc.error_response
             if error_response is None:
+                failure_code = type(exc).__name__
                 await anyio.to_thread.run_sync(
                     lambda: self.state_store.record_transport_failure(
                         request_id,
-                        error_code=type(exc).__name__,
+                        error_code=failure_code,
                     )
                 )
                 await anyio.to_thread.run_sync(
@@ -354,10 +355,11 @@ class BackendSyncWriteTools:
                 raise
             response_body = error_response.model_dump(mode="json")
             error_code = error_response.error.code
+            status_code = exc.status_code or 500
             stored = await anyio.to_thread.run_sync(
                 lambda: self.state_store.record_response(
                     request_id,
-                    status_code=exc.status_code or 500,
+                    status_code=status_code,
                     body=response_body,
                     terminal=not error_response.error.retryable,
                     error_code=error_code,
@@ -375,17 +377,18 @@ class BackendSyncWriteTools:
                         context.approval_key,
                         result=response_body,
                     )
-                )
+            )
             return _tool_result_from_response_body(
                 tool_name,
                 request_id,
                 stored.response_body or response_body,
             )
         except Exception as exc:
+            failure_code = type(exc).__name__
             await anyio.to_thread.run_sync(
                 lambda: self.state_store.record_transport_failure(
                     request_id,
-                    error_code=type(exc).__name__,
+                    error_code=failure_code,
                 )
             )
             await anyio.to_thread.run_sync(

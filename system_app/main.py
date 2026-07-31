@@ -40,7 +40,7 @@ from shared.backend_v13_contracts import (
     ContractError,
 )
 from shared.contract_errors import contract_error_definition
-from shared.public_ids import is_public_id
+from shared.public_ids import request_id_from_body
 
 agent_client = AgentClient()
 _APP_DIR = Path(__file__).parent
@@ -196,7 +196,7 @@ def create_app() -> FastAPI:
             )
             definition = contract_error_definition(code)
             body = CommonErrorResponse(
-                request_id=_request_id_from_body(exc.body),
+                request_id=request_id_from_body(exc.body),
                 error=ContractError(
                     code=code,
                     message=definition.message,
@@ -229,7 +229,7 @@ def create_app() -> FastAPI:
         )
         definition = contract_error_definition(code)
         return _backend_v13_error_response(
-            request_id=_request_id_from_body(exc.body),
+            request_id=request_id_from_body(exc.body),
             status_code=definition.status_code,
             code=code,
             message=definition.message,
@@ -385,15 +385,6 @@ def _backend_v13_error_response(
     )
 
 
-def _request_id_from_body(body: Any) -> str | None:
-    if not isinstance(body, dict):
-        return None
-    value = body.get("request_id")
-    if not isinstance(value, str):
-        return None
-    return value if is_public_id(value, "request") else None
-
-
 _RECORD_BUSINESS_VALIDATION_MARKERS = (
     "create_record_id_and_expected_version_must_be_null",
     "create_payload_required",
@@ -486,7 +477,7 @@ async def _request_id_from_request(request: Request) -> str | None:
         body = await request.json()
     except (ValueError, RuntimeError):
         return None
-    return _request_id_from_body(body)
+    return request_id_from_body(body)
 
 
 app = create_app()

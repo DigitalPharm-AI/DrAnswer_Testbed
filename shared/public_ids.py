@@ -122,6 +122,15 @@ def is_public_id(value: str, kind: PublicIdKind) -> bool:
     return PUBLIC_ID_PATTERNS[kind].fullmatch(value) is not None
 
 
+def request_id_from_body(body: object) -> str | None:
+    if not isinstance(body, dict):
+        return None
+    value = body.get("request_id")
+    if not isinstance(value, str):
+        return None
+    return value if is_public_id(value, "request") else None
+
+
 def require_public_id(value: str, kind: PublicIdKind) -> str:
     if not is_public_id(value, kind):
         raise ValueError(f"invalid_{kind}_id")

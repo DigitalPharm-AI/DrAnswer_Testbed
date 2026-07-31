@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -11,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from agent_app.persistence.models import AgentBackendWriteRequest
-from shared.json_utils import dump_json, parse_json_object
+from shared.json_utils import dump_json, parse_json_object, sha256_json
 from shared.time_utils import utc_now
 
 PREPARED = "PREPARED"
@@ -46,14 +44,7 @@ class BackendWriteState:
 
 
 def canonical_payload_hash(value: Any) -> str:
-    canonical = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(canonical).hexdigest()
+    return sha256_json(value)
 
 
 class BackendWriteStateStore:

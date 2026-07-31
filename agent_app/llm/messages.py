@@ -381,6 +381,28 @@ def public_text_from_ai_message(message: AIMessage) -> str:
     return "".join(chunks).strip()
 
 
+def public_text_delta_from_ai_message(message: AIMessage) -> str:
+    """Return one streamed public-text delta without trimming whitespace."""
+
+    content = message.content
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+
+    chunks: list[str] = []
+    for item in content:
+        if isinstance(item, str):
+            chunks.append(item)
+        elif (
+            isinstance(item, dict)
+            and item.get("type") == "text"
+            and item.get("text") is not None
+        ):
+            chunks.append(str(item["text"]))
+    return "".join(chunks)
+
+
 def model_output_with_tool_calls(
     model_output: dict[str, Any],
     tool_calls: list[dict[str, Any]],

@@ -47,7 +47,7 @@ from shared.schemas import (
     AgentAsyncTaskActionRequest,
 )
 from shared.settings import get_settings
-from shared.time_utils import utc_now
+from shared.time_utils import as_aware_utc, utc_now
 
 router = APIRouter()
 MISSED_DOSE_EVENT_PATH = "/agent/async/missed-dose-events"
@@ -360,7 +360,7 @@ def _enqueue_agent_task(
         request_id=request_id,
         task_type=task_type,
         status="accepted" if created else "duplicate",
-        accepted_at=_aware_utc(task.accepted_at),
+        accepted_at=as_aware_utc(task.accepted_at),
     )
 
 

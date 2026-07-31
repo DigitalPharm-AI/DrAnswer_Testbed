@@ -8,7 +8,7 @@ import json
 import os
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
-from typing import Any, Literal
+from typing import Any
 from uuid import uuid4
 
 from cryptography.exceptions import InvalidTag
@@ -20,6 +20,7 @@ from agent_app.persistence.models import AgentPendingSelection
 from shared.backend_v13_contracts import (
     NutritionMealMutationPayload,
 )
+from shared.json_utils import canonical_json
 from shared.schemas import AgentResponse
 from shared.settings import Settings
 from shared.time_utils import utc_now
@@ -60,7 +61,7 @@ class SelectionEncryptionContext:
     selection_type: str
 
     def associated_data(self) -> bytes:
-        return _canonical_json(asdict(self)).encode("utf-8")
+        return canonical_json(asdict(self)).encode("utf-8")
 
 
 class SelectionStateCipher:
@@ -106,7 +107,7 @@ class SelectionStateCipher:
     def payload_digest(self, payload: dict[str, Any]) -> str:
         return self._digest(
             b"agent-food-selection-payload-v1\0"
-            + _canonical_json(payload).encode("utf-8")
+            + canonical_json(payload).encode("utf-8")
         )
 
     def selected_value_digest(self, value: str) -> str:
@@ -124,7 +125,7 @@ class SelectionStateCipher:
         nonce = os.urandom(12)
         ciphertext = self._cipher.encrypt(
             nonce,
-            _canonical_json(payload).encode("utf-8"),
+            canonical_json(payload).encode("utf-8"),
             context.associated_data(),
         )
         return "v1." + base64.urlsafe_b64encode(
@@ -620,13 +621,3 @@ def _state_candidates(
         for candidate in raw
         if isinstance(candidate, dict)
     ]
-
-
-def _canonical_json(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )

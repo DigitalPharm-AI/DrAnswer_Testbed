@@ -14,7 +14,6 @@ from shared.async_v13_contracts import AsyncEventAccepted
 from shared.settings import get_settings
 from system_app.models import (
     AgentJob,
-    ChatMessage,
     DoseEvent,
     DoseSchedule,
     MedicationPlan,
@@ -23,7 +22,6 @@ from system_app.models import (
 from system_app.services.agent_client import AgentServiceError
 from system_app.services.agent_jobs import FAILED, create_agent_job
 from system_app.services.clock_service import ensure_clock
-from system_app.services.medication_plan_service import create_medication_plan
 from system_app.services.notification_service import create_notification
 from system_app.services.patient_profile_service import ensure_base_data
 from tests.helpers import build_session, build_threadsafe_session_factory

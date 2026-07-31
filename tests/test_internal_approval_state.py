@@ -6,7 +6,6 @@ import pytest
 from sqlalchemy import delete, select
 
 from agent_app.integration.approval_state import (
-    APPROVED,
     CANCELLED,
     CONSUMED,
     SENDING,
