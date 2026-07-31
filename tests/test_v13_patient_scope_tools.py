@@ -5,8 +5,14 @@ from datetime import UTC, date, datetime
 import pytest
 from pydantic import ValidationError
 
-from shared.tool_catalog import ToolCatalog
 from agent_app.tools.mcp_server import AgentMcpToolServer
+from agent_app.tools.protocol import tool_result_from_mcp_result
+from shared.backend_v13_contracts import (
+    RecordChangeResponse,
+    RecordChangeResult,
+)
+from shared.schemas import AEProCtcaeAssessmentRequest
+from shared.tool_catalog import ToolCatalog
 from shared.tool_names import (
     ALL_TOOL_NAMES,
     CREATE_MEDICATION_SIDE_EFFECT_RECORD,
@@ -24,12 +30,6 @@ from shared.tool_names import (
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
 )
 from shared.tool_permissions import TOOL_ALLOWLIST, validate_tool_permission
-from agent_app.tools.protocol import tool_result_from_mcp_result
-from shared.backend_v13_contracts import (
-    RecordChangeResponse,
-    RecordChangeResult,
-)
-from shared.schemas import AEProCtcaeAssessmentRequest
 
 PATIENT_A = "patient_0000000000000001"
 PATIENT_B = "patient_0000000000000002"
@@ -367,7 +367,7 @@ async def test_v13_cross_patient_argument_is_denied_and_trusted_patient_reaches_
         (
             SEARCH_NUTRITION_FOOD_CANDIDATES,
             "nutrition_recommendation_agent",
-            {"query": "rice"},
+            {"food_queries": ["rice"]},
         ),
         (
             GET_NUTRITION_MEAL_RECORD_LIST,
@@ -458,7 +458,10 @@ async def test_v13_food_search_rejects_patient_override_and_does_not_forward_it(
     forged = await _execute(
         server,
         tool_name=SEARCH_NUTRITION_FOOD_CANDIDATES,
-        arguments={"query": "rice", "patient_id": PATIENT_B},
+        arguments={
+            "food_queries": ["rice"],
+            "patient_id": PATIENT_B,
+        },
         source_event_type="nutrition_recommendation_agent",
     )
 
@@ -469,17 +472,32 @@ async def test_v13_food_search_rejects_patient_override_and_does_not_forward_it(
     allowed = await _execute(
         server,
         tool_name=SEARCH_NUTRITION_FOOD_CANDIDATES,
-        arguments={"query": "rice"},
+        arguments={
+            "food_queries": ["rice", "RICE", "egg"],
+            "limit_per_query": 4,
+        },
         source_event_type="nutrition_recommendation_agent",
     )
 
     assert allowed.status == "success"
+    assert [
+        group["query"]
+        for group in allowed.response["search_groups"]
+    ] == ["rice", "egg"]
+    assert allowed.response["limit_per_query"] == 4
     assert queries.calls == [
         (
             "search_food_candidates",
             {
                 "query": "rice",
-                "limit": 6,
+                "limit": 4,
+            },
+        ),
+        (
+            "search_food_candidates",
+            {
+                "query": "egg",
+                "limit": 4,
             },
         )
     ]

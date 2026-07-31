@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+from shared.schemas import ToolCallResult
 from shared.tool_names import (
     BACKEND_V13_SYNC_WRITE_TOOLS,
     CHANGE_NOTIFICATION_POLICY,
@@ -41,7 +42,6 @@ from shared.tool_names import (
     UPDATE_NUTRITION_MEAL_RECORD,
     UPSERT_NUTRITION_PREFERENCE_FACT,
 )
-from shared.schemas import ToolCallResult
 
 HIGH_RISK_HUMAN_HANDOFF_TOOLS = POLICY_TOOLS
 
@@ -183,8 +183,42 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
             return f"{GET_MEDICATION_DOSE_STATUS} requires supported status"
     if tool_name == GET_PRO_CTCAE_QUESTIONNAIRE and not str(arguments.get("symptom_text") or "").strip():
         return f"{GET_PRO_CTCAE_QUESTIONNAIRE} requires symptom_text"
-    if tool_name == SEARCH_NUTRITION_FOOD_CANDIDATES and not str(arguments.get("query") or "").strip():
-        return f"{SEARCH_NUTRITION_FOOD_CANDIDATES} requires query"
+    if tool_name == SEARCH_NUTRITION_FOOD_CANDIDATES:
+        food_queries = arguments.get("food_queries")
+        if (
+            not isinstance(food_queries, list)
+            or not 1 <= len(food_queries) <= 8
+            or any(
+                not isinstance(query, str)
+                or not query.strip()
+                or len(query.strip()) > 100
+                for query in food_queries
+            )
+            or len(
+                {
+                    query.strip()
+                    for query in food_queries
+                    if isinstance(query, str)
+                }
+            )
+            != len(food_queries)
+        ):
+            return (
+                f"{SEARCH_NUTRITION_FOOD_CANDIDATES} requires "
+                "1 to 8 unique food_queries"
+            )
+        limit_per_query = arguments.get("limit_per_query")
+        if (
+            limit_per_query is not None
+            and not _valid_positive_int(
+                limit_per_query,
+                maximum=20,
+            )
+        ):
+            return (
+                f"{SEARCH_NUTRITION_FOOD_CANDIDATES} requires "
+                "limit_per_query between 1 and 20"
+            )
     if tool_name == SEARCH_NUTRITION_FOOD_CANDIDATES and arguments.get("meal_type") not in {None, "", "breakfast", "lunch", "dinner", "snack"}:
         return f"{SEARCH_NUTRITION_FOOD_CANDIDATES} requires supported meal_type"
     if tool_name == CREATE_NUTRITION_MEAL_RECORD:

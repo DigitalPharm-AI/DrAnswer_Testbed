@@ -446,10 +446,27 @@ def _external_message(response: AgentResponse) -> tuple[ChatMessageType, ChatMes
 
     selections = _candidate_selections(structured)
     if selections:
+        progress = structured.get(
+            "food_selection_progress"
+        )
+        title = "항목 선택"
+        if isinstance(progress, dict):
+            current_group = progress.get("current_group")
+            total_groups = progress.get("total_groups")
+            if (
+                isinstance(current_group, int)
+                and isinstance(total_groups, int)
+                and total_groups > 1
+                and 1 <= current_group <= total_groups
+            ):
+                title = (
+                    f"항목 선택 ({current_group}/"
+                    f"{total_groups})"
+                )
         return (
             "selection_box",
             ChatMessageContent(
-                message_title="항목 선택",
+                message_title=title,
                 text=response.human_summary,
                 tables=None,
                 selections=selections,

@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from agent_app.tools.side_effects import side_effect_pro_ctcae_summary
+from shared.redaction import redact_for_logging, redacted_clinical_text_label
+from shared.schemas import ToolCallResult
 from shared.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
@@ -24,8 +26,6 @@ from shared.tool_names import (
     UPDATE_NUTRITION_MEAL_RECORD,
     UPSERT_NUTRITION_PREFERENCE_FACT,
 )
-from shared.redaction import redact_for_logging, redacted_clinical_text_label
-from shared.schemas import ToolCallResult
 
 
 def public_tool_calls(
@@ -87,18 +87,71 @@ def tool_calls_payload(tool_calls: list[dict[str, Any]], results: list[ToolCallR
         elif result.tool_name == GET_NUTRITION_MEAL_RECORD_LIST and result.status == "success":
             payload["nutrition_meals"] = result.response.get("meals", [])
         elif result.tool_name == SEARCH_NUTRITION_FOOD_CANDIDATES and result.status == "success":
-            meal_type = _valid_meal_type(result.response.get("meal_type") or call_arguments.get("meal_type"))
-            search_entry = {
-                "query": result.response.get("query", ""),
-                "candidates": result.response.get("candidates", []),
-                "meal_type": meal_type,
-                "limit": result.response.get("limit") or call_arguments.get("limit") or 6,
-            }
+            meal_type = _valid_meal_type(
+                result.response.get("meal_type")
+                or call_arguments.get("meal_type")
+            )
+            raw_groups = result.response.get("search_groups")
+            if not isinstance(raw_groups, list):
+                raw_groups = [
+                    {
+                        "query": result.response.get("query", ""),
+                        "candidates": result.response.get(
+                            "candidates",
+                            [],
+                        ),
+                    }
+                ]
             if "food_searches" not in payload:
                 payload["food_searches"] = []
-            payload["food_searches"].append(search_entry)
-            # 단일 검색 호환성 유지 (마지막 검색 결과)
-            payload["food_candidates"] = result.response.get("candidates", [])
+            new_search_entries = []
+            for group in raw_groups:
+                if not isinstance(group, dict):
+                    continue
+                candidates = group.get("candidates")
+                if not isinstance(candidates, list):
+                    continue
+                search_entry = {
+                    "query": group.get("query", ""),
+                    "candidates": candidates,
+                    "meal_type": meal_type,
+                    "limit": (
+                        result.response.get(
+                            "limit_per_query"
+                        )
+                        or call_arguments.get(
+                            "limit_per_query"
+                        )
+                        or 6
+                    ),
+                }
+                new_search_entries.append(search_entry)
+            payload["food_searches"].extend(
+                new_search_entries
+            )
+            if (
+                new_search_entries
+                and all(
+                    entry["candidates"]
+                    for entry in new_search_entries
+                )
+                and "food_candidates" not in payload
+            ):
+                # The external contract renders one selection_box at
+                # a time. Keep the first group as the current card;
+                # the Agent DB owns the remaining ordered groups.
+                payload["food_candidates"] = (
+                    new_search_entries[0]["candidates"]
+                )
+                payload["food_selection_progress"] = {
+                    "current_group": 1,
+                    "total_groups": len(
+                        new_search_entries
+                    ),
+                    "query": new_search_entries[0][
+                        "query"
+                    ],
+                }
         elif result.tool_name == UPSERT_NUTRITION_PREFERENCE_FACT and result.status == "success":
             payload["nutrition_preference_result"] = result.response
         elif result.tool_name == GET_NUTRITION_PREFERENCE_SUMMARY and result.status == "success":

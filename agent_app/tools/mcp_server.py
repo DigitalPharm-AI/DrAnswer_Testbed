@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import unicodedata
 from datetime import date, datetime
 from time import perf_counter
 from typing import Any
 
-import httpx
 import anyio
+import httpx
 
 from agent_app import trace_logging
 from agent_app.ae_pro_ctcae import (
@@ -17,27 +18,46 @@ from agent_app.integration.backend_client import (
     BackendV13ResponseError,
     BackendV13TransportError,
 )
-from shared.backend_v13_contracts import ProCtcaeSeverityResult
-from shared.tool_confirmations import ConfirmationActionRegistry
 from agent_app.llm.context import context_value
-from shared.tool_catalog import ToolCatalog
 from agent_app.tools.backend_query import BackendQueryTools
+from agent_app.tools.backend_write import (
+    MODEL_WRITE_ARGUMENTS,
+    BackendSyncWriteTools,
+    BackendWriteInvocationContext,
+    is_backend_v13_sync_write,
+)
 from agent_app.tools.medication_side_effects import (
     assess_side_effect_from_snapshot,
     side_effect_record_draft_from_snapshot,
 )
-from agent_app.tools.backend_write import (
-    BackendSyncWriteTools,
-    BackendWriteInvocationContext,
-    MODEL_WRITE_ARGUMENTS,
-    is_backend_v13_sync_write,
+from agent_app.tools.policy import DEFERRED_POLICY_TOOL_NAMES, deferred_policy_tool_result
+from agent_app.tools.protocol import (
+    ALLOWED_TOOL_NAMES,
+    MCP_METHOD_TOOLS_CALL,
+    MCP_METHOD_TOOLS_LIST,
+    mcp_error_response,
+    mcp_result_from_tool_result,
+    mcp_success_response,
+    mcp_tools_list,
+    safe_tool_error,
 )
+from shared.backend_v13_contracts import ProCtcaeSeverityResult
+from shared.redaction import safe_exception_summary
+from shared.schemas import (
+    AEProCtcaeAssessmentRequest,
+    MedicationDoseStatusResult,
+    SideEffectHistoryResult,
+    ToolCallResult,
+)
+from shared.settings import get_settings
+from shared.tool_catalog import ToolCatalog
+from shared.tool_confirmations import ConfirmationActionRegistry
 from shared.tool_names import (
     CHANGE_NOTIFICATION_POLICY,
+    CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
     DELETE_NUTRITION_MEAL_RECORD,
-    CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     GET_MEDICATION_DOSE_STATUS,
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     GET_NOTIFICATION_POLICIES,
@@ -56,25 +76,6 @@ from shared.tool_names import (
     UPSERT_NUTRITION_PREFERENCE_FACT,
 )
 from shared.tool_permissions import allowed_tool_names_for_source, permission_denied_result, validate_tool_permission
-from agent_app.tools.policy import DEFERRED_POLICY_TOOL_NAMES, deferred_policy_tool_result
-from agent_app.tools.protocol import (
-    ALLOWED_TOOL_NAMES,
-    MCP_METHOD_TOOLS_CALL,
-    MCP_METHOD_TOOLS_LIST,
-    mcp_error_response,
-    mcp_result_from_tool_result,
-    mcp_success_response,
-    mcp_tools_list,
-    safe_tool_error,
-)
-from shared.redaction import safe_exception_summary
-from shared.schemas import (
-    AEProCtcaeAssessmentRequest,
-    MedicationDoseStatusResult,
-    SideEffectHistoryResult,
-    ToolCallResult,
-)
-from shared.settings import get_settings
 
 JSON_RPC_INVALID_REQUEST = -32600
 JSON_RPC_METHOD_NOT_FOUND = -32601
@@ -1191,9 +1192,26 @@ class AgentMcpToolServer:
         )
 
     async def _search_nutrition_food_candidates(self, arguments: dict[str, Any], *, trace_id: str, payload: dict[str, Any]) -> ToolCallResult:
+        raw_queries = arguments.get("food_queries")
+        food_queries: list[str] = []
+        seen_queries: set[str] = set()
+        if isinstance(raw_queries, list):
+            for query in raw_queries:
+                text = str(query).strip()
+                normalized = unicodedata.normalize(
+                    "NFKC",
+                    text,
+                ).casefold()
+                if not text or normalized in seen_queries:
+                    continue
+                seen_queries.add(normalized)
+                food_queries.append(text)
         request_payload = {
-            "query": arguments.get("query", ""),
-            "limit": arguments.get("limit", 6),
+            "food_queries": food_queries,
+            "limit_per_query": arguments.get(
+                "limit_per_query",
+                6,
+            ),
             "patient_id": self._patient_id_for_tool(arguments, payload),
             "meal_type": arguments.get("meal_type"),
         }
@@ -1202,12 +1220,49 @@ class AgentMcpToolServer:
                 SEARCH_NUTRITION_FOOD_CANDIDATES,
                 trace_id=trace_id,
             )
-        result = await anyio.to_thread.run_sync(
-            lambda: self.backend_queries.search_food_candidates(
-                query=str(request_payload["query"]),
-                limit=int(request_payload["limit"]),
+        search_groups = []
+        for query in food_queries:
+            result = await anyio.to_thread.run_sync(
+                lambda query=query: (
+                    self.backend_queries.search_food_candidates(
+                        query=query,
+                        limit=int(
+                            request_payload[
+                                "limit_per_query"
+                            ]
+                        ),
+                    )
+                )
             )
-        )
+            search_groups.append(
+                {
+                    "query": query,
+                    "candidates": result.get(
+                        "candidates",
+                        [],
+                    ),
+                    "match_mode": result.get(
+                        "match_mode",
+                        "none",
+                    ),
+                    "source": result.get(
+                        "source",
+                        "backend_read_db",
+                    ),
+                }
+            )
+        result = {
+            "success": bool(search_groups),
+            "search_groups": search_groups,
+            "food_queries": food_queries,
+            "meal_type": str(
+                request_payload.get("meal_type") or ""
+            ),
+            "limit_per_query": int(
+                request_payload["limit_per_query"]
+            ),
+            "total_groups": len(search_groups),
+        }
         return ToolCallResult(
             tool_name=SEARCH_NUTRITION_FOOD_CANDIDATES,
             status="success" if result.get("success") else "error",

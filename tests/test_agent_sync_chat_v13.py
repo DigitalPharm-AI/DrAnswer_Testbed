@@ -15,24 +15,17 @@ from sqlalchemy.orm import sessionmaker
 from agent_app import main as agent_main
 from agent_app import security as agent_security
 from agent_app.errors import AgentExecutionError
-from shared.chat_contracts import (
-    ChatStreamEvent,
-    ChatSyncRequest,
-    ChatSyncResponse,
-    chat_sync_response,
-)
-from shared.tool_names import CREATE_MEDICATION_SIDE_EFFECT_RECORD
 from agent_app.integration.idempotency import (
     COMPLETED,
     FINAL_FAILED,
     PROCESSING,
     RETRYABLE_FAILED,
-    StoredHttpResponse,
-    StaleSyncRequestAttemptError,
-    SyncRequestClaim,
-    PatientThreadBusyError,
     IdempotencyConflictError,
+    PatientThreadBusyError,
     RequestInProgressError,
+    StaleSyncRequestAttemptError,
+    StoredHttpResponse,
+    SyncRequestClaim,
     SyncRequestGate,
 )
 from agent_app.persistence.db import SessionLocal
@@ -42,8 +35,8 @@ from agent_app.persistence.migrations import (
 )
 from agent_app.persistence.models import (
     AgentAsyncTask,
-    AgentPatientLock,
     AgentFeedbackLink,
+    AgentPatientLock,
     AgentPendingAction,
     AgentPendingSelection,
     AgentProCtcaeSurvey,
@@ -52,10 +45,17 @@ from agent_app.persistence.models import (
     AgentSyncRequest,
     AgentToolExecution,
 )
-from agent_app.persistence.trace_store import AgentTraceStore
 from agent_app.persistence.retention import purge_expired_agent_state
+from agent_app.persistence.trace_store import AgentTraceStore
 from agent_app.routes import chat as chat_routes
+from shared.chat_contracts import (
+    ChatStreamEvent,
+    ChatSyncRequest,
+    ChatSyncResponse,
+    chat_sync_response,
+)
 from shared.schemas import AgentResponse
+from shared.tool_names import CREATE_MEDICATION_SIDE_EFFECT_RECORD
 from tests.helpers import build_agent_engine
 
 NOW = datetime(2026, 7, 25, 10, 30, tzinfo=UTC)
@@ -1852,6 +1852,275 @@ def test_food_selection_reuses_agent_db_candidate_without_search_llm(
             assert state.status == "CONSUMED"
     finally:
         cleanup_request(selection)
+        cleanup_request(initial)
+
+
+def test_food_selection_batch_uses_sequential_cards_and_one_approval(
+    monkeypatch,
+) -> None:
+    patient_id = "patient_0000000000000711"
+    initial = chat_request(
+        patient_id=patient_id,
+        message=(
+            "오늘 아침에 토스트와 삶은 계란을 "
+            "먹었는데 기록해줘"
+        ),
+    )
+    first_selection = chat_request(
+        patient_id=patient_id,
+        message="토스트(식빵)",
+        requested_return_type="selection_box",
+    )
+    second_selection = chat_request(
+        patient_id=patient_id,
+        message="달걀_삶은 달걀",
+        requested_return_type="selection_box",
+    )
+    toast = {
+        "food_ref_id": "food-toast",
+        "food_name": "토스트(식빵)",
+        "portion": "1장",
+        "nutrients": {"calories": 120.0},
+    }
+    egg = {
+        "food_ref_id": "food-egg",
+        "food_name": "달걀_삶은 달걀",
+        "portion": "1개",
+        "nutrients": {
+            "calories": 75.0,
+            "protein": 6.0,
+        },
+    }
+
+    class BatchSelectionBackendQueries(
+        StubBackendQueryTools
+    ):
+        def validate_chat_message(
+            self,
+            payload: ChatSyncRequest,
+        ) -> dict:
+            base = super().validate_chat_message(payload)
+            if payload.message_id == first_selection.message_id:
+                base["structured_response_context"] = {
+                    "kind": "structured_chat_response",
+                    "response_type": "selection_box",
+                    "response_value": payload.message,
+                    "source_message_id": (
+                        "assistant_msg_0000000000000711"
+                    ),
+                    "originating_user_message_id": (
+                        initial.message_id
+                    ),
+                    "source_message": {
+                        "message_type": "selection_box",
+                        "message": {
+                            "message_title": (
+                                "항목 선택 (1/2)"
+                            ),
+                            "text": (
+                                "토스트 후보를 선택해 주세요."
+                            ),
+                            "selections": [
+                                "토스트(식빵)"
+                            ],
+                        },
+                    },
+                }
+            elif (
+                payload.message_id
+                == second_selection.message_id
+            ):
+                base["structured_response_context"] = {
+                    "kind": "structured_chat_response",
+                    "response_type": "selection_box",
+                    "response_value": payload.message,
+                    "source_message_id": (
+                        "assistant_msg_0000000000000712"
+                    ),
+                    "originating_user_message_id": (
+                        first_selection.message_id
+                    ),
+                    "source_message": {
+                        "message_type": "selection_box",
+                        "message": {
+                            "message_title": (
+                                "항목 선택 (2/2)"
+                            ),
+                            "text": (
+                                "삶은 계란 후보를 "
+                                "선택해 주세요."
+                            ),
+                            "selections": [
+                                "달걀_삶은 달걀"
+                            ],
+                        },
+                    },
+                }
+            return base
+
+    class BatchSelectionOrchestrator:
+        def __init__(self) -> None:
+            self.invoke_count = 0
+            self.continuations: list[dict] = []
+
+        async def invoke(
+            self,
+            request_kind: str,
+            payload: dict,
+            *,
+            trace_id: str | None = None,
+        ) -> AgentResponse:
+            self.invoke_count += 1
+            return agent_response(
+                trace_id=trace_id or "",
+                summary="음식 후보를 차례대로 선택해 주세요.",
+                structured_payload={
+                    "food_candidates": [toast],
+                    "food_selection_progress": {
+                        "current_group": 1,
+                        "total_groups": 2,
+                        "query": "토스트",
+                    },
+                    "food_searches": [
+                        {
+                            "query": "토스트",
+                            "meal_type": "breakfast",
+                            "candidates": [toast],
+                        },
+                        {
+                            "query": "삶은 계란",
+                            "meal_type": "breakfast",
+                            "candidates": [egg],
+                        },
+                    ],
+                },
+            )
+
+        async def continue_nutrition_food_selection(
+            self,
+            *,
+            trace_id: str,
+            payload: dict,
+            record_arguments: dict,
+            selection_id: str,
+            origin_message_id: str,
+        ) -> AgentResponse:
+            self.continuations.append(
+                {
+                    "record_arguments": record_arguments,
+                    "selection_id": selection_id,
+                    "origin_message_id": origin_message_id,
+                }
+            )
+            return agent_response(
+                trace_id=trace_id,
+                summary=(
+                    "아침 토스트(식빵), 달걀_삶은 "
+                    "달걀 식사 내용을 기록할까요?"
+                ),
+                structured_payload={
+                    "mutation_confirmation_required": True,
+                    "mutation_confirmation": {
+                        "confirmation_required": True,
+                        "action_type": "agent_tool",
+                        "action_name": (
+                            "create_nutrition_meal_record"
+                        ),
+                        "status": "pending",
+                        "display": {
+                            "title": "식사 기록",
+                            "question": (
+                                "아침 토스트(식빵), "
+                                "달걀_삶은 달걀 식사를 "
+                                "기록할까요?"
+                            ),
+                            "action_label": "기록",
+                        },
+                    },
+                },
+            )
+
+    orchestrator = BatchSelectionOrchestrator()
+    monkeypatch.setattr(
+        chat_routes,
+        "_backend_query_tools_getter",
+        lambda: BatchSelectionBackendQueries(),
+    )
+    monkeypatch.setattr(
+        agent_main,
+        "orchestrator",
+        orchestrator,
+    )
+    try:
+        with TestClient(agent_main.app) as client:
+            initial_response = client.post(
+                "/agent/sync/chat",
+                json=initial.model_dump(mode="json"),
+                headers=SYNC_HEADERS,
+            )
+            first_response = client.post(
+                "/agent/sync/chat",
+                json=first_selection.model_dump(mode="json"),
+                headers=SYNC_HEADERS,
+            )
+            final_response = client.post(
+                "/agent/sync/chat",
+                json=second_selection.model_dump(mode="json"),
+                headers=SYNC_HEADERS,
+            )
+
+        first_card = ndjson_events(initial_response)[-1]
+        second_card = ndjson_events(first_response)[-1]
+        approval_card = ndjson_events(final_response)[-1]
+        assert first_card.message is not None
+        assert first_card.message.message_title == (
+            "항목 선택 (1/2)"
+        )
+        assert first_card.message.selections == [
+            "토스트(식빵)"
+        ]
+        assert second_card.message is not None
+        assert second_card.message.message_title == (
+            "항목 선택 (2/2)"
+        )
+        assert second_card.message.selections == [
+            "달걀_삶은 달걀"
+        ]
+        assert approval_card.message is not None
+        assert approval_card.message.selections == [
+            "기록",
+            "취소",
+        ]
+        assert orchestrator.invoke_count == 1
+        assert len(orchestrator.continuations) == 1
+        assert orchestrator.continuations[0][
+            "record_arguments"
+        ] == {
+            "meal_type": "breakfast",
+            "meal_date": "2026-07-25",
+            "foods": [
+                {
+                    "food_ref_id": "food-toast",
+                    "food_name": "토스트(식빵)",
+                    "portion": "1장",
+                    "nutrients": {
+                        "calories": 120.0,
+                    },
+                },
+                {
+                    "food_ref_id": "food-egg",
+                    "food_name": "달걀_삶은 달걀",
+                    "portion": "1개",
+                    "nutrients": {
+                        "calories": 75.0,
+                        "protein": 6.0,
+                    },
+                },
+            ],
+        }
+    finally:
+        cleanup_request(second_selection)
+        cleanup_request(first_selection)
         cleanup_request(initial)
 
 

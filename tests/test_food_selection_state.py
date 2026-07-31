@@ -186,3 +186,116 @@ def test_food_selection_rejects_value_outside_original_card() -> None:
             ),
             submitted_value="존재하지 않는 음식",
         )
+
+
+def test_food_selection_batch_advances_and_combines_foods() -> None:
+    store = FoodSelectionStateStore(
+        SessionLocal,
+        settings=get_settings(),
+    )
+    first_candidates = [
+        {
+            "food_ref_id": "food-toast",
+            "food_name": "토스트(식빵)",
+            "portion": "1장",
+            "nutrients": {"calories": 120.0},
+        }
+    ]
+    second_candidates = [
+        {
+            "food_ref_id": "food-egg",
+            "food_name": "달걀_삶은 달걀",
+            "portion": "1개",
+            "nutrients": {
+                "calories": 75.0,
+                "protein": 6.0,
+            },
+        }
+    ]
+    response = AgentResponse(
+        trace_id="trace-food-selection-batch",
+        agent_name="multiturn_chat_agent",
+        prompt_version_id="test",
+        decision_type="tool_call",
+        structured_payload={
+            "food_candidates": first_candidates,
+            "food_searches": [
+                {
+                    "query": "토스트",
+                    "meal_type": "breakfast",
+                    "candidates": first_candidates,
+                },
+                {
+                    "query": "삶은 계란",
+                    "meal_type": "breakfast",
+                    "candidates": second_candidates,
+                },
+            ],
+        },
+        human_summary="음식 후보를 선택해 주세요.",
+    )
+    prepared = store.prepare_from_agent_response(
+        patient_id=PATIENT_ID,
+        origin_message_id=ORIGIN_MESSAGE_ID,
+        source_chat_request_id=SOURCE_REQUEST_ID,
+        trace_id="trace-food-selection-batch",
+        message_at=MESSAGE_AT,
+        response=response,
+    )
+    assert prepared is not None
+
+    first_transition = store.resolve(
+        patient_id=PATIENT_ID,
+        current_user_message_id=RESPONSE_MESSAGE_ID,
+        originating_user_message_id=ORIGIN_MESSAGE_ID,
+        submitted_value="토스트(식빵)",
+    )
+    assert first_transition is not None
+    assert first_transition.kind == "next_selection"
+    assert first_transition.next_query == "삶은 계란"
+    assert first_transition.next_group_number == 2
+    assert first_transition.total_groups == 2
+    with pytest.raises(
+        SelectionStateError,
+        match="food_selection_batch_not_completed",
+    ):
+        first_transition.record_arguments()
+
+    final_message_id = "user_msg_0000000000000703"
+    completed = store.resolve(
+        patient_id=PATIENT_ID,
+        current_user_message_id=final_message_id,
+        originating_user_message_id=RESPONSE_MESSAGE_ID,
+        submitted_value="달걀_삶은 달걀",
+    )
+    assert completed is not None
+    assert completed.kind == "completed"
+    assert completed.record_arguments() == {
+        "meal_type": "breakfast",
+        "meal_date": "2026-04-20",
+        "foods": [
+            {
+                "food_ref_id": "food-toast",
+                "food_name": "토스트(식빵)",
+                "portion": "1장",
+                "nutrients": {
+                    "calories": 120.0,
+                },
+            },
+            {
+                "food_ref_id": "food-egg",
+                "food_name": "달걀_삶은 달걀",
+                "portion": "1개",
+                "nutrients": {
+                    "calories": 75.0,
+                    "protein": 6.0,
+                },
+            },
+        ],
+    }
+
+    store.consume(
+        patient_id=PATIENT_ID,
+        origin_message_id=ORIGIN_MESSAGE_ID,
+        current_user_message_id=final_message_id,
+    )

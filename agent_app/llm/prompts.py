@@ -11,11 +11,11 @@ from shared.tool_names import (
     DELETE_NUTRITION_MEAL_RECORD,
     GET_MEDICATION_DOSE_STATUS,
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+    GET_NOTIFICATION_POLICIES,
     GET_NUTRITION_DAILY_SUMMARY,
     GET_NUTRITION_MEAL_RECORD_LIST,
     GET_NUTRITION_PREFERENCE_SUMMARY,
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
-    GET_NOTIFICATION_POLICIES,
     GET_PRO_CTCAE_QUESTIONNAIRE,
     GET_SIDE_EFFECT_HISTORY,
     PROPOSE_NOTIFICATION_POLICY,
@@ -216,10 +216,15 @@ def nutrition_management_agent_prompt() -> str:
         f"{REQUEST_RECORD_APPROVAL} with the target write Tool in action_name and that Tool's business arguments in record_arguments. "
         f"For meal logging, request approval for {CREATE_NUTRITION_MEAL_RECORD} only when meal_type and foods with nutrient values are clear; "
         f"otherwise use {SEARCH_NUTRITION_FOOD_CANDIDATES} or ask one "
-        f"concise clarification. When calling {SEARCH_NUTRITION_FOOD_CANDIDATES} for meal logging, pass limit=6 and pass meal_type if the "
-        "user clearly mentioned breakfast, lunch, dinner, or snack. If the meal type is not clear, omit meal_type. "
-        "Call food search once per distinct food expression stated by the user. Do not create additional synonym, shortened-name, or category searches; "
-        "the Tool owns search expansion and ranking. When context.structured_response_context contains a food candidate-card response, treat "
+        f"concise clarification. Call {SEARCH_NUTRITION_FOOD_CANDIDATES} exactly once for one meal-record request and put every distinct food expression "
+        "stated by the user in food_queries in the same order. Keep a compound dish such as 소고기비빔밥 as one food query instead of splitting it into "
+        "ingredients. Pass limit_per_query=6. For a new meal record, pass meal_type when the user clearly mentioned breakfast, lunch, dinner, or snack; "
+        "if it is not clear, ask one concise meal-type question before calling food search. A replacement search for an existing food may omit meal_type. "
+        "Do not create synonym, shortened-name, or category queries; the Tool owns search expansion, deduplication, and ranking. "
+        "After the batch food search returns candidate groups, never choose a candidate or request record approval yourself. Return one short Korean "
+        "sentence asking the user to select the candidates shown below, then stop; the AI Server deterministically collects one selection per group and "
+        "continues to record approval only after every group is answered. "
+        "When context.structured_response_context contains a food candidate-card response, treat "
         "response_value as the selected food and continue the originating meal-record task instead of returning a generic acknowledgement. "
         f"If the user wants to correct an existing meal, request approval with action_name={UPDATE_NUTRITION_MEAL_RECORD} when the target meal_id and "
         f"replacement fields are clear; otherwise {GET_NUTRITION_MEAL_RECORD_LIST} or ask one concise clarification. If the user wants to remove a "

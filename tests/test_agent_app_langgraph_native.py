@@ -15,11 +15,11 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 import agent_app.main as native_agent_main
-from agent_app.orchestration.delegation import delegation_tools_payload
 from agent_app.agents.multiturn_chat import (
     _normalize_mutation_confirmation_output,
 )
 from agent_app.agents.tool_chat import AGENT_TOOL_LOOP_LIMIT, ToolChatAgentGraph
+from agent_app.errors import AgentExecutionError
 from agent_app.jobs.tasks import DEAD, enqueue_async_task
 from agent_app.llm.messages import (
     ai_message_from_tool_calls,
@@ -27,10 +27,6 @@ from agent_app.llm.messages import (
     langchain_tool_name,
     tool_results_from_messages,
 )
-from agent_app.orchestration.continuation import continuation_type
-from agent_app.errors import AgentExecutionError
-from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
-from agent_app.llm.validation import validate_llm_output
 from agent_app.llm.prompts import (
     medication_agent_prompt,
     multiturn_chat_prompt,
@@ -39,31 +35,16 @@ from agent_app.llm.prompts import (
     nutrition_management_agent_prompt,
     nutrition_recommendation_agent_prompt,
 )
-from agent_app.providers.factory import create_llm_provider
-from agent_app.providers.deterministic_test import DeterministicTestProvider
 from agent_app.llm.responses import missed_dose_hybrid_payload
+from agent_app.llm.validation import validate_llm_output
+from agent_app.orchestration.continuation import continuation_type
+from agent_app.orchestration.delegation import delegation_tools_payload
+from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
+from agent_app.providers.deterministic_test import DeterministicTestProvider
+from agent_app.providers.factory import create_llm_provider
 from agent_app.tools.calling import normalize_tool_calls
-from shared.tool_catalog import ToolCatalog
 from agent_app.tools.executor import McpAgentToolExecutor
 from agent_app.tools.mcp_server import http_status_tool_error_result
-from shared.tool_names import (
-    ALL_TOOL_NAMES,
-    CHANGE_NOTIFICATION_POLICY,
-    CREATE_NUTRITION_MEAL_RECORD,
-    DELEGATION_TOOL_NAMES,
-    GET_MEDICATION_DOSE_STATUS,
-    GET_NUTRITION_RECOMMENDATION_CANDIDATES,
-    GET_SIDE_EFFECT_HISTORY,
-    REQUEST_RECORD_APPROVAL,
-    SOURCE_MCP,
-    SOURCE_MEDICATION_AGENT,
-    SOURCE_MULTITURN_CHAT,
-    SOURCE_NUTRITION_MANAGEMENT_AGENT,
-    SOURCE_NUTRITION_RECOMMENDATION_AGENT,
-    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
-    UPSERT_NUTRITION_PREFERENCE_FACT,
-)
-from shared.tool_permissions import permission_denied_result, validate_tool_permission
 from agent_app.tools.policy import _notification_policy_deltas, deferred_policy_tool_result, is_deferred_policy_tool_call
 from agent_app.tools.protocol import (
     MCP_METHOD_TOOLS_CALL,
@@ -86,6 +67,25 @@ from shared.schemas import (
     ToolCallResult,
 )
 from shared.settings import get_settings
+from shared.tool_catalog import ToolCatalog
+from shared.tool_names import (
+    ALL_TOOL_NAMES,
+    CHANGE_NOTIFICATION_POLICY,
+    CREATE_NUTRITION_MEAL_RECORD,
+    DELEGATION_TOOL_NAMES,
+    GET_MEDICATION_DOSE_STATUS,
+    GET_NUTRITION_RECOMMENDATION_CANDIDATES,
+    GET_SIDE_EFFECT_HISTORY,
+    REQUEST_RECORD_APPROVAL,
+    SOURCE_MCP,
+    SOURCE_MEDICATION_AGENT,
+    SOURCE_MULTITURN_CHAT,
+    SOURCE_NUTRITION_MANAGEMENT_AGENT,
+    SOURCE_NUTRITION_RECOMMENDATION_AGENT,
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
+    UPSERT_NUTRITION_PREFERENCE_FACT,
+)
+from shared.tool_permissions import permission_denied_result, validate_tool_permission
 from tests.support.llm import NativeChatProvider, NativeProviderChatModel
 
 
@@ -204,7 +204,9 @@ class NativeDelegatingNutritionManagementProvider(NativeChatProvider):
                 "message": "음식 후보를 확인하겠습니다.",
                 "tool_call": {
                     "name": "search_nutrition_food_candidates",
-                    "arguments": {"query": "삶은 계란"},
+                    "arguments": {
+                        "food_queries": ["삶은 계란"]
+                    },
                 },
             }
         return {"advice": "확인했습니다."}
@@ -294,7 +296,16 @@ class NativeMultiStepNutritionFoodUpdateChatModel(NativeProviderChatModel):
             if tool_result_names[-1] == "get_nutrition_meal_record_list":
                 return _chat_result(
                     ai_message_from_tool_calls(
-                        [{"name": "search_nutrition_food_candidates", "arguments": {"query": "꿔바로우"}}],
+                        [
+                            {
+                                "name": "search_nutrition_food_candidates",
+                                "arguments": {
+                                    "food_queries": [
+                                        "꿔바로우"
+                                    ]
+                                },
+                            }
+                        ],
                         content="새 음식의 영양 정보를 확인하겠습니다.",
                         model_output={"message": "새 음식의 영양 정보를 확인하겠습니다."},
                     )
@@ -382,7 +393,7 @@ class NativeLoopLimitChatModel(NativeProviderChatModel):
     async def _agenerate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager=None, **kwargs: Any) -> ChatResult:
         tool_call = {
             "name": "search_nutrition_food_candidates",
-            "arguments": {"query": "계란"},
+            "arguments": {"food_queries": ["계란"]},
         }
         return _chat_result(
             ai_message_from_tool_calls(
@@ -415,7 +426,9 @@ class BlankToolFinalizingProvider(NativeChatProvider):
                 "message": "음식 후보를 확인하겠습니다.",
                 "tool_call": {
                     "name": "search_nutrition_food_candidates",
-                    "arguments": {"query": "삶은 계란"},
+                    "arguments": {
+                        "food_queries": ["삶은 계란"]
+                    },
                 },
             }
         if response_mode == "final_answer":
@@ -598,19 +611,35 @@ class NativeFakeToolExecutor:
                 idempotency_key=f"{trace_id}:get_pro_ctcae_questionnaire",
             )
         if name == "search_nutrition_food_candidates":
+            food_queries = tool_call["arguments"].get(
+                "food_queries",
+                [],
+            )
             return ToolCallResult(
                 tool_name=name,
                 status="success",
                 response={
                     "success": True,
-                    "query": tool_call["arguments"].get("query", ""),
-                    "candidates": [
+                    "search_groups": [
                         {
-                            "food_ref_id": "egg-boiled",
-                            "food_name": "삶은 달걀",
-                            "serving_size": 50,
-                            "nutrients": {"calories": 70, "protein": 6},
+                            "query": query,
+                            "candidates": [
+                                {
+                                    "food_ref_id": (
+                                        f"food-{index}"
+                                    ),
+                                    "food_name": query,
+                                    "serving_size": 50,
+                                    "nutrients": {
+                                        "calories": 70,
+                                        "protein": 6,
+                                    },
+                                }
+                            ],
                         }
+                        for index, query in enumerate(
+                            food_queries
+                        )
                     ],
                 },
                 idempotency_key=f"{trace_id}:search_nutrition_food_candidates",
@@ -781,8 +810,9 @@ def test_nutrition_record_verification_prompts_do_not_trust_recent_chat():
     assert "call get_nutrition_meal_record_list first" in management_prompt
     assert "Do not infer current records from recent chat" in management_prompt
     assert "Use context.recent_diet_recommendations before search_nutrition_food_candidates" in management_prompt
-    assert "Call food search once per distinct food expression" in management_prompt
-    assert "the Tool owns search expansion and ranking" in management_prompt
+    assert "Call search_nutrition_food_candidates exactly once" in management_prompt
+    assert "food_queries in the same order" in management_prompt
+    assert "the Tool owns search expansion, deduplication, and ranking" in management_prompt
     assert "prefer meal-like foods over snacks or beverages" in recommendation_prompt
 
 
@@ -1012,6 +1042,27 @@ def test_tool_catalog_can_be_exposed_as_mcp_tools_list():
     predicate_schema = preference_tool["inputSchema"]["properties"]["predicate"]
     assert predicate_schema["description"] == "Hard restrictions must not use a preference predicate."
     assert "cannot_consume" in predicate_schema["enum"]
+    food_search_tool = next(
+        tool
+        for tool in payload["tools"]
+        if tool["name"]
+        == "search_nutrition_food_candidates"
+    )
+    food_search_schema = food_search_tool["inputSchema"]
+    assert food_search_schema["required"] == [
+        "food_queries"
+    ]
+    assert set(food_search_schema["properties"]) == {
+        "food_queries",
+        "limit_per_query",
+        "meal_type",
+    }
+    assert food_search_schema["properties"][
+        "food_queries"
+    ]["maxItems"] == 8
+    assert food_search_schema["properties"][
+        "food_queries"
+    ]["uniqueItems"] is True
 
 
 def test_model_visible_tool_contract_uses_only_canonical_names():
@@ -1183,7 +1234,7 @@ def test_tool_call_validation_accepts_canonical_name_with_native_args():
         "tool_calls": [
             {
                 "name": "search_nutrition_food_candidates",
-                "args": {"query": "마라탕"},
+                "args": {"food_queries": ["마라탕"]},
             }
         ],
     }
@@ -1194,27 +1245,53 @@ def test_tool_call_validation_accepts_canonical_name_with_native_args():
     assert calls == [
         {
             "name": "search_nutrition_food_candidates",
-            "args": {"query": "마라탕"},
-            "arguments": {"query": "마라탕"},
+            "args": {"food_queries": ["마라탕"]},
+            "arguments": {
+                "food_queries": ["마라탕"]
+            },
         }
     ]
 
 
 def test_tool_calls_payload_keeps_food_search_meal_type_hint():
     candidates = [{"food_ref_id": f"food-{index}", "food_name": f"food {index}", "nutrients": {}} for index in range(8)]
+    second_candidates = [
+        {
+            "food_ref_id": "food-side",
+            "food_name": "side food",
+            "nutrients": {},
+        }
+    ]
 
     payload = tool_calls_payload(
         [
             {
                 "name": "search_nutrition_food_candidates",
-                "arguments": {"query": "pizza", "limit": 6, "meal_type": "dinner"},
+                "arguments": {
+                    "food_queries": ["pizza"],
+                    "limit_per_query": 6,
+                    "meal_type": "dinner",
+                },
             }
         ],
         [
             ToolCallResult(
                 tool_name="search_nutrition_food_candidates",
                 status="success",
-                response={"success": True, "query": "pizza", "candidates": candidates},
+                response={
+                    "success": True,
+                    "search_groups": [
+                        {
+                            "query": "pizza",
+                            "candidates": candidates,
+                        },
+                        {
+                            "query": "side",
+                            "candidates": second_candidates,
+                        },
+                    ],
+                    "limit_per_query": 6,
+                },
             )
         ],
     )
@@ -1222,6 +1299,13 @@ def test_tool_calls_payload_keeps_food_search_meal_type_hint():
     assert payload["food_searches"][0]["query"] == "pizza"
     assert payload["food_searches"][0]["meal_type"] == "dinner"
     assert payload["food_searches"][0]["limit"] == 6
+    assert payload["food_searches"][1]["query"] == "side"
+    assert payload["food_candidates"] == candidates
+    assert payload["food_selection_progress"] == {
+        "current_group": 1,
+        "total_groups": 2,
+        "query": "pizza",
+    }
 
 
 def test_agent_app_mcp_direct_call_enforces_default_tool_allowlist():

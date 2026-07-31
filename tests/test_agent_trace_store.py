@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -10,15 +10,15 @@ from sqlalchemy.orm import sessionmaker
 import agent_app.persistence.trace_store as trace_store_module
 from agent_app.llm.messages import model_output_from_ai_message
 from agent_app.observability.evidence import TraceEvidenceContext
-from agent_app.persistence.models import (
-    AgentRunStep,
-    AgentRunTrace,
-    AgentToolExecution,
-)
 from agent_app.observability.model_calls import (
     capture_model_calls,
     response_with_model_calls,
     traced_model_ainvoke,
+)
+from agent_app.persistence.models import (
+    AgentRunStep,
+    AgentRunTrace,
+    AgentToolExecution,
 )
 from agent_app.persistence.trace_store import AgentTraceStore
 from shared.chat_contracts import ChatSyncRequest
@@ -284,7 +284,7 @@ async def test_trace_encrypts_selection_and_model_decision_evidence():
             30,
             9,
             30,
-            tzinfo=timezone.utc,
+            tzinfo=UTC,
         ),
     )
     observations: list[dict] = []
@@ -301,10 +301,13 @@ async def test_trace_encrypts_selection_and_model_decision_evidence():
                             "search_nutrition_food_candidates"
                         ),
                         "args": {
-                            "query": (
-                                "마카롱_호박고구마 마카롱"
-                            ),
-                            "limit": 6,
+                            "food_queries": [
+                                (
+                                    "마카롱_호박고구마 "
+                                    "마카롱"
+                                )
+                            ],
+                            "limit_per_query": 6,
                         },
                         "id": "tool-food-search",
                     }
@@ -405,8 +408,8 @@ async def test_trace_encrypts_selection_and_model_decision_evidence():
         "STRUCTURED_SELECTION_AUTHORITATIVE_FOOD_LOOKUP"
     )
     assert model_evidence["tool_calls"][0]["arguments"][
-        "query"
-    ] == "마카롱_호박고구마 마카롱"
+        "food_queries"
+    ] == ["마카롱_호박고구마 마카롱"]
 
 
 def test_trace_retries_append_observations_and_keep_field_semantics():

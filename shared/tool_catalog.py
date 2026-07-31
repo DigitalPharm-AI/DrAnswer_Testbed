@@ -181,20 +181,36 @@ class ToolCatalog:
             {
                 "name": "search_nutrition_food_candidates",
                 "title": "Search Food Nutrition",
-                "description": "음식명으로 샘플 음식 영양 후보를 검색합니다. 식사 기록 전에 음식명이 불명확하거나 후보 확인이 필요할 때 사용합니다.",
-                "required_arguments": ["query"],
-                "optional_arguments": ["limit", "meal_type"],
+                "description": "한 식사에서 사용자가 말한 음식명 목록을 한 번에 검색하고 음식별 영양 후보 그룹을 반환합니다. 식사 기록 전에 음식명이 불명확하거나 후보 확인이 필요할 때 사용합니다.",
+                "required_arguments": ["food_queries"],
+                "optional_arguments": ["limit_per_query", "meal_type"],
                 "inputSchema": _object_schema(
                     {
-                        "query": {"type": "string", "description": "검색할 음식명"},
-                        "limit": {"type": "integer", "description": "최대 후보 개수. 기본값은 6입니다."},
+                        "food_queries": {
+                            "type": "array",
+                            "description": "사용자 발화에 명시된 서로 다른 음식명 목록. 복합 음식은 재료로 나누지 않습니다.",
+                            "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 100,
+                            },
+                            "minItems": 1,
+                            "maxItems": 8,
+                            "uniqueItems": True,
+                        },
+                        "limit_per_query": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 20,
+                            "description": "음식명별 최대 후보 개수. 기본값은 6입니다.",
+                        },
                         "meal_type": {
                             "type": "string",
                             "enum": ["breakfast", "lunch", "dinner", "snack"],
                             "description": "사용자 발화에 아침/점심/저녁/간식 식사 종류가 명확할 때 UI 기본 선택값으로 전달합니다.",
                         },
                     },
-                    ["query"],
+                    ["food_queries"],
                     additional_properties=False,
                 ),
                 "outputSchema": _tool_result_schema(),

@@ -13,15 +13,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from agent_app import trace_logging
 from agent_app.errors import AgentExecutionError, public_processing_error
-from shared.chat_contracts import (
-    ChatContractError,
-    ChatErrorResponse,
-    ChatStreamEvent,
-    ChatSyncRequest,
-    ChatSyncResponse,
-    agent_chat_payload,
-    chat_error,
-    chat_sync_response,
+from agent_app.integration.approval_state import (
+    InternalApprovalDecision,
+    InternalApprovalEncryptionError,
+    InternalApprovalError,
+    InternalApprovalStore,
 )
 from agent_app.integration.idempotency import (
     PatientThreadBusyError,
@@ -30,12 +26,6 @@ from agent_app.integration.idempotency import (
     SyncRequestClaim,
     SyncRequestGate,
     SyncRequestGateError,
-)
-from agent_app.integration.approval_state import (
-    InternalApprovalDecision,
-    InternalApprovalEncryptionError,
-    InternalApprovalError,
-    InternalApprovalStore,
 )
 from agent_app.integration.pro_ctcae_survey import (
     ProCtcaeSurveyEncryptionError,
@@ -49,6 +39,11 @@ from agent_app.integration.selection_state import (
     ResolvedFoodSelection,
     SelectionStateEncryptionError,
     SelectionStateError,
+    food_selection_question_response,
+)
+from agent_app.observability.model_calls import (
+    capture_model_calls,
+    response_with_model_calls,
 )
 from agent_app.orchestration.continuation import (
     resolve_required_continuations,
@@ -56,16 +51,22 @@ from agent_app.orchestration.continuation import (
 from agent_app.orchestration.graph import (
     AgentLangGraphNativeOrchestrator,
 )
-from agent_app.observability.model_calls import (
-    capture_model_calls,
-    response_with_model_calls,
-)
 from agent_app.persistence.trace_store import AgentTraceStore
 from agent_app.security import require_agent_sync_bearer_token
 from agent_app.streaming import publish_agent_text_with
 from agent_app.tools.backend_query import (
     BackendChatMessageNotFound,
     BackendQueryTools,
+)
+from shared.chat_contracts import (
+    ChatContractError,
+    ChatErrorResponse,
+    ChatStreamEvent,
+    ChatSyncRequest,
+    ChatSyncResponse,
+    agent_chat_payload,
+    chat_error,
+    chat_sync_response,
 )
 from shared.redaction import safe_exception_summary
 from shared.schemas import AgentResponse
@@ -302,43 +303,59 @@ async def _invoke_sync_chat_contract(
                     agent_payload=agent_payload,
                 )
                 if resolved_food_selection is not None:
-                    record_arguments = (
-                        resolved_food_selection
-                        .record_arguments()
-                    )
-                    agent_response = await (
-                        orchestrator
-                        .continue_nutrition_food_selection(
-                            trace_id=trace_id,
-                            payload=agent_payload,
-                            record_arguments=record_arguments,
-                            selection_id=(
-                                resolved_food_selection
-                                .selection_id
-                            ),
-                            origin_message_id=(
-                                resolved_food_selection
-                                .origin_message_id
-                            ),
-                        )
-                    )
-                    if isinstance(
-                        agent_response.structured_payload.get(
-                            "mutation_confirmation"
-                        ),
-                        dict,
+                    if (
+                        resolved_food_selection.kind
+                        == "next_selection"
                     ):
-                        await asyncio.to_thread(
-                            selection_store.consume,
-                            patient_id=payload.patient_id,
-                            origin_message_id=(
-                                resolved_food_selection
-                                .origin_message_id
-                            ),
-                            current_user_message_id=(
-                                payload.message_id
-                            ),
+                        agent_response = (
+                            food_selection_question_response(
+                                resolved_food_selection,
+                                trace_id=trace_id,
+                            )
                         )
+                    else:
+                        record_arguments = (
+                            resolved_food_selection
+                            .record_arguments()
+                        )
+                        agent_response = await (
+                            orchestrator
+                            .continue_nutrition_food_selection(
+                                trace_id=trace_id,
+                                payload=agent_payload,
+                                record_arguments=(
+                                    record_arguments
+                                ),
+                                selection_id=(
+                                    resolved_food_selection
+                                    .selection_id
+                                ),
+                                origin_message_id=(
+                                    resolved_food_selection
+                                    .origin_message_id
+                                ),
+                            )
+                        )
+                        if isinstance(
+                            agent_response
+                            .structured_payload.get(
+                                "mutation_confirmation"
+                            ),
+                            dict,
+                        ):
+                            await asyncio.to_thread(
+                                selection_store.consume,
+                                patient_id=(
+                                    payload.patient_id
+                                ),
+                                origin_message_id=(
+                                    resolved_food_selection
+                                    .origin_message_id
+                                ),
+                                current_user_message_id=(
+                                    payload.message_id
+                                ),
+                            )
                 else:
                     agent_response = await _invoke_sync_chat(
                         orchestrator=orchestrator,
