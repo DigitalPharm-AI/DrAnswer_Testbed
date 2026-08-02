@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from shared.settings import get_settings
+from shared.settings import resolve_patient_id
 from shared.time_utils import utc_now
 from system_app.models import (
     NutritionOntologyNode,
@@ -26,7 +26,6 @@ PREFERENCE_PREDICATES = {
     "religious_avoids",
 }
 HARD_CONSTRAINT_PREDICATES = {"cannot_consume", "allergic_to", "medically_avoids", "religious_avoids"}
-SOFT_PREFERENCE_PREDICATES = PREFERENCE_PREDICATES - HARD_CONSTRAINT_PREDICATES
 NODE_TYPES = {"food", "ingredient", "food_category", "cuisine", "preparation", "nutrient", "nutrient_risk", "restriction", "diet_style"}
 ALLERGEN_RELATION_PREDICATE = "contains_allergen"
 FOOD_ALLERGEN_SEEDS = {
@@ -69,10 +68,6 @@ def parse_preference_csv(value: str | None) -> list[str]:
 
 def ontology_node_key(node_type: str, label: str) -> str:
     return f"{node_type}:{normalize_ontology_label(label)}"
-
-
-def resolve_patient_id(patient_id: str | None = None) -> str:
-    return str(patient_id or get_settings().patient_id)
 
 
 def ensure_ontology_node(

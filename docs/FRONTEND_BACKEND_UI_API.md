@@ -17,6 +17,11 @@
 - 시간 표시는 `Asia/Seoul` offset을 포함한다.
 - AI 처리 시각인 `message_at`은 보존하고, 시뮬레이션 대화 표시에는
   `display_message_at`을 별도로 사용한다.
+- Backend DB는 대화 업무 시각 `conversation_at`과 실제 UTC 기록 시각
+  `recorded_at`을 분리한다. 테스트베드에서는 업무 시각을 SimulationClock에서,
+  실서비스에서는 Backend SystemClock에서 결정한다.
+- `created_at`은 기존 데이터·코드 호환을 위해 남아 있지만, 대화 범위와 순서를
+  결정하는 기준으로 사용하지 않는다.
 - 요청 모델은 정의되지 않은 추가 속성을 거절한다.
 - Backend는 성공 응답도 라우트별 Pydantic 응답 모델로 검증한 뒤
   직렬화한다. 저장된 멱등 replay 응답에도 같은 검증을 적용한다.
@@ -191,6 +196,10 @@ AI Server의 `recent_chat`은 고정 20개 메시지로 자르지 않는다. 설
 read 안전 상한 안에서 현재 사용자 메시지까지의 환자 대화 전체를 시간순으로
 전달하고, 각 항목에는 user-visible 구조화 payload를 포함한다. 안전 상한으로
 더 오래된 이력이 잘린 경우 `recent_chat_complete=false`로 명시한다.
+Backend read view는 현재 메시지의 내부 `conversation_sequence` 이하만 제공하고,
+AI Server는 이 순서와 `reply_to_message_id`를 이용해 인과 순서를 복원한다.
+따라서 시뮬레이션 업무 시각과 실제 저장 시각이 달라도 이전 assistant가
+누락되지 않으며, 현재 메시지 이후 같은 업무 시각에 저장된 행도 포함되지 않는다.
 
 채팅 이력은 구조화 assistant 메시지에 `response_message_id`, 답한 user
 메시지에 `source_message_id`를 제공한다. React는 시간순으로 뒤따르는 메시지를

@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from shared.tool_names import PROPOSE_NOTIFICATION_POLICY, PROPOSE_SYSTEM_POLICY
+from shared.policy_sources import (
+    normalize_notification_policy_source,
+    normalize_system_policy_source,
+)
 from shared.schemas import AgentResponse, NotificationPolicyDelta, SystemPolicyDelta
+from shared.tool_names import PROPOSE_NOTIFICATION_POLICY, PROPOSE_SYSTEM_POLICY
 from system_app.services.clock_service import pause_simulation_clock_for_conversation
 from system_app.services.notification_service import create_notification
 from system_app.services.policy_confirmation_constants import (
@@ -52,7 +56,10 @@ def policy_deltas_from_tool_response(response: AgentResponse, source_event_type:
             raise ValueError("도구 호출 인자가 비어 있습니다.")
         for payload in _notification_policy_argument_items(arguments):
             normalized = dict(payload)
-            normalized["source"] = _normalize_notification_policy_source(normalized.get("source"), source_event_type)
+            normalized["source"] = normalize_notification_policy_source(
+                normalized.get("source"),
+                source_event_type=source_event_type,
+            )
             deltas.append(NotificationPolicyDelta.model_validate(normalized))
     return deltas
 
@@ -82,7 +89,10 @@ def system_policy_deltas_from_tool_response(response: AgentResponse, source_even
         for payload in _system_policy_argument_items(arguments):
             normalized = dict(payload)
             normalized["policy_key"] = str(normalized.get("policy_key") or "")
-            normalized["source"] = _normalize_system_policy_source(normalized.get("source"), source_event_type)
+            normalized["source"] = normalize_system_policy_source(
+                normalized.get("source"),
+                source_event_type=source_event_type,
+            )
             deltas.append(SystemPolicyDelta.model_validate(normalized))
     return deltas
 
@@ -119,26 +129,6 @@ def _system_policy_argument_items(arguments: dict) -> list[dict]:
     if not isinstance(raw_items, list):
         raise ValueError(f"{PROPOSE_SYSTEM_POLICY} requires a policy object or policies list.")
     return [item for item in raw_items if isinstance(item, dict)]
-
-
-def _normalize_notification_policy_source(value: object, source_event_type: str) -> str:
-    if source_event_type in {"daily_pattern", "manual_daily_pattern"}:
-        return "pattern_analysis"
-    if source_event_type == "multiturn_chat":
-        return "patient_request"
-    allowed = {"pattern_analysis", "patient_request", "system_request"}
-    if isinstance(value, str) and value in allowed:
-        return value
-    return "system_request"
-
-
-def _normalize_system_policy_source(value: object, source_event_type: str) -> str:
-    allowed = {"patient_request", "system_request"}
-    if isinstance(value, str) and value in allowed:
-        return value
-    if source_event_type == "multiturn_chat":
-        return "patient_request"
-    return "system_request"
 
 
 def _system_policy_multiple_choice(delta: SystemPolicyDelta) -> dict:

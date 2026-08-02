@@ -14,6 +14,17 @@ from typing import Any
 import httpx
 
 from agent_app.errors import public_processing_error
+from agent_app.jobs.daily_pattern_tasks import (
+    DAILY_PATTERN_ANALYSIS_TASK,
+    DAILY_PATTERN_DELIVERY_TASK,
+    enqueue_proposal_delivery,
+)
+from agent_app.jobs.status import (
+    mark_worker_started,
+    mark_worker_stopped,
+    record_worker_heartbeat,
+    record_worker_task_completed,
+)
 from agent_app.jobs.tasks import (
     claim_next_async_task,
     mark_async_task_done,
@@ -24,16 +35,12 @@ from agent_app.jobs.tasks import (
     task_callback_context,
     task_payload,
 )
-from agent_app.jobs.daily_pattern_tasks import (
-    DAILY_PATTERN_ANALYSIS_TASK,
-    DAILY_PATTERN_DELIVERY_TASK,
-    enqueue_proposal_delivery,
-)
-from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
 from agent_app.observability.model_calls import (
     capture_model_calls,
     response_with_model_calls,
 )
+from agent_app.observability.tool_calls import capture_tool_calls
+from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
 from agent_app.persistence.db import SessionLocal
 from agent_app.persistence.models import AgentAsyncTask
 from agent_app.persistence.trace_store import AgentTraceStore
@@ -41,23 +48,19 @@ from agent_app.tools.backend_query import (
     BackendQueryTools,
     BackendReadContractError,
 )
-from agent_app.jobs.status import (
-    mark_worker_started,
-    mark_worker_stopped,
-    record_worker_heartbeat,
-    record_worker_task_completed,
-)
 from shared.async_v13_contracts import (
     AsyncProcessingError,
     AsyncResultCallbackAck,
     MissedDoseEventRequest,
-    MissedDoseResult as MissedDoseCallbackResult,
     MissedDoseResultCallback,
     NotificationPolicyChangeProposalRequest,
     NotificationPolicyProposalAck,
 )
-from shared.redaction import safe_exception_summary
+from shared.async_v13_contracts import (
+    MissedDoseResult as MissedDoseCallbackResult,
+)
 from shared.chat_contracts import llm_safe_patient_snapshot
+from shared.redaction import safe_exception_summary
 from shared.schemas import (
     AgentAsyncClinicianAlertRequest,
     AgentAsyncPushMessageRequest,
@@ -376,6 +379,7 @@ async def _execute_traced_agent_task(
         trace_id=trace_id,
     )
     model_call_observations: list[dict[str, Any]] = []
+    tool_call_observations: list[dict[str, Any]] = []
     try:
         resolved_invocation_payload = (
             invocation_payload
@@ -389,7 +393,10 @@ async def _execute_traced_agent_task(
                     backend_queries=backend_queries,
                 )
             )
-        with capture_model_calls(model_call_observations):
+        with (
+            capture_model_calls(model_call_observations),
+            capture_tool_calls(tool_call_observations),
+        ):
             response = await _invoke_agent_with_timeout(
                 orchestrator,
                 invocation_task_type or task_type,
@@ -405,6 +412,7 @@ async def _execute_traced_agent_task(
             patient_id=str(original_payload.get("patient_id") or ""),
             response=response,
             model_call_observations=model_call_observations,
+            tool_call_observations=tool_call_observations,
         )
         return response
     except Exception as exc:
@@ -700,7 +708,7 @@ async def _post_callback(
     headers = (
         {
             "Authorization": (
-                f"Bearer {settings.require_backend_api_token()}"
+                f"Bearer {settings.require_service_api_token()}"
             )
         }
         if bearer

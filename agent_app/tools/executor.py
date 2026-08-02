@@ -18,13 +18,8 @@ class McpAgentToolExecutor:
         self,
         *,
         server: AgentMcpToolServer | None = None,
-        system_base_url: str | None = None,
-        timeout_seconds: float = 30.0,
     ) -> None:
-        self.server = server or AgentMcpToolServer(
-            system_base_url=system_base_url,
-            timeout_seconds=timeout_seconds,
-        )
+        self.server = server or AgentMcpToolServer()
 
     async def execute_tool_call(self, tool_call: dict[str, Any], *, trace_id: str, source_event_type: str, payload: dict[str, Any]) -> ToolCallResult:
         params = mcp_call_params(tool_call)

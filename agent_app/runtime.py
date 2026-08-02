@@ -17,8 +17,10 @@ class AgentRuntimeComponents:
     orchestrator: AgentLangGraphNativeOrchestrator
 
 
-def create_mcp_tool_server() -> AgentMcpToolServer:
-    return AgentMcpToolServer()
+def create_mcp_tool_server(
+    provider: BaseLLMProvider | None = None,
+) -> AgentMcpToolServer:
+    return AgentMcpToolServer(llm_provider=provider)
 
 
 def create_tool_executor(tool_server: AgentMcpToolServer | None = None) -> McpAgentToolExecutor:
@@ -27,7 +29,7 @@ def create_tool_executor(tool_server: AgentMcpToolServer | None = None) -> McpAg
 
 def create_runtime_components() -> AgentRuntimeComponents:
     provider = create_llm_provider()
-    tool_server = create_mcp_tool_server()
+    tool_server = create_mcp_tool_server(provider)
     tool_executor = create_tool_executor(tool_server)
     orchestrator = AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=tool_executor)
     return AgentRuntimeComponents(

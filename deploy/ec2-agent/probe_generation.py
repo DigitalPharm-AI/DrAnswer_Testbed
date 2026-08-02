@@ -8,17 +8,13 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
-
 TOKEN_KEY = "AGENT_SYNC_API_TOKEN"
 MAX_RESPONSE_BYTES = 1_048_576
 
 
 def read_required_token(path: Path, key: str = TOKEN_KEY) -> str:
     matches: list[str] = []
-    for line_number, raw_line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(),
-        start=1,
-    ):
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue

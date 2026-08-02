@@ -1,7 +1,8 @@
 {
   "contract": "Backend DB read contract",
-  "contract_version": "1.3",
+  "contract_version": "1.4",
   "object_prefix": "ai_v13_",
+  "contract_scope": "Internal read-only DB contract. Public Backend-AI HTTP APIs remain v1.3.",
   "access": {
     "allowed_operations": [
       "SELECT"
@@ -20,6 +21,8 @@
     "patient_scope": "patient_id is injected from trusted chat context and must be present in every patient-scoped predicate.",
     "ai_server_persistence": "Query rows and raw patient content must not be persisted in the AI internal trace/tool-state database.",
     "identifier_contract": "message, dose_event, meal, and food IDs are opaque public strings. Backend numeric primary keys are never accepted or returned as those entity IDs.",
+    "conversation_order": "conversation_sequence is an internal ordering-only projection. It is patient-scoped, is not a resource identifier, and is not exposed by public HTTP APIs or to the LLM.",
+    "conversation_time": "conversation_at is trusted business time; recorded_at is physical UTC persistence time. Agent history cutoff uses conversation_sequence, not created_at or a calendar-date filter.",
     "public_id_format": "Every active v1.3 public ID uses its entity prefix followed by exactly 16 lowercase hexadecimal characters."
   },
   "readiness_gates": [
@@ -37,7 +40,9 @@
         "patient_id",
         "role",
         "content",
-        "created_at",
+        "conversation_at",
+        "recorded_at",
+        "conversation_sequence",
         "message_type",
         "message_payload_json",
         "reply_to_message_id",

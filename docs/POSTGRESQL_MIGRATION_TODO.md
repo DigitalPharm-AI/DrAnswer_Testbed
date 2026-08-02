@@ -65,8 +65,8 @@ flowchart LR
     CT -->|"Contract 전용 RW role"| CTDB
 ```
 
-`ai_v13_*`는 현재 v1.3 PostgreSQL Read-only 계약에 따라 생성되는 View
-이름이다.
+`ai_v13_*`는 공개 HTTP v1.3과 함께 도입된 View 이름이며, 현재 내부
+PostgreSQL Read-only 계약 버전은 1.4다. 명칭은 배포 호환을 위해 유지한다.
 
 ## 완료된 구현
 

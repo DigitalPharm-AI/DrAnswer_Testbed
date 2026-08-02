@@ -55,6 +55,21 @@ def openapi_components(
     }
 
 
+def remove_openapi_response(
+    paths: dict[str, Any],
+    target_paths: Iterable[str],
+    response_code: str,
+) -> None:
+    for path in target_paths:
+        responses = (
+            paths.get(path, {})
+            .get("post", {})
+            .get("responses")
+        )
+        if isinstance(responses, dict):
+            responses.pop(response_code, None)
+
+
 def _schema_references(value: Any) -> Iterable[str]:
     if isinstance(value, dict):
         reference = value.get("$ref")

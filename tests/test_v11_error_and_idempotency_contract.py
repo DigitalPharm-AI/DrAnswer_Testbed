@@ -16,7 +16,7 @@ from system_app.services.backend_v13_service import (
 from tests.helpers import build_system_engine
 
 BACKEND_HEADERS = {
-    "Authorization": "Bearer pytest-backend-api-token",
+    "Authorization": "Bearer pytest-agent-sync-token",
 }
 
 

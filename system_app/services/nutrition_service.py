@@ -8,19 +8,14 @@ from sqlalchemy import delete, desc, select
 from sqlalchemy.orm import Session
 
 from shared.json_utils import parse_json_object as parse_metadata_json
-from shared.settings import get_settings
+from shared.nutrition_domain import MEAL_TYPE_LABELS
+from shared.settings import resolve_patient_id
 from system_app.models import DailyNutritionCheck, Notification, NutritionFood, NutritionMeal, NutritionProfile
 from system_app.services.clock_service import ensure_clock
 from system_app.services.notification_service import create_notification
 from system_app.services.timeline_service import add_chat_message
 
 NUTRIENTS = ["칼로리", "단백질", "나트륨", "지방", "탄수화물"]
-MEAL_TYPE_LABELS = {
-    "breakfast": "아침",
-    "lunch": "점심",
-    "dinner": "저녁",
-    "snack": "간식",
-}
 NUTRIENT_COLUMNS = {
     "칼로리": ("calories", "kcal"),
     "단백질": ("protein", "g"),
@@ -129,11 +124,6 @@ def classify_ckd(egfr: float | None) -> tuple[str, str]:
     if egfr >= 15:
         return "G4", "high"
     return "G5", "high"
-
-
-def resolve_patient_id(patient_id: str | None = None) -> str:
-    settings = get_settings()
-    return patient_id or settings.patient_id
 
 
 def default_nutrition_profile(patient_id: str) -> NutritionProfile:

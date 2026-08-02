@@ -3,6 +3,28 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { chromium } = require("playwright-core");
+const {
+  apiPath,
+  assert,
+  assertCompletedSseContract,
+  assistantPhraseViolations,
+  backendNutritionEvidence,
+  check,
+  collectPayloadViolations,
+  diagnosticError,
+  isMealApprovalCard,
+  isStructuredChatRequest,
+  parseSseEvents,
+  publicEnvelopeData,
+  requestBody,
+  safeJsonParse,
+} = require("./playwright/validation_helpers");
+const {
+  advanceMealInteractionToApproval,
+} = require("./playwright/scenarios/meal");
+const {
+  runProCtcaeStructuredRegression,
+} = require("./playwright/scenarios/pro_ctcae");
 
 const baseUrl = (process.env.BASE_URL || "http://127.0.0.1:9000").replace(
   /\/$/,
@@ -20,17 +42,10 @@ const llmTimeoutMs = Number(process.env.REAL_LLM_CHAT_TIMEOUT_MS || 135_000);
 const deterministicV13Mode =
   process.env.P0_REAL_SERVICE_MODE === "deterministic_v13";
 const ownedAgentProcessId = Number(process.env.AGENT_PROCESS_PID || 0);
+const intentionallyAbortedRequestIds = new Set();
 
 const mealPrompt =
   "오늘 아침 08:30에 현미밥 150g, 두부된장국 1그릇, 시금치나물 1접시를 먹었습니다. 이 아침 식사를 기록해 주세요. 실제 저장 전에는 기록과 취소 확인 카드를 보여 주세요.";
-
-const forbiddenAssistantPhrases = [
-  /PHR\s*(?:환자\s*정보)?(?:가\s*)?(?:미등록|등록되지|찾지\s*못)/iu,
-  /phr_patient_key/iu,
-  /말씀을\s*확인했습니다\.\s*복약이나\s*증상과\s*관련해\s*더\s*이야기해\s*주세요/iu,
-  /완료\s*전\s*임시\s*응답/iu,
-  /질문이\s*준비되고\s*있습니다/iu,
-];
 
 function ensureDirectory(directory) {
   fs.mkdirSync(directory, { recursive: true });
@@ -41,325 +56,6 @@ function writeJson(fileName, value) {
     path.join(artifactDir, fileName),
     `${JSON.stringify(value, null, 2)}\n`,
     "utf8",
-  );
-}
-
-function safeJsonParse(value) {
-  if (typeof value !== "string" || !value.trim()) {
-    return null;
-  }
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-}
-
-function check(report, name, details = {}) {
-  report.checks.push({
-    name,
-    status: "passed",
-    at: new Date().toISOString(),
-    details,
-  });
-}
-
-function diagnosticError(code, message, details = {}) {
-  const error = new Error(`${code}: ${message}`);
-  error.code = code;
-  error.diagnostic = details;
-  return error;
-}
-
-function assert(condition, code, message, details = {}) {
-  if (!condition) {
-    throw diagnosticError(code, message, details);
-  }
-}
-
-function publicEnvelopeData(payload) {
-  if (
-    payload &&
-    typeof payload === "object" &&
-    payload.success === true &&
-    payload.data &&
-    typeof payload.data === "object"
-  ) {
-    return payload.data;
-  }
-  return null;
-}
-
-async function backendNutritionEvidence(page) {
-  const result = await page.evaluate(async () => {
-    const response = await fetch("/api/ui/v1/nutrition", {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-      },
-      cache: "no-store",
-    });
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch {
-      payload = null;
-    }
-    return {
-      status: response.status,
-      payload,
-    };
-  });
-  const data = publicEnvelopeData(result.payload);
-  assert(
-    result.status === 200 && data,
-    "BACKEND_STATE_ORACLE_FAILED",
-    "The Backend nutrition state could not be read through the testbed API.",
-    result,
-  );
-  const meals = Array.isArray(data.meals) ? data.meals : [];
-  const mealCount = Number(data.summary?.total_meals);
-  const foodCount = meals.reduce(
-    (total, meal) =>
-      total + (Array.isArray(meal?.foods) ? meal.foods.length : 0),
-    0,
-  );
-  assert(
-    Number.isInteger(mealCount) && mealCount >= 0,
-    "BACKEND_STATE_ORACLE_INVALID",
-    "The Backend nutrition API returned an invalid meal count.",
-    { data },
-  );
-  return {
-    meal_count: mealCount,
-    food_count: foodCount,
-  };
-}
-
-function collectPayloadViolations(value, location, trail = [], results = []) {
-  if (Array.isArray(value)) {
-    value.forEach((item, index) =>
-      collectPayloadViolations(item, location, [...trail, index], results),
-    );
-    return results;
-  }
-  if (!value || typeof value !== "object") {
-    return results;
-  }
-
-  for (const [key, child] of Object.entries(value)) {
-    const childTrail = [...trail, key];
-    const pathLabel = childTrail.join(".");
-    if (key === "patient_id") {
-      results.push({
-        location,
-        path: pathLabel,
-        reason: "patient_id_exposed",
-      });
-    }
-    if (key === "version") {
-      results.push({
-        location,
-        path: pathLabel,
-        reason: "internal_version_exposed",
-      });
-    }
-    if (
-      (key === "id" || key.endsWith("_id")) &&
-      typeof child === "number"
-    ) {
-      results.push({
-        location,
-        path: pathLabel,
-        reason: "internal_numeric_id_exposed",
-      });
-    }
-    collectPayloadViolations(child, location, childTrail, results);
-  }
-  return results;
-}
-
-function apiPath(url) {
-  try {
-    return new URL(url).pathname;
-  } catch {
-    return "";
-  }
-}
-
-function requestBody(request) {
-  const text = request.postData();
-  return safeJsonParse(text) ?? text ?? null;
-}
-
-function isStructuredChatRequest(request) {
-  if (
-    request.method() !== "POST" ||
-    apiPath(request.url()) !== "/api/ui/v1/chat/sync"
-  ) {
-    return false;
-  }
-  const body = requestBody(request);
-  return (
-    body &&
-    typeof body === "object" &&
-    (body.requested_return_type === "selection_box" ||
-      body.requested_return_type === "input_box")
-  );
-}
-
-function assistantPhraseViolations(text) {
-  return forbiddenAssistantPhrases
-    .filter((pattern) => pattern.test(text))
-    .map((pattern) => pattern.source);
-}
-
-function isMealApprovalCard(data) {
-  const selections = data?.message?.selections ?? [];
-  return (
-    data?.message_type === "selection_box" &&
-    selections.includes("기록") &&
-    selections.includes("취소")
-  );
-}
-
-async function advanceMealInteractionToApproval(
-  page,
-  initialData,
-  initialBackendState,
-  report,
-) {
-  let current = initialData;
-  const steps = [];
-  for (let index = 0; index < 8; index += 1) {
-    if (isMealApprovalCard(current)) {
-      report.structured_chat.intermediate_steps = steps;
-      return current;
-    }
-    assert(
-      current?.message_type === "selection_box" ||
-        current?.message_type === "input_box",
-      "MEAL_INTERACTION_STOPPED_AS_TEXT",
-      "The meal interaction stopped before the 기록/취소 approval card.",
-      {
-        step: index,
-        current,
-        steps,
-      },
-    );
-    const sourceCard = page.locator(
-      `.chat-message.assistant[data-message-id=${JSON.stringify(
-        current.assistant_message_id,
-      )}]`,
-    );
-    await sourceCard.waitFor({ state: "visible" });
-
-    const beforeStepState = await backendNutritionEvidence(page);
-    assert(
-      beforeStepState.meal_count === initialBackendState.meal_count,
-      "MEAL_SAVED_DURING_INTERMEDIATE_INTERACTION",
-      "A meal was saved while resolving food candidates or inputs.",
-      {
-        step: index,
-        initial: initialBackendState,
-        current: beforeStepState,
-      },
-    );
-
-    const responsePromise = page.waitForResponse(
-      (response) => isStructuredChatRequest(response.request()),
-      { timeout: llmTimeoutMs },
-    );
-    let submittedValue;
-    if (current.message_type === "selection_box") {
-      const selections = current.message?.selections ?? [];
-      submittedValue = selections.find((value) => value !== "취소");
-      assert(
-        typeof submittedValue === "string" && submittedValue.length > 0,
-        "MEAL_CANDIDATE_SELECTION_MISSING",
-        "The meal candidate card did not contain a selectable value.",
-        { current },
-      );
-      await sourceCard
-        .getByRole("button", { name: submittedValue, exact: true })
-        .click();
-    } else {
-      const inputs = current.message?.inputs ?? [];
-      assert(
-        inputs.length > 0,
-        "MEAL_INPUT_DEFINITION_MISSING",
-        "The meal input card did not contain input definitions.",
-        { current },
-      );
-      const submitted = {};
-      for (const input of inputs) {
-        const control = sourceCard.getByLabel(input.label, {
-          exact: true,
-        });
-        if (input.type === "dropdown") {
-          const value =
-            input.value ?? input.options?.selections?.[0] ?? "";
-          await control.selectOption(String(value));
-          submitted[input.label] = String(value);
-        } else {
-          const lower = Number(input.options?.lower ?? 1);
-          const upper = Number(input.options?.upper ?? 1000);
-          const value = Number(
-            input.value ?? Math.min(Math.max(100, lower), upper),
-          );
-          await control.fill(String(value));
-          submitted[input.label] = value;
-        }
-      }
-      submittedValue = JSON.stringify(submitted);
-      await sourceCard
-        .getByRole("button", { name: "입력값 보내기", exact: true })
-        .click();
-    }
-
-    const response = await responsePromise;
-    const request = requestBody(response.request());
-    const payload = await response.json();
-    const data = publicEnvelopeData(payload);
-    assert(
-      response.status() === 200 && data,
-      "MEAL_INTERMEDIATE_RESPONSE_FAILED",
-      "A food candidate or input response did not complete successfully.",
-      {
-        step: index,
-        status: response.status(),
-        request,
-        payload,
-      },
-    );
-    assert(
-      request?.source_message_id === current.assistant_message_id &&
-        request?.requested_return_type === current.message_type,
-      "MEAL_INTERMEDIATE_SOURCE_MISMATCH",
-      "The intermediate response was not bound to its exact source card.",
-      {
-        step: index,
-        expected_source_message_id: current.assistant_message_id,
-        expected_type: current.message_type,
-        request,
-      },
-    );
-    steps.push({
-      step: index + 1,
-      source_message_id: current.assistant_message_id,
-      source_message_type: current.message_type,
-      submitted_value: submittedValue,
-      response_message_id: data.assistant_message_id,
-      response_message_type: data.message_type,
-      response_selections: data.message?.selections ?? null,
-      response_inputs: data.message?.inputs ?? null,
-    });
-    current = data;
-  }
-  throw diagnosticError(
-    "MEAL_INTERACTION_STEP_LIMIT",
-    "The meal interaction did not reach approval within eight structured steps.",
-    { steps, current },
   );
 }
 
@@ -396,35 +92,6 @@ async function pollUntil(action, predicate, options = {}) {
       timeoutMs,
     },
   );
-}
-
-function parseSseEvents(rawBody) {
-  return rawBody
-    .replace(/\r\n/g, "\n")
-    .split("\n\n")
-    .map((block) => block.trim())
-    .filter(Boolean)
-    .filter((block) => !block.startsWith(":"))
-    .map((block) => {
-      let type = "message";
-      const dataLines = [];
-      for (const line of block.split("\n")) {
-        if (line.startsWith("event:")) {
-          type = line.slice("event:".length).trim();
-        } else if (line.startsWith("data:")) {
-          dataLines.push(line.slice("data:".length).trimStart());
-        }
-      }
-      const rawData = dataLines.join("\n");
-      const data = safeJsonParse(rawData);
-      assert(
-        data !== null,
-        "UI_SSE_EVENT_INVALID",
-        "The Backend UI stream emitted a non-JSON SSE event.",
-        { type, rawData },
-      );
-      return { type, data };
-    });
 }
 
 async function capturedChatStream(page, requestId, timeoutMs = llmTimeoutMs) {
@@ -467,49 +134,6 @@ async function capturedChatStream(page, requestId, timeoutMs = llmTimeoutMs) {
     { requestId, captured },
   );
   return captured;
-}
-
-function assertCompletedSseContract(events, requestId) {
-  assert(
-    events[0]?.type === "start" &&
-      events[0]?.data?.request_id === requestId,
-    "UI_SSE_START_INVALID",
-    "The Backend UI stream did not begin with the correlated start event.",
-    { requestId, events },
-  );
-  const deltas = events.filter((event) => event.type === "text_delta");
-  deltas.forEach((event, index) => {
-    assert(
-      event.data?.request_id === requestId &&
-        event.data?.sequence === index &&
-        typeof event.data?.text === "string" &&
-        event.data.text.length > 0,
-      "UI_SSE_DELTA_INVALID",
-      "The Backend UI text deltas were not contiguous and correlated.",
-      { requestId, index, event },
-    );
-  });
-  const terminals = events.filter((event) =>
-    ["completed", "error"].includes(event.type),
-  );
-  assert(
-    terminals.length === 1 &&
-      terminals[0].type === "completed" &&
-      events.at(-1) === terminals[0],
-    "UI_SSE_TERMINAL_INVALID",
-    "The successful Backend UI stream must end in exactly one completed event.",
-    { requestId, events },
-  );
-  const completed = terminals[0].data;
-  assert(
-    completed?.request_id === requestId &&
-      typeof completed?.user_message_id === "string" &&
-      typeof completed?.assistant_message_id === "string",
-    "UI_SSE_COMPLETED_CORRELATION_INVALID",
-    "The completed event did not contain correlated public message IDs.",
-    { requestId, completed },
-  );
-  return { completed, deltas };
 }
 
 async function sendDeterministicChat(page, prompt) {
@@ -623,6 +247,465 @@ async function sendDeterministicChat(page, prompt) {
     assistant_text: (await assistantCard.innerText()).trim(),
     optimistic: optimisticState,
     assistant_card: assistantCard,
+  };
+}
+
+async function replayDeterministicChat(page, originalChat) {
+  const result = await page.evaluate(async (body) => {
+    const response = await fetch("/api/ui/v1/chat/stream", {
+      method: "POST",
+      headers: {
+        Accept: "text/event-stream",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    return {
+      status: response.status,
+      content_type: response.headers.get("content-type") || "",
+      body: await response.text(),
+    };
+  }, originalChat.request);
+  assert(
+    result.status === 200 &&
+      result.content_type.toLowerCase().includes("text/event-stream"),
+    "UI_CHAT_REPLAY_STREAM_INVALID",
+    "The identical UI chat request did not return a successful SSE stream.",
+    result,
+  );
+  const events = parseSseEvents(result.body);
+  const { completed, deltas } = assertCompletedSseContract(
+    events,
+    originalChat.request.request_id,
+  );
+  assert(
+    completed.user_message_id === originalChat.completed.user_message_id &&
+      completed.assistant_message_id ===
+        originalChat.completed.assistant_message_id,
+    "UI_CHAT_REPLAY_RESULT_CHANGED",
+    "The same request_id did not replay the original persisted messages.",
+    {
+      original: originalChat.completed,
+      replay: completed,
+    },
+  );
+  return {
+    request_id: originalChat.request.request_id,
+    user_message_id: completed.user_message_id,
+    assistant_message_id: completed.assistant_message_id,
+    event_types: events.map((event) => event.type),
+    delta_count: deltas.length,
+  };
+}
+
+async function abortAfterStartAndReplay(page) {
+  const request = {
+    request_id: "req_aaaaaaaaaaaaaaaa",
+    requested_return_type: "text",
+    message: "연결 중단 후 동일 요청 재시도 테스트",
+  };
+  intentionallyAbortedRequestIds.add(request.request_id);
+  const aborted = await page.evaluate(async (body) => {
+    const controller = new AbortController();
+    const response = await fetch("/api/ui/v1/chat/stream", {
+      method: "POST",
+      headers: {
+        Accept: "text/event-stream",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let received = "";
+    while (!received.includes("event: start")) {
+      const chunk = await reader.read();
+      if (chunk.done) {
+        break;
+      }
+      received += decoder.decode(chunk.value, { stream: true });
+    }
+    controller.abort();
+    await reader.cancel().catch(() => {});
+    return {
+      status: response.status,
+      content_type: response.headers.get("content-type") || "",
+      received,
+    };
+  }, request);
+  assert(
+    aborted.status === 200 &&
+      aborted.content_type.toLowerCase().includes("text/event-stream") &&
+      aborted.received.includes("event: start"),
+    "UI_CHAT_ABORT_START_MISSING",
+    "The browser could not abort the chat stream immediately after SSE start.",
+    aborted,
+  );
+
+  await page.waitForTimeout(4_000);
+  const replay = await page.evaluate(async (body) => {
+    const response = await fetch("/api/ui/v1/chat/stream", {
+      method: "POST",
+      headers: {
+        Accept: "text/event-stream",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    return {
+      status: response.status,
+      content_type: response.headers.get("content-type") || "",
+      body: await response.text(),
+    };
+  }, request);
+  assert(
+    replay.status === 200 &&
+      replay.content_type.toLowerCase().includes("text/event-stream"),
+    "UI_CHAT_ABORT_REPLAY_STREAM_INVALID",
+    "The disconnected chat could not be retried with the same request_id.",
+    replay,
+  );
+  const events = parseSseEvents(replay.body);
+  const { completed } = assertCompletedSseContract(
+    events,
+    request.request_id,
+  );
+  return {
+    request_id: request.request_id,
+    user_message_id: completed.user_message_id,
+    assistant_message_id: completed.assistant_message_id,
+    aborted_after_start: true,
+    replay_event_types: events.map((event) => event.type),
+  };
+}
+
+async function runConcurrentSameRequest(page) {
+  const request = {
+    request_id: "req_bbbbbbbbbbbbbbbb",
+    requested_return_type: "text",
+    message: "동일 요청을 동시에 보내는 테스트",
+  };
+  const responses = await page.evaluate(async (body) => {
+    const send = async () => {
+      const response = await fetch("/api/ui/v1/chat/stream", {
+        method: "POST",
+        headers: {
+          Accept: "text/event-stream",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+      return {
+        status: response.status,
+        content_type: response.headers.get("content-type") || "",
+        body: await response.text(),
+      };
+    };
+    return Promise.all([send(), send()]);
+  }, request);
+  const parsed = responses.map((response) => {
+    assert(
+      response.status === 200 &&
+        response.content_type.toLowerCase().includes("text/event-stream"),
+      "UI_CHAT_CONCURRENT_STREAM_INVALID",
+      "A concurrent duplicate request did not return an SSE stream.",
+      response,
+    );
+    const events = parseSseEvents(response.body);
+    const terminals = events.filter((event) =>
+      ["completed", "error"].includes(event.type),
+    );
+    assert(
+      events[0]?.type === "start" &&
+        terminals.length === 1 &&
+        events.at(-1) === terminals[0],
+      "UI_CHAT_CONCURRENT_TERMINAL_INVALID",
+      "Each concurrent duplicate stream must have exactly one terminal event.",
+      { events },
+    );
+    return { events, terminal: terminals[0] };
+  });
+  const completed = parsed
+    .map((item) => item.terminal)
+    .filter((terminal) => terminal.type === "completed");
+  const errors = parsed
+    .map((item) => item.terminal)
+    .filter((terminal) => terminal.type === "error");
+  assert(
+    completed.length >= 1 &&
+      completed.every(
+        (terminal) =>
+          terminal.data?.assistant_message_id ===
+          completed[0].data?.assistant_message_id,
+      ) &&
+      errors.every((terminal) => terminal.data?.retryable === true),
+    "UI_CHAT_CONCURRENT_RESULT_INVALID",
+    "Concurrent duplicate requests did not converge on one persisted result.",
+    { parsed },
+  );
+  return {
+    request_id: request.request_id,
+    completed_count: completed.length,
+    error_count: errors.length,
+    assistant_message_id: completed[0].data.assistant_message_id,
+    terminal_types: parsed.map((item) => item.terminal.type),
+  };
+}
+
+async function runFailureAfterToken(page) {
+  const marker = "[stream-failure-after-token]";
+  const request = {
+    request_id: "req_cccccccccccccccc",
+    requested_return_type: "text",
+    message: `토큰 공개 후 오류 테스트 ${marker}`,
+  };
+  const response = await page.evaluate(async (body) => {
+    const result = await fetch("/api/ui/v1/chat/stream", {
+      method: "POST",
+      headers: {
+        Accept: "text/event-stream",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    return {
+      status: result.status,
+      content_type: result.headers.get("content-type") || "",
+      body: await result.text(),
+    };
+  }, request);
+  assert(
+    response.status === 200 &&
+      response.content_type.toLowerCase().includes("text/event-stream"),
+    "UI_CHAT_FAILURE_AFTER_TOKEN_STREAM_INVALID",
+    "The failure-after-token request did not return an SSE stream.",
+    response,
+  );
+  const events = parseSseEvents(response.body);
+  const deltas = events.filter((event) => event.type === "text_delta");
+  const terminals = events.filter((event) =>
+    ["completed", "error"].includes(event.type),
+  );
+  assert(
+    events[0]?.type === "start" &&
+      deltas.length >= 1 &&
+      deltas.map((event) => event.data?.text || "").join("") ===
+        "테스트 부분 응답" &&
+      terminals.length === 1 &&
+      terminals[0].type === "error" &&
+      terminals[0].data?.retryable === true &&
+      events.at(-1) === terminals[0],
+    "UI_CHAT_FAILURE_AFTER_TOKEN_CONTRACT_INVALID",
+    "A token-level failure must retain deltas and end with one retryable error.",
+    { events },
+  );
+  const retry = await page.evaluate(async (body) => {
+    const result = await fetch("/api/ui/v1/chat/stream", {
+      method: "POST",
+      headers: {
+        Accept: "text/event-stream",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    return {
+      status: result.status,
+      content_type: result.headers.get("content-type") || "",
+      body: await result.text(),
+    };
+  }, request);
+  assert(
+    retry.status === 200 &&
+      retry.content_type.toLowerCase().includes("text/event-stream"),
+    "UI_CHAT_FAILURE_AFTER_TOKEN_RETRY_STREAM_INVALID",
+    "The retryable failed stream could not reuse the same request_id.",
+    retry,
+  );
+  const retryEvents = parseSseEvents(retry.body);
+  const { completed } = assertCompletedSseContract(
+    retryEvents,
+    request.request_id,
+  );
+  return {
+    request_id: request.request_id,
+    delta_text: deltas.map((event) => event.data.text).join(""),
+    failed_event_types: events.map((event) => event.type),
+    first_error: terminals[0].data,
+    retry_event_types: retryEvents.map((event) => event.type),
+    retry_user_message_id: completed.user_message_id,
+    retry_assistant_message_id: completed.assistant_message_id,
+  };
+}
+
+async function runSlowConsumerBackpressure(page) {
+  const marker = "[burst-token-stream]";
+  const expectedChunkCount = 270;
+  const expectedChunkSize = 512;
+  const request = {
+    request_id: "req_dddddddddddddddd",
+    requested_return_type: "text",
+    message: `느린 SSE 소비자 테스트 ${marker}`,
+  };
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Network.enable");
+  await cdp.send("Network.emulateNetworkConditions", {
+    offline: false,
+    latency: 100,
+    downloadThroughput: 64 * 1024,
+    uploadThroughput: 64 * 1024,
+    connectionType: "cellular3g",
+  });
+  const startedAt = Date.now();
+  let response;
+  try {
+    response = await page.evaluate(async (body) => {
+      const result = await fetch("/api/ui/v1/chat/stream", {
+        method: "POST",
+        headers: {
+          Accept: "text/event-stream",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+      return {
+        status: result.status,
+        content_type: result.headers.get("content-type") || "",
+        body: await result.text(),
+      };
+    }, request);
+  } finally {
+    await cdp.send("Network.emulateNetworkConditions", {
+      offline: false,
+      latency: 0,
+      downloadThroughput: -1,
+      uploadThroughput: -1,
+      connectionType: "none",
+    });
+    await cdp.detach();
+  }
+  const elapsedMs = Date.now() - startedAt;
+  assert(
+    response.status === 200 &&
+      response.content_type.toLowerCase().includes("text/event-stream"),
+    "UI_CHAT_SLOW_CONSUMER_STREAM_INVALID",
+    "The throttled browser did not receive a successful SSE stream.",
+    response,
+  );
+  const events = parseSseEvents(response.body);
+  const { completed, deltas } = assertCompletedSseContract(
+    events,
+    request.request_id,
+  );
+  const combined = deltas
+    .map((event) => event.data?.text || "")
+    .join("");
+  assert(
+    deltas.length === expectedChunkCount &&
+      deltas.every(
+        (event) => event.data.text.length === expectedChunkSize,
+      ) &&
+      completed.message?.text === combined &&
+      elapsedMs >= 2_000,
+    "UI_CHAT_SLOW_CONSUMER_DATA_LOSS",
+    "The bounded Backend stream lost, reordered, or duplicated burst tokens.",
+    {
+      expectedChunkCount,
+      actualChunkCount: deltas.length,
+      expectedChunkSize,
+      combinedLength: combined.length,
+      completedLength: completed.message?.text?.length || 0,
+      elapsedMs,
+    },
+  );
+  return {
+    request_id: request.request_id,
+    user_message_id: completed.user_message_id,
+    assistant_message_id: completed.assistant_message_id,
+    delta_count: deltas.length,
+    total_characters: combined.length,
+    elapsed_ms: elapsedMs,
+    terminal_type: events.at(-1).type,
+  };
+}
+
+async function submitStructuredSelection(page, sourceCard, selection) {
+  const sourceMessageId = await sourceCard.getAttribute("data-message-id");
+  const sourceMessageType = await sourceCard.getAttribute("data-message-type");
+  assert(
+    typeof sourceMessageId === "string" && sourceMessageId.length > 0,
+    "STRUCTURED_SOURCE_MESSAGE_ID_MISSING",
+    "The structured assistant card did not expose its public message ID.",
+    { selection, sourceMessageType },
+  );
+  assert(
+    sourceMessageType === "selection_box",
+    "STRUCTURED_SOURCE_TYPE_INVALID",
+    "A selection response can only be submitted from a selection_box card.",
+    { sourceMessageId, sourceMessageType, selection },
+  );
+
+  const requestPromise = page.waitForRequest(
+    (request) => {
+      const body = requestBody(request);
+      return (
+        request.method() === "POST" &&
+        apiPath(request.url()) === "/api/ui/v1/chat/stream" &&
+        body?.message === selection &&
+        body?.requested_return_type === "selection_box" &&
+        body?.source_message_id === sourceMessageId
+      );
+    },
+    { timeout: llmTimeoutMs },
+  );
+  const responsePromise = page.waitForResponse(
+    (response) => {
+      const body = requestBody(response.request());
+      return (
+        response.request().method() === "POST" &&
+        apiPath(response.url()) === "/api/ui/v1/chat/stream" &&
+        body?.message === selection &&
+        body?.source_message_id === sourceMessageId
+      );
+    },
+    { timeout: llmTimeoutMs },
+  );
+
+  await sourceCard
+    .getByRole("button", { name: selection, exact: true })
+    .click();
+  const request = await requestPromise;
+  const requestPayload = requestBody(request);
+  const response = await responsePromise;
+  assert(
+    response.status() === 200 &&
+      (response.headers()["content-type"] || "")
+        .toLowerCase()
+        .includes("text/event-stream"),
+    "STRUCTURED_STREAM_RESPONSE_INVALID",
+    "The structured response did not receive a successful Backend SSE stream.",
+    { sourceMessageId, selection, status: response.status() },
+  );
+
+  const captured = await capturedChatStream(page, requestPayload.request_id);
+  const events = parseSseEvents(captured.body);
+  const { completed, deltas } = assertCompletedSseContract(
+    events,
+    requestPayload.request_id,
+  );
+  const assistantCard = page.locator(
+    `.chat-message.assistant[data-message-id=${JSON.stringify(
+      completed.assistant_message_id,
+    )}]`,
+  );
+  await assistantCard.waitFor({ state: "visible" });
+  return {
+    request: requestPayload,
+    events,
+    completed,
+    delta_count: deltas.length,
+    assistant_card: assistantCard,
+    assistant_text: (await assistantCard.innerText()).trim(),
   };
 }
 
@@ -770,6 +853,40 @@ async function runDeterministicV13Core(page, report) {
   check(report, "v13_ndjson_sync_chat", report.v13_chat);
   check(report, "optimistic_user_message", chat.optimistic);
 
+  report.v13_chat_replay = await replayDeterministicChat(page, chat);
+  check(
+    report,
+    "v13_same_request_id_replays_persisted_messages",
+    report.v13_chat_replay,
+  );
+
+  report.abort_replay = await abortAfterStartAndReplay(page);
+  check(
+    report,
+    "browser_abort_then_same_request_id_replay",
+    report.abort_replay,
+  );
+
+  report.concurrent_same_request = await runConcurrentSameRequest(page);
+  check(
+    report,
+    "concurrent_same_request_id_converges",
+    report.concurrent_same_request,
+  );
+
+  report.failure_after_token = await runFailureAfterToken(page);
+  check(
+    report,
+    "token_error_then_same_request_retry_completes",
+    report.failure_after_token,
+  );
+
+  await runProCtcaeStructuredRegression(page, report, {
+    screenshot,
+    sendDeterministicChat,
+    submitStructuredSelection,
+  });
+
   await chat.assistant_card.hover();
   const likeButton = chat.assistant_card.getByRole("button", {
     name: "좋아요",
@@ -843,6 +960,13 @@ async function runDeterministicV13Core(page, report) {
   };
   check(report, "chat_feedback_boundary", report.feedback);
   await screenshot(page, "05-v13-feedback.png");
+
+  report.slow_consumer = await runSlowConsumerBackpressure(page);
+  check(
+    report,
+    "slow_consumer_preserves_all_burst_tokens",
+    report.slow_consumer,
+  );
 
   const assistantCountBeforeFailure = await page
     .locator(".chat-message.assistant")
@@ -1059,6 +1183,14 @@ async function main() {
       });
     });
     page.on("requestfailed", (request) => {
+      const failedPayload = requestBody(request);
+      if (
+        failedPayload &&
+        typeof failedPayload === "object" &&
+        intentionallyAbortedRequestIds.has(failedPayload.request_id)
+      ) {
+        return;
+      }
       browserErrors.push({
         source: "requestfailed",
         method: request.method(),

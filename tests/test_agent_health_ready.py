@@ -19,7 +19,9 @@ from agent_app.readiness import (
     collect_agent_service_readiness,
 )
 from agent_app.tools.backend_query import BackendReadContractError
-from shared.settings import Settings, get_settings as get_shared_settings
+from shared.backend_read_contract import BACKEND_READ_CONTRACT_VERSION
+from shared.settings import Settings
+from shared.settings import get_settings as get_shared_settings
 from tests.helpers import build_agent_engine
 
 
@@ -27,7 +29,7 @@ class HealthyBackendQueries:
     def verify_contract(self):
         return {
             "ok": True,
-            "contract_version": "1.3",
+            "contract_version": BACKEND_READ_CONTRACT_VERSION,
             "dialect": "postgresql",
             "server_version": "test-version",
             "read_only": True,
@@ -62,7 +64,7 @@ def _agent_engine(_tmp_path=None, _name: str = "agent_ready"):
 def _settings(**updates) -> Settings:
     values = {
         "agent_sync_api_token": "sync-ready-token",
-        "backend_api_token": "backend-ready-token",
+        "internal_api_token": "internal-ready-token",
         "system_base_url": "http://backend.test:8000",
         "agent_feedback_encryption_key": (
             "cHl0ZXN0LWZlZWRiYWNrLWVuY3J5cHRpb24ta2V5ISE="
@@ -112,7 +114,7 @@ def test_health_ready_returns_stable_200_contract(
     assert response.status_code == 200
     assert response.json() == {
         "status": "ready",
-        "contract_version": "1.3",
+        "contract_version": BACKEND_READ_CONTRACT_VERSION,
         "components": {
             "agent_database": {
                 "ok": True,
@@ -184,7 +186,7 @@ def test_generation_readiness_requires_auth_and_uses_real_provider_probe(
                 headers={
                     "Authorization": (
                         "Bearer "
-                        + get_shared_settings().require_agent_sync_api_token()
+                        + get_shared_settings().require_service_api_token()
                     )
                 },
             )
@@ -232,7 +234,7 @@ def test_health_ready_returns_secret_free_503_component_codes(
         "get_settings",
         lambda: _settings(
             agent_sync_api_token=duplicate_secret,
-            backend_api_token=duplicate_secret,
+            internal_api_token=duplicate_secret,
             system_base_url="not-a-url",
         ),
     )
@@ -254,7 +256,7 @@ def test_health_ready_returns_secret_free_503_component_codes(
     payload = response.json()
     assert payload == {
         "status": "not_ready",
-        "contract_version": "1.3",
+        "contract_version": BACKEND_READ_CONTRACT_VERSION,
         "components": {
             "agent_database": {
                 "ok": True,
@@ -273,11 +275,11 @@ def test_health_ready_returns_secret_free_503_component_codes(
             },
             "agent_sync_auth": {
                 "ok": False,
-                "code": "AGENT_SYNC_TOKEN_NOT_DEDICATED",
+                "code": "SERVICE_API_TOKEN_INVALID",
             },
             "backend_write_api": {
                 "ok": False,
-                "code": "BACKEND_API_TOKEN_NOT_DEDICATED",
+                "code": "SERVICE_API_TOKEN_INVALID",
             },
             "feedback_encryption": {"ok": True, "code": "OK"},
             "pro_ctcae_reference": {
@@ -314,7 +316,6 @@ def test_readiness_detects_missing_agent_migrations_and_required_config(
             backend_queries=None,
             settings=_settings(
                 agent_sync_api_token="",
-                backend_api_token="",
                 system_base_url="",
                 agent_feedback_encryption_key="",
             ),
@@ -340,11 +341,11 @@ def test_readiness_detects_missing_agent_migrations_and_required_config(
         },
         "agent_sync_auth": {
             "ok": False,
-            "code": "AGENT_SYNC_TOKEN_MISSING",
+            "code": "SERVICE_API_TOKEN_INVALID",
         },
         "backend_write_api": {
             "ok": False,
-            "code": "BACKEND_API_TOKEN_MISSING",
+            "code": "SERVICE_API_TOKEN_INVALID",
         },
         "feedback_encryption": {
             "ok": False,

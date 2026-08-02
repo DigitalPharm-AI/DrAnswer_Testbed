@@ -7,7 +7,6 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from agent_app.jobs.tasks import enqueue_async_task
-from shared.tool_names import PROPOSE_NOTIFICATION_POLICY
 from shared.async_v13_contracts import (
     NotificationPolicyChangeProposalRequest,
     NotificationPolicyProposal,
@@ -15,6 +14,7 @@ from shared.async_v13_contracts import (
 from shared.public_ids import new_public_id, require_public_id
 from shared.schemas import AgentResponse, NotificationPolicyDelta
 from shared.time_utils import as_aware_utc, as_naive_utc
+from shared.tool_names import PROPOSE_NOTIFICATION_POLICY
 
 DAILY_PATTERN_TIMEZONE = ZoneInfo("Asia/Seoul")
 DAILY_PATTERN_ANALYSIS_TASK = "daily_pattern_analysis"

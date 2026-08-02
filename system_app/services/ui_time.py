@@ -22,6 +22,16 @@ def as_seoul_iso(value: datetime) -> str:
     return as_seoul_datetime(value).isoformat()
 
 
+def as_simulation_naive_datetime(value: datetime) -> datetime:
+    """Normalize a timestamp to the testbed DB's naive Seoul wall time.
+
+    The v1.3 boundary accepts timezone-aware instants, while the simulation
+    database intentionally stores local wall-clock values without tzinfo.
+    """
+
+    return as_seoul_datetime(value).replace(tzinfo=None)
+
+
 def naive_utc_as_seoul(value: datetime) -> datetime:
     """Interpret a naive persistence timestamp as UTC, then display in Seoul."""
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -15,8 +15,8 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 import agent_app.main as native_agent_main
-from agent_app.agents.multiturn_chat import (
-    _normalize_mutation_confirmation_output,
+from agent_app.agents.multiturn_output import (
+    normalize_mutation_confirmation_output,
 )
 from agent_app.agents.tool_chat import AGENT_TOOL_LOOP_LIMIT, ToolChatAgentGraph
 from agent_app.errors import AgentExecutionError
@@ -45,7 +45,9 @@ from agent_app.providers.factory import create_llm_provider
 from agent_app.tools.calling import normalize_tool_calls
 from agent_app.tools.executor import McpAgentToolExecutor
 from agent_app.tools.mcp_server import http_status_tool_error_result
-from agent_app.tools.policy import _notification_policy_deltas, deferred_policy_tool_result, is_deferred_policy_tool_call
+from agent_app.tools.policy import (
+    notification_policy_deltas,
+)
 from agent_app.tools.protocol import (
     MCP_METHOD_TOOLS_CALL,
     MCP_METHOD_TOOLS_LIST,
@@ -56,14 +58,13 @@ from agent_app.tools.protocol import (
 )
 from agent_app.tools.results import tool_calls_payload
 from agent_app.tools.runtime import ToolRuntime
-from agent_app.tools.side_effects import ae_tool_call_from_lookup
+from agent_app.tools.side_effects import (
+    ae_tool_calls_from_lookup,
+    positive_side_effect_lookup,
+)
 from shared.schemas import (
     AgentCallbackContext,
-    DailyMedicationPattern,
-    DosePatternEvent,
-    MissedDoseEventPayload,
     MultiturnChatRequest,
-    SlotAdherenceSummary,
     ToolCallResult,
 )
 from shared.settings import get_settings
@@ -85,7 +86,16 @@ from shared.tool_names import (
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
     UPSERT_NUTRITION_PREFERENCE_FACT,
 )
-from shared.tool_permissions import permission_denied_result, validate_tool_permission
+from shared.tool_permissions import validate_tool_permission
+from tests.support.agent_scenarios import (
+    NativeDelegatingMedicationProvider,
+    NativeFakeToolExecutor,
+    NativeRecentChatProvider,
+    build_daily_pattern,
+    build_missed_payload,
+    build_repeated_daily_pattern,
+    build_taken_chat_request,
+)
 from tests.support.llm import NativeChatProvider, NativeProviderChatModel
 
 
@@ -139,44 +149,6 @@ class NativeFakeProvider(NativeChatProvider):
                 },
             }
         return {"advice": "현재 복약 상태를 확인했습니다.", "observations": ["추가 도구 실행은 필요하지 않습니다."]}
-
-
-class NativeDelegatingMedicationProvider(NativeChatProvider):
-    def __init__(self) -> None:
-        self.seen_payloads: list[dict[str, Any]] = []
-        self.bound_tool_names: list[str] = []
-        self.bound_tool_history: list[list[str]] = []
-
-    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
-        self.seen_payloads.append(user_payload)
-        self.bound_tool_history.append(list(self.bound_tool_names))
-        if user_payload.get("response_mode") == "multiturn_chat":
-            return {
-                "message": "복약 담당 에이전트가 확인하겠습니다.",
-                "tool_call": {
-                    "name": "delegate_to_medication_agent",
-                    "arguments": {
-                        "task": "record reported dose as taken",
-                        "reason": "patient reported taking a current medication dose",
-                    },
-                },
-            }
-        if user_payload.get("response_mode") == "medication_chat":
-            return {
-                "message": "복약 완료를 기록하겠습니다.",
-                "tool_call": {
-                    "name": REQUEST_RECORD_APPROVAL,
-                    "arguments": {
-                        "action_name": UPDATE_MEDICATION_DOSE_EVENT_STATUS,
-                        "record_arguments": {
-                            "dose_event_id": "dose-event-12",
-                        },
-                    },
-                },
-            }
-        if user_payload.get("response_mode") == "final_answer":
-            return {"advice": "복약 요청 처리를 완료했습니다."}
-        return {"advice": "확인했습니다."}
 
 
 class NativeDelegatingNutritionManagementProvider(NativeChatProvider):
@@ -449,21 +421,6 @@ class BlankToolFinalizingProvider(NativeChatProvider):
         raise AssertionError(f"unexpected_response_mode:{response_mode}")
 
 
-class NativeRecentChatProvider(NativeChatProvider):
-    def __init__(self) -> None:
-        self.seen_payloads: list[dict[str, Any]] = []
-        self.seen_prompts: list[str] = []
-
-    async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
-        self.seen_prompts.append(system_prompt)
-        self.seen_payloads.append(user_payload)
-        return {
-            "advice": "앞서 속이 메스꺼운데 약 때문일지 물어보셨고, PRO-CTCAE 문항에는 1번 자주 있다, 2번 보통이다로 답하셨습니다.",
-            "observations": ["recent_chat을 참고해 일반 대화로 답변했습니다."],
-            "tool_calls": [],
-        }
-
-
 class InvalidMissedDoseHybridProvider(NativeChatProvider):
     async def model_output(self, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:
         assert (
@@ -500,240 +457,6 @@ class UnsafeMissedDoseMessageProvider(NativeChatProvider):
         return {
             "generated_message": "혈압약은 반드시 복용하세요.",
         }
-
-
-class NativeFakeToolExecutor:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    async def execute_tool_call(self, tool_call: dict[str, Any], *, trace_id: str, source_event_type: str, payload: dict[str, Any]) -> ToolCallResult:
-        name = str(tool_call.get("name"))
-        denial_reason = validate_tool_permission(tool_call, source_event_type=source_event_type, payload=payload)
-        if denial_reason:
-            return permission_denied_result(tool_call, trace_id=trace_id, source_event_type=source_event_type, reason=denial_reason)
-        if is_deferred_policy_tool_call(tool_call):
-            return deferred_policy_tool_result(tool_call, trace_id=trace_id, source_event_type=source_event_type)
-        self.calls.append({**tool_call, "_source_event_type": source_event_type})
-        if name == REQUEST_RECORD_APPROVAL:
-            action_name = str(tool_call["arguments"]["action_name"])
-            return ToolCallResult(
-                tool_name=name,
-                status="confirmation_required",
-                response={
-                    "mutation_confirmation": {
-                        "confirmation_required": True,
-                        "action_type": "agent_tool",
-                        "action_name": action_name,
-                        "tool_call_id": str(tool_call.get("id") or ""),
-                        "action_fingerprint": f"fingerprint-{action_name}",
-                        "status": "pending",
-                        "display": {
-                            "title": "record confirmation",
-                            "question": "confirm record change",
-                        },
-                    }
-                },
-                idempotency_key=f"{trace_id}:{name}:{action_name}",
-            )
-        if name == "update_medication_dose_event_status":
-            return ToolCallResult(
-                tool_name=name,
-                status="success",
-                response={
-                    "dose_event_id": tool_call["arguments"]["dose_event_id"],
-                    "status": "taken",
-                    "message": "아침 08:00 혈압약 복약을 완료로 기록했습니다.",
-                },
-                idempotency_key=f"{trace_id}:update_medication_dose_event_status:{source_event_type}:12",
-            )
-        if name == GET_MEDICATION_DOSE_STATUS:
-            return ToolCallResult(
-                tool_name=name,
-                status="success",
-                response={
-                    "success": True,
-                    "dose_events": [
-                        {
-                            "slot_label": "\uc544\uce68 08:00",
-                            "status": "taken",
-                            "taken_at": "2026-04-20T09:30:00",
-                        }
-                    ],
-                    "total": 1,
-                    "totals_by_status": {"taken": 1, "scheduled": 0, "missed": 0},
-                },
-                idempotency_key=f"{trace_id}:get_medication_dose_status",
-            )
-
-        if name == "propose_notification_policy":
-            return ToolCallResult(
-                tool_name=name,
-                status="success",
-                response={
-                    "idempotency_key": f"{trace_id}:propose_notification_policy:{source_event_type}",
-                    "results": [{"slot_label": "아침 08:00", "applied": True, "message": "정책을 적용했습니다."}],
-                    "all_applied": True,
-                },
-                idempotency_key=f"{trace_id}:propose_notification_policy:{source_event_type}",
-            )
-        if name == "get_medication_side_effect_assessment":
-            return ToolCallResult(
-                tool_name=name,
-                status="success",
-                response={
-                    "suspected": True,
-                    "matched_effects": ["메스꺼움"],
-                    "matched_items": ["항암제"],
-                    "severity": "moderate",
-                    "evidence": "주의사항에 메스꺼움이 포함되어 있습니다.",
-                    "recommendation": "증상 문항 확인이 필요합니다.",
-                },
-                idempotency_key=f"{trace_id}:get_medication_side_effect_assessment",
-            )
-        if name == "get_pro_ctcae_questionnaire":
-            return ToolCallResult(
-                tool_name=name,
-                status="success",
-                response={
-                    "input_symptom": tool_call["arguments"]["symptom_text"],
-                    "matched": True,
-                    "match_type": "exact",
-                    "matched_symptom_term": "Nausea",
-                    "matched_korean_symptom_name": "메스꺼움",
-                    "similarity": 1.0,
-                    "threshold": 0.56,
-                    "scoring_method": "test",
-                    "embedding_provider": "",
-                    "sheet_name": "Parsed_Items",
-                    "questions": [],
-                    "candidates": [],
-                },
-                idempotency_key=f"{trace_id}:get_pro_ctcae_questionnaire",
-            )
-        if name == "search_nutrition_food_candidates":
-            food_queries = tool_call["arguments"].get(
-                "food_queries",
-                [],
-            )
-            return ToolCallResult(
-                tool_name=name,
-                status="success",
-                response={
-                    "success": True,
-                    "search_groups": [
-                        {
-                            "query": query,
-                            "candidates": [
-                                {
-                                    "food_ref_id": (
-                                        f"food-{index}"
-                                    ),
-                                    "food_name": query,
-                                    "serving_size": 50,
-                                    "nutrients": {
-                                        "calories": 70,
-                                        "protein": 6,
-                                    },
-                                }
-                            ],
-                        }
-                        for index, query in enumerate(
-                            food_queries
-                        )
-                    ],
-                },
-                idempotency_key=f"{trace_id}:search_nutrition_food_candidates",
-            )
-        if name == "get_nutrition_meal_record_list":
-            return ToolCallResult(
-                tool_name=name,
-                status="success",
-                response={
-                    "success": True,
-                    "meals": [
-                        {
-                            "id": 101,
-                            "meal_type": "lunch",
-                            "meal_label": "점심",
-                            "foods": [
-                                {
-                                    "id": 202,
-                                    "food_ref_id": "tangsuyuk",
-                                    "food_name": "탕수육",
-                                    "portion": {"amount": 1, "unit": "serving"},
-                                    "nutrients": {"calories": 420, "protein": 16},
-                                }
-                            ],
-                        }
-                    ],
-                },
-                idempotency_key=f"{trace_id}:get_nutrition_meal_record_list",
-            )
-        if name == "upsert_nutrition_preference_fact":
-            return ToolCallResult(
-                tool_name=name,
-                status="success",
-                response={
-                    "success": True,
-                    "fact": {
-                        "predicate": tool_call["arguments"]["predicate"],
-                        "object_label": tool_call["arguments"]["object_label"],
-                    },
-                },
-                idempotency_key=f"{trace_id}:upsert_nutrition_preference_fact",
-            )
-        if name == "get_nutrition_recommendation_candidates":
-            return ToolCallResult(
-                tool_name=name,
-                status="success",
-                response={
-                    "success": True,
-                    "recommendations": [{"food_name": "두부 샐러드", "score": 0.9}],
-                    "blocked_count": 0,
-                },
-                idempotency_key=f"{trace_id}:get_nutrition_recommendation_candidates",
-            )
-        if name == "update_nutrition_meal_record":
-            return ToolCallResult(
-                tool_name=name,
-                status="success",
-                response={"success": True, "meal": {"id": tool_call["arguments"]["meal_id"], "meal_label": "점심"}, "daily_summary": {}},
-                idempotency_key=f"{trace_id}:update_nutrition_meal_record:{tool_call['arguments']['meal_id']}",
-            )
-        if name == "delete_nutrition_meal_record":
-            return ToolCallResult(
-                tool_name=name,
-                status="success",
-                response={"success": True, "deleted_meal": {"id": tool_call["arguments"]["meal_id"], "meal_label": "점심"}, "daily_summary": {}},
-                idempotency_key=f"{trace_id}:delete_nutrition_meal_record:{tool_call['arguments']['meal_id']}",
-            )
-        if name == "update_nutrition_food_record":
-            return ToolCallResult(
-                tool_name=name,
-                status="success",
-                response={
-                    "success": True,
-                    "meal": {"id": tool_call["arguments"]["meal_id"], "meal_label": "점심"},
-                    "food": {"id": tool_call["arguments"]["food_id"], "food_name": tool_call["arguments"].get("food_name", "수정 음식")},
-                    "daily_summary": {},
-                },
-                idempotency_key=f"{trace_id}:update_nutrition_food_record:{tool_call['arguments']['meal_id']}:{tool_call['arguments']['food_id']}",
-            )
-        if name == "delete_nutrition_food_record":
-            return ToolCallResult(
-                tool_name=name,
-                status="success",
-                response={
-                    "success": True,
-                    "meal_id": tool_call["arguments"]["meal_id"],
-                    "food_id": tool_call["arguments"]["food_id"],
-                    "deleted_food": {"id": tool_call["arguments"]["food_id"], "food_name": "삭제 음식"},
-                    "daily_summary": {},
-                    "meal_deleted": False,
-                },
-                idempotency_key=f"{trace_id}:delete_nutrition_food_record:{tool_call['arguments']['meal_id']}:{tool_call['arguments']['food_id']}",
-            )
-        return ToolCallResult(tool_name=name, status="error", error="unexpected_tool")
 
 
 class RecordingMcpServer:
@@ -822,8 +545,10 @@ def test_multiturn_prompt_routes_global_notification_control_to_application_ui()
     assert "turn all medication reminders and missed-dose AI notifications on or off globally" in supervisor_prompt
     assert "do not call propose_notification_policy, propose_system_policy, or any other tool" in supervisor_prompt
     assert "change the setting directly in the application" in supervisor_prompt
-    assert "continue using propose_notification_policy for slot-specific" in supervisor_prompt
-    assert "call get_notification_policies first" in supervisor_prompt
+    assert "Notification policy creation is not supported in chat" in supervisor_prompt
+    assert "never call propose_notification_policy from this supervisor" in supervisor_prompt
+    assert "may only modify an existing active policy" in supervisor_prompt
+    assert "Call get_notification_policies with active_only=true first" in supervisor_prompt
     assert (
         "call request_record_approval with action_name "
         "change_notification_policy"
@@ -851,7 +576,7 @@ def test_record_confirmation_prompts_keep_button_labels_out_of_message_text():
 
 
 def test_mutation_confirmation_provider_question_is_normalized_to_message():
-    assert _normalize_mutation_confirmation_output(
+    assert normalize_mutation_confirmation_output(
         {"question": "이 식사 기록을 저장할까요?"}
     ) == {"message": "이 식사 기록을 저장할까요?"}
 
@@ -1042,6 +767,23 @@ def test_tool_catalog_can_be_exposed_as_mcp_tools_list():
     predicate_schema = preference_tool["inputSchema"]["properties"]["predicate"]
     assert predicate_schema["description"] == "Hard restrictions must not use a preference predicate."
     assert "cannot_consume" in predicate_schema["enum"]
+    side_effect_tool = next(
+        tool
+        for tool in payload["tools"]
+        if tool["name"] == "get_medication_side_effect_assessment"
+    )
+    side_effect_schema = side_effect_tool["inputSchema"]
+    assert side_effect_schema["required"] == ["symptom_mentions"]
+    assert set(side_effect_schema["properties"]) == {
+        "symptom_mentions",
+        "medication_name",
+    }
+    assert side_effect_schema["properties"]["symptom_mentions"][
+        "maxItems"
+    ] == 5
+    assert side_effect_schema["properties"]["symptom_mentions"][
+        "items"
+    ]["additionalProperties"] is False
     food_search_tool = next(
         tool
         for tool in payload["tools"]
@@ -1369,7 +1111,10 @@ def test_agent_app_mcp_direct_nutrition_write_is_read_only_denied():
 def test_specialist_source_event_types_enforce_tool_boundaries():
     meal_call = {
         "name": CREATE_NUTRITION_MEAL_RECORD,
-        "arguments": {"meal_type": "lunch", "foods": [{"food_name": "rice"}]},
+        "arguments": {
+            "meal_type": "lunch",
+            "foods": [{"food_name": "rice", "nutrients": {}}],
+        },
     }
     supervisor_denial = validate_tool_permission(meal_call, source_event_type=SOURCE_MULTITURN_CHAT, payload={})
 
@@ -1632,11 +1377,11 @@ def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_perm
     specialist_tools = set(provider.bound_tool_history[1])
     assert "delegate_to_medication_agent" in supervisor_tools
     assert {
-        "propose_notification_policy",
         "propose_system_policy",
         "get_notification_policies",
         "request_record_approval",
     } <= supervisor_tools
+    assert "propose_notification_policy" not in supervisor_tools
     assert "change_notification_policy" not in supervisor_tools
     assert {
         "update_medication_dose_event_status",
@@ -2352,6 +2097,117 @@ def test_specialist_tool_result_without_final_llm_answer_fails_closed():
     assert exc_info.value.error_type == "llm_final_answer_missing"
 
 
+def test_specialist_routes_required_food_portion_to_input_box_without_llm():
+    class InputRequiredExecutor:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def execute_tool_call(
+            self,
+            tool_call: dict[str, Any],
+            *,
+            trace_id: str,
+            source_event_type: str,
+            payload: dict[str, Any],
+        ) -> ToolCallResult:
+            self.calls.append(tool_call)
+            return ToolCallResult(
+                tool_name=REQUEST_RECORD_APPROVAL,
+                status="success",
+                response={
+                    "input_required": True,
+                    "approval_created": False,
+                    "record_applied": False,
+                    "action_name": (
+                        CREATE_NUTRITION_MEAL_RECORD
+                    ),
+                    "missing_fields": ["foods[].portion"],
+                    "input_request": {
+                        "message_title": "섭취량 입력",
+                        "text": "실제 섭취량을 입력해 주세요.",
+                        "tables": None,
+                        "selections": None,
+                        "inputs": [
+                            {
+                                "type": "number",
+                                "label": "1. 토스트 섭취량",
+                                "value": None,
+                                "options": {
+                                    "unit": "g",
+                                    "lower": 1,
+                                    "upper": 5000,
+                                    "selections": None,
+                                },
+                            }
+                        ],
+                    },
+                },
+                idempotency_key=(
+                    f"{trace_id}:input-required"
+                ),
+            )
+
+    provider = NativeFakeProvider()
+    executor = InputRequiredExecutor()
+    graph_runner = ToolChatAgentGraph(
+        provider=provider,
+        tool_runtime=ToolRuntime(executor),
+        agent_name="nutrition_management_agent",
+        prompt=nutrition_management_agent_prompt(),
+        response_mode="nutrition_management_chat",
+        decision_type="tool_call",
+        tool_names=(REQUEST_RECORD_APPROVAL,),
+        source_event_type=(
+            SOURCE_NUTRITION_MANAGEMENT_AGENT
+        ),
+    )
+
+    response = asyncio.run(
+        graph_runner.continue_with_tool_calls(
+            "trace-food-input-required",
+            {
+                "patient_id": "demo-patient",
+                "message": "토스트를 기록해줘",
+                "context": {},
+            },
+            tool_calls=[
+                {
+                    "id": "trusted-food-approval",
+                    "name": REQUEST_RECORD_APPROVAL,
+                    "arguments": {
+                        "action_name": (
+                            CREATE_NUTRITION_MEAL_RECORD
+                        ),
+                        "record_arguments": {
+                            "meal_type": "breakfast",
+                            "foods": [
+                                {
+                                    "food_name": "토스트",
+                                    "portion": "100g",
+                                }
+                            ],
+                        },
+                    },
+                }
+            ],
+        )
+    )
+
+    assert len(executor.calls) == 1
+    assert provider.seen_payloads == []
+    assert response.decision_type == "input_required"
+    assert response.structured_payload[
+        "input_required"
+    ] is True
+    chat_response = response.structured_payload[
+        "chat_response"
+    ]
+    assert chat_response["message_type"] == "input_box"
+    assert chat_response["message"]["inputs"][0][
+        "label"
+    ] == "1. 토스트 섭취량"
+
+
 def test_multiturn_structured_delegation_does_not_require_final_text(monkeypatch):
     provider = BlankToolFinalizingProvider()
     monkeypatch.setattr(
@@ -2493,7 +2349,7 @@ def test_deterministic_provider_is_available_only_in_explicit_testbed(monkeypatc
         get_settings.cache_clear()
 
 
-def test_ae_tool_call_from_lookup_passes_only_patient_symptom_text():
+def test_ae_tool_calls_from_lookup_preserve_distinct_patient_symptoms():
     result = ToolCallResult(
         tool_name="get_medication_side_effect_assessment",
         status="success",
@@ -2504,21 +2360,57 @@ def test_ae_tool_call_from_lookup_passes_only_patient_symptom_text():
             "severity": "high",
             "evidence": "당뇨약 주의사항 키워드(메스꺼)",
             "recommendation": "증상 문항 확인이 필요합니다.",
+            "assessments": [
+                {
+                    "match_status": "MATCHED",
+                    "suspected": True,
+                    "symptom_text": "속이 메스꺼워요",
+                    "matched_concept": {"concept_id": "nausea"},
+                },
+                {
+                    "match_status": "MATCHED",
+                    "suspected": True,
+                    "symptom_text": "실제로 두 번 토했어요",
+                    "matched_concept": {"concept_id": "vomiting"},
+                },
+            ],
         },
     )
-    tool_call = ae_tool_call_from_lookup(
-        {
-            "name": "get_medication_side_effect_assessment",
-            "arguments": {"symptom_text": "속이 메스꺼운데 약때문일까?"},
+    tool_calls = ae_tool_calls_from_lookup(result)
+
+    assert [call["name"] for call in tool_calls] == [
+        "get_pro_ctcae_questionnaire",
+        "get_pro_ctcae_questionnaire",
+    ]
+    assert [call["arguments"]["symptom_text"] for call in tool_calls] == [
+        "속이 메스꺼워요",
+        "실제로 두 번 토했어요",
+    ]
+
+
+def test_ambiguous_symptom_blocks_forced_pro_ctcae_questionnaire():
+    result = ToolCallResult(
+        tool_name="get_medication_side_effect_assessment",
+        status="success",
+        response={
+            "suspected": True,
+            "requires_clarification": True,
+            "assessments": [
+                {
+                    "match_status": "AMBIGUOUS",
+                    "suspected": False,
+                    "symptom_text": "붉은 반점",
+                    "candidate_concepts": [
+                        {"concept_id": "rash"},
+                        {"concept_id": "hives"},
+                    ],
+                }
+            ],
         },
-        result,
-        {"message": "속이 메스꺼운데 약때문일까?"},
     )
 
-    assert tool_call["name"] == "get_pro_ctcae_questionnaire"
-    assert tool_call["arguments"] == {
-        "symptom_text": "속이 메스꺼운데 약때문일까?"
-    }
+    assert positive_side_effect_lookup(result) is False
+    assert ae_tool_calls_from_lookup(result) == []
 
 
 def test_deterministic_provider_requires_repeated_daily_pattern_before_policy_tool_call():
@@ -2594,7 +2486,7 @@ def test_deterministic_provider_answers_nutrition_and_medication_chat_together()
 
 
 def test_notification_policy_deltas_fill_daily_pattern_source():
-    policies = _notification_policy_deltas(
+    policies = notification_policy_deltas(
         {
             "slot_label": "아침 08:00",
             "extra_reminders": 2,
@@ -2609,9 +2501,8 @@ def test_notification_policy_deltas_fill_daily_pattern_source():
     assert len(policies) == 1
     assert policies[0].source == "pattern_analysis"
 
-
 def test_notification_policy_deltas_normalize_daily_pattern_source_alias():
-    policies = _notification_policy_deltas(
+    policies = notification_policy_deltas(
         {
             "slot_label": "아침 08:00",
             "extra_reminders": 2,
@@ -2626,112 +2517,3 @@ def test_notification_policy_deltas_normalize_daily_pattern_source_alias():
 
     assert len(policies) == 1
     assert policies[0].source == "pattern_analysis"
-
-
-def build_daily_pattern() -> DailyMedicationPattern:
-    return DailyMedicationPattern(
-        patient_id="demo-patient",
-        date=date(2026, 4, 20),
-        schedule_slots=["아침 08:00"],
-        dose_events=[
-            DosePatternEvent(
-                dose_event_id=12,
-                medication_name="혈압약",
-                slot_label="아침 08:00",
-                scheduled_for=datetime(2026, 4, 20, 8, 0),
-                status="missed",
-            )
-        ],
-        slot_summaries=[
-            SlotAdherenceSummary(
-                slot_label="아침 08:00",
-                scheduled_count=1,
-                taken_count=0,
-                missed_count=1,
-                miss_rate=1.0,
-            )
-        ],
-    )
-
-
-def build_repeated_daily_pattern() -> DailyMedicationPattern:
-    return DailyMedicationPattern(
-        patient_id="demo-patient",
-        date=date(2026, 4, 21),
-        window_start_date=date(2026, 4, 20),
-        window_end_date=date(2026, 4, 21),
-        window_days=2,
-        observed_day_count=2,
-        schedule_slots=["아침 08:00"],
-        dose_events=[
-            DosePatternEvent(
-                dose_event_id=12,
-                medication_name="혈압약",
-                slot_label="아침 08:00",
-                scheduled_for=datetime(2026, 4, 20, 8, 0),
-                status="missed",
-            ),
-            DosePatternEvent(
-                dose_event_id=13,
-                medication_name="혈압약",
-                slot_label="아침 08:00",
-                scheduled_for=datetime(2026, 4, 21, 8, 0),
-                status="missed",
-            ),
-        ],
-        slot_summaries=[
-            SlotAdherenceSummary(
-                slot_label="아침 08:00",
-                scheduled_count=2,
-                taken_count=0,
-                missed_count=2,
-                miss_rate=1.0,
-            )
-        ],
-    )
-
-
-def build_missed_payload() -> MissedDoseEventPayload:
-    return MissedDoseEventPayload(
-        patient_id="demo-patient",
-        dose_event_id=12,
-        medication_name="혈압약",
-        slot_label="아침 08:00",
-        scheduled_for=datetime(2026, 4, 20, 8, 0),
-        detected_at=datetime(2026, 4, 20, 9, 30),
-        recent_slot_summaries=[],
-        adherence_pattern_context={
-            "pattern_code": "B",
-            "pattern_label": "습관 미형성",
-            "reason": "복약 루틴 형성을 위한 단기 미복용 확인이 필요합니다.",
-        },
-        tone_policy_context={
-            "pattern_code": "B",
-            "tone_key": "persuasion",
-            "message": "복약 루틴을 함께 맞춰봐요. 지금 확인해보세요.",
-            "message_variant": "v1",
-            "message_catalog_source": "test_catalog",
-        },
-        chat_context=[],
-    )
-
-
-def build_taken_chat_request() -> MultiturnChatRequest:
-    return MultiturnChatRequest(
-        patient_id="demo-patient",
-        event_type="multiturn_chat",
-        message="아침 약은 방금 복용했어. 기록해줘.",
-        current_time=datetime(2026, 4, 20, 9, 35),
-        context={
-            "schedule_slots": ["아침 08:00"],
-            "today_dose_events": [
-                {
-                    "dose_event_id": "dose-event-12",
-                    "medication_name": "혈압약",
-                    "slot_label": "아침 08:00",
-                    "scheduled_for": "2026-04-20T08:00:00",
-                    "status": "missed",
-                }
-            ],
-        },
-    )

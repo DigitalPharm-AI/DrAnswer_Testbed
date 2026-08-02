@@ -32,7 +32,7 @@ def require_backend_api_bearer_token(
     ] = None,
 ) -> None:
     settings = get_settings()
-    expected_token = settings.require_backend_api_token()
+    expected_token = settings.require_service_api_token()
     if (
         credentials is None
         or credentials.scheme.lower() != "bearer"

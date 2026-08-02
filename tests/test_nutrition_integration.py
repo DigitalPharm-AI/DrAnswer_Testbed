@@ -17,8 +17,15 @@ from system_app.models import (
     NutritionOntologyTriple,
     NutritionPatientPreferenceTriple,
 )
-from system_app.services.medication_plan_service import reset_simulation_state
 from system_app.services.food_search_service import english_to_korean_nutrients, scale_nutrients
+from system_app.services.medication_plan_service import reset_simulation_state
+from system_app.services.nutrition_preference_service import (
+    nutrition_preference_summary,
+    parse_preference_csv,
+    record_preference_csv_lists,
+    record_preference_fact,
+    seed_nutrition_ontology,
+)
 from system_app.services.nutrition_service import (
     daily_nutrition_view,
     delete_food,
@@ -28,13 +35,6 @@ from system_app.services.nutrition_service import (
     search_foods,
     update_food,
     update_meal,
-)
-from system_app.services.nutrition_preference_service import (
-    nutrition_preference_summary,
-    parse_preference_csv,
-    record_preference_fact,
-    record_preference_csv_lists,
-    seed_nutrition_ontology,
 )
 from tests.helpers import build_session
 

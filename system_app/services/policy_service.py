@@ -18,6 +18,7 @@ from system_app.services.policy_workbook import (
 from system_app.services.policy_workbook_schema import (
     DAILY_PATTERN_CONVERSATION_TIME_KEY,
     DEFAULT_DAILY_PATTERN_CONVERSATION_TIME,
+    relative_primary_minutes,
 )
 
 settings = get_settings()
@@ -321,7 +322,7 @@ def policy_boundary_violations(values: dict[str, Any], boundary: ResolvedPolicyB
         )
     if primary_reminder_timing == "at" and primary_reminder_offset_minutes != 0:
         errors.append("정시(at) 알림은 offset을 0분으로 설정해야 합니다.")
-    last_alert_minutes = relative_primary_reminder_minutes(primary_reminder_timing, primary_reminder_offset_minutes) + (
+    last_alert_minutes = relative_primary_minutes(primary_reminder_timing, primary_reminder_offset_minutes) + (
         extra_reminders * interval_minutes
     )
     if last_alert_minutes > missed_dose_after_minutes:
@@ -341,17 +342,9 @@ def missed_dose_due_at_for_event(session: Session, event: DoseEvent) -> datetime
     return event.scheduled_for + timedelta(minutes=missed_dose_delay_minutes_for_event(session, event))
 
 
-def relative_primary_reminder_minutes(timing: str, offset_minutes: int) -> int:
-    if timing == "before":
-        return -offset_minutes
-    if timing == "after":
-        return offset_minutes
-    return 0
-
-
 def primary_reminder_visible_at(policy: ResolvedNotificationPolicy, scheduled_for: datetime) -> datetime:
     return scheduled_for + timedelta(
-        minutes=relative_primary_reminder_minutes(policy.primary_reminder_timing, policy.primary_reminder_offset_minutes)
+        minutes=relative_primary_minutes(policy.primary_reminder_timing, policy.primary_reminder_offset_minutes)
     )
 
 

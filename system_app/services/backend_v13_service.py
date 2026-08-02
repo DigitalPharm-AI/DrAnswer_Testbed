@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from shared.backend_v13_contracts import (
+    POLICY_MAX_EFFECTIVE_DAYS,
     CommonErrorResponse,
     ContractError,
     MedicationDoseEventMutationPayload,
@@ -18,7 +19,6 @@ from shared.backend_v13_contracts import (
     NotificationPolicyChangeRequest,
     NotificationPolicyChangeResponse,
     NotificationPolicyChangeResult,
-    POLICY_MAX_EFFECTIVE_DAYS,
     NutritionFoodMutationPayload,
     NutritionMealMutationPayload,
     RecordChangeRequest,
@@ -27,6 +27,7 @@ from shared.backend_v13_contracts import (
 )
 from shared.contract_errors import contract_error_definition
 from shared.json_utils import dump_json, parse_json_object
+from shared.settings import get_settings
 from shared.time_utils import utc_now
 from system_app.models import (
     BackendApiRequest,
@@ -49,7 +50,6 @@ from system_app.services.policy_service import (
     policy_boundary_violations,
     resolve_policy_boundary_for_slot,
 )
-from shared.settings import get_settings
 
 RECORD_CHANGE_PATH = "/agent/sync/record-change"
 POLICY_CHANGE_PATH = "/agent/sync/notification-policy-change"
@@ -210,6 +210,7 @@ def apply_notification_policy_change(
             select(ReminderPolicy).where(
                 ReminderPolicy.public_id == request.policy_id,
                 ReminderPolicy.patient_id == request.patient_id,
+                ReminderPolicy.active.is_(True),
             ).with_for_update()
         )
         if policy is None:

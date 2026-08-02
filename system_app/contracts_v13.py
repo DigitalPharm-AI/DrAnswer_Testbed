@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -9,19 +10,22 @@ from pydantic import (
     model_validator,
 )
 
-from shared.chat_contracts import ChatMessageContent, ChatMessageType, RequestedReturnType
+from shared.chat_contracts import (
+    ChatMessageContent,
+    ChatMessageType,
+    RequestedReturnType,
+    require_structured_response_source,
+)
 from shared.public_ids import (
     AssistantMessageId,
     PatientId,
     RequestId,
     UserMessageId,
 )
-
-
-def _aware(value: datetime) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("timezone_offset_required")
-    return value
+from shared.time_utils import (
+    require_aware_datetime,
+    require_optional_aware_datetime,
+)
 
 
 class StrictBackendContract(BaseModel):
@@ -44,7 +48,7 @@ class BackendChatRequest(StrictBackendContract):
     @field_validator("message_at")
     @classmethod
     def validate_message_at(cls, value: datetime | None) -> datetime | None:
-        return _aware(value) if value is not None else None
+        return require_optional_aware_datetime(value)
 
     @field_validator("source_message_id")
     @classmethod
@@ -60,14 +64,11 @@ class BackendChatRequest(StrictBackendContract):
         return normalized
 
     @model_validator(mode="after")
-    def require_structured_response_source(self) -> BackendChatRequest:
-        if (
-            self.requested_return_type != "text"
-            and self.source_message_id is None
-        ):
-            raise ValueError(
-                "source_message_id_required_for_structured_response"
-            )
+    def validate_structured_response_source(self) -> BackendChatRequest:
+        require_structured_response_source(
+            self.requested_return_type,
+            self.source_message_id,
+        )
         return self
 
 
@@ -86,4 +87,4 @@ class BackendChatResponse(StrictBackendContract):
     @field_validator("message_at")
     @classmethod
     def validate_message_at(cls, value: datetime) -> datetime:
-        return _aware(value)
+        return require_aware_datetime(value)

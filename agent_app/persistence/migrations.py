@@ -151,8 +151,8 @@ def _base_migrations(engine: Engine) -> list[tuple[str, str]]:
                 error_code VARCHAR(80) NOT NULL DEFAULT '',
                 error_message TEXT NOT NULL DEFAULT '',
                 metadata_json TEXT NOT NULL DEFAULT '{{}}',
-                started_at {timestamp} NOT NULL,
-                completed_at {timestamp},
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
                 created_at {timestamp} NOT NULL,
                 updated_at {timestamp} NOT NULL,
                 expires_at {timestamp} NOT NULL
@@ -885,6 +885,505 @@ def _base_migrations(engine: Engine) -> list[tuple[str, str]]:
             CREATE INDEX IF NOT EXISTS
                 ix_agent_pending_selections_expires_at
             ON agent_pending_selections (expires_at)
+            """,
+        ),
+        (
+            "20260802_0043_mfds_adverse_reaction_reference",
+            f"""
+            CREATE TABLE IF NOT EXISTS mfds_import_runs (
+                run_id BIGINT PRIMARY KEY,
+                source_file TEXT NOT NULL,
+                source_sha256 VARCHAR(64) NOT NULL,
+                extractor_version VARCHAR(80) NOT NULL,
+                started_at {timestamp} NOT NULL,
+                completed_at {timestamp},
+                status VARCHAR(32) NOT NULL,
+                stats_json TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS mfds_drug_products (
+                item_seq VARCHAR(40) PRIMARY KEY,
+                item_name TEXT NOT NULL,
+                item_eng_name TEXT,
+                entp_name TEXT,
+                entp_eng_name TEXT,
+                item_permit_date VARCHAR(20),
+                etc_otc_code VARCHAR(80),
+                cancel_name VARCHAR(80),
+                cancel_date VARCHAR(20),
+                change_date VARCHAR(40),
+                atc_code VARCHAR(80),
+                main_item_ingr TEXT,
+                main_ingr_eng TEXT,
+                material_name TEXT,
+                search_text TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS mfds_label_documents (
+                document_id BIGINT PRIMARY KEY,
+                document_hash VARCHAR(64) NOT NULL UNIQUE,
+                document_type VARCHAR(40) NOT NULL,
+                raw_xml_zlib BYTEA NOT NULL,
+                raw_xml_length BIGINT NOT NULL,
+                parse_status VARCHAR(40) NOT NULL,
+                parse_error TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS mfds_product_label_documents (
+                item_seq VARCHAR(40) NOT NULL REFERENCES
+                    mfds_drug_products (item_seq) ON DELETE CASCADE,
+                document_id BIGINT NOT NULL REFERENCES
+                    mfds_label_documents (document_id) ON DELETE CASCADE,
+                change_date VARCHAR(40),
+                PRIMARY KEY (item_seq, document_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS mfds_label_sections (
+                section_id BIGINT PRIMARY KEY,
+                section_type VARCHAR(80) NOT NULL,
+                section_text TEXT NOT NULL,
+                section_hash VARCHAR(64) NOT NULL UNIQUE
+            );
+
+            CREATE TABLE IF NOT EXISTS mfds_document_label_sections (
+                document_id BIGINT NOT NULL REFERENCES
+                    mfds_label_documents (document_id) ON DELETE CASCADE,
+                section_id BIGINT NOT NULL REFERENCES
+                    mfds_label_sections (section_id) ON DELETE CASCADE,
+                heading TEXT NOT NULL,
+                section_path TEXT NOT NULL,
+                section_order INTEGER NOT NULL,
+                PRIMARY KEY (document_id, section_id, section_order)
+            );
+
+            CREATE TABLE IF NOT EXISTS mfds_adverse_reactions (
+                reaction_id BIGINT PRIMARY KEY,
+                normalized_term TEXT NOT NULL UNIQUE
+            );
+
+            CREATE TABLE IF NOT EXISTS mfds_section_adverse_reactions (
+                mention_id BIGINT PRIMARY KEY,
+                section_id BIGINT NOT NULL REFERENCES
+                    mfds_label_sections (section_id) ON DELETE CASCADE,
+                reaction_normalized TEXT NOT NULL,
+                reaction_raw TEXT NOT NULL,
+                organ_system_text TEXT,
+                frequency_text TEXT,
+                population_text TEXT,
+                condition_text TEXT,
+                assertion VARCHAR(40) NOT NULL,
+                evidence_start INTEGER NOT NULL,
+                evidence_end INTEGER NOT NULL,
+                reaction_start INTEGER NOT NULL,
+                reaction_end INTEGER NOT NULL,
+                extraction_method VARCHAR(80) NOT NULL,
+                extractor_version VARCHAR(80) NOT NULL,
+                confidence DOUBLE PRECISION NOT NULL,
+                review_status VARCHAR(80) NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS mfds_drug_aliases (
+                alias_normalized VARCHAR(255) NOT NULL,
+                item_seq VARCHAR(40) NOT NULL REFERENCES
+                    mfds_drug_products (item_seq) ON DELETE CASCADE,
+                source VARCHAR(80) NOT NULL DEFAULT 'manual',
+                PRIMARY KEY (alias_normalized, item_seq)
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_mfds_drug_products_item_name
+                ON mfds_drug_products (item_name);
+            CREATE INDEX IF NOT EXISTS ix_mfds_drug_products_atc_code
+                ON mfds_drug_products (atc_code);
+            CREATE INDEX IF NOT EXISTS ix_mfds_drug_products_cancel_name
+                ON mfds_drug_products (cancel_name);
+            CREATE INDEX IF NOT EXISTS ix_mfds_product_documents_document
+                ON mfds_product_label_documents (document_id);
+            CREATE INDEX IF NOT EXISTS ix_mfds_document_sections_document
+                ON mfds_document_label_sections (document_id);
+            CREATE INDEX IF NOT EXISTS ix_mfds_document_sections_section
+                ON mfds_document_label_sections (section_id);
+            CREATE INDEX IF NOT EXISTS ix_mfds_section_reactions_section
+                ON mfds_section_adverse_reactions (section_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_mfds_section_reaction_mention
+                ON mfds_section_adverse_reactions (
+                    section_id,
+                    reaction_normalized,
+                    assertion,
+                    reaction_start,
+                    reaction_end
+                );
+            CREATE INDEX IF NOT EXISTS ix_mfds_section_reactions_reaction
+                ON mfds_section_adverse_reactions (reaction_normalized);
+            CREATE INDEX IF NOT EXISTS ix_mfds_section_reactions_confidence
+                ON mfds_section_adverse_reactions (confidence);
+            CREATE INDEX IF NOT EXISTS ix_mfds_drug_aliases_alias
+                ON mfds_drug_aliases (alias_normalized);
+
+            CREATE OR REPLACE VIEW mfds_product_adverse_reaction_view AS
+            SELECT
+                p.item_seq,
+                p.item_name,
+                p.item_eng_name,
+                p.entp_name,
+                p.etc_otc_code,
+                p.cancel_name,
+                p.change_date,
+                p.atc_code,
+                p.main_item_ingr,
+                p.main_ingr_eng,
+                d.document_hash,
+                s.section_id,
+                ds.section_path,
+                ds.heading AS section_heading,
+                ds.section_order,
+                r.reaction_id,
+                r.normalized_term AS reaction_normalized,
+                m.reaction_raw,
+                m.organ_system_text,
+                m.frequency_text,
+                m.population_text,
+                m.condition_text,
+                m.assertion,
+                substring(
+                    s.section_text
+                    FROM m.evidence_start + 1
+                    FOR m.evidence_end - m.evidence_start
+                ) AS evidence_text,
+                m.evidence_start,
+                m.evidence_end,
+                m.reaction_start,
+                m.reaction_end,
+                m.extraction_method,
+                m.extractor_version,
+                m.confidence,
+                m.review_status
+            FROM mfds_drug_products p
+            JOIN mfds_product_label_documents pd
+              ON pd.item_seq = p.item_seq
+            JOIN mfds_label_documents d
+              ON d.document_id = pd.document_id
+            JOIN mfds_document_label_sections ds
+              ON ds.document_id = d.document_id
+            JOIN mfds_label_sections s
+              ON s.section_id = ds.section_id
+            JOIN mfds_section_adverse_reactions m
+              ON m.section_id = s.section_id
+            JOIN mfds_adverse_reactions r
+              ON r.normalized_term = m.reaction_normalized
+            """,
+        ),
+        (
+            "20260802_0044_cohere_vector_reference",
+            f"""
+            DO $migration$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_extension
+                    WHERE extname = 'vector'
+                ) THEN
+                    RAISE EXCEPTION 'agent_vector_extension_required';
+                END IF;
+            END
+            $migration$;
+
+            CREATE TABLE IF NOT EXISTS mfds_adverse_reaction_embeddings (
+                embedding_id {_id_column_type(engine)},
+                reaction_id BIGINT NOT NULL REFERENCES
+                    mfds_adverse_reactions (reaction_id) ON DELETE CASCADE,
+                source_text TEXT NOT NULL,
+                normalized_text TEXT NOT NULL,
+                embedding public.vector(1024) NOT NULL,
+                provider VARCHAR(80) NOT NULL,
+                model_id VARCHAR(160) NOT NULL,
+                model_region VARCHAR(80) NOT NULL,
+                dimensions INTEGER NOT NULL,
+                source_version VARCHAR(160) NOT NULL,
+                source_sha256 VARCHAR(64) NOT NULL,
+                embedded_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT ck_mfds_reaction_embedding_dimensions
+                    CHECK (dimensions = 1024),
+                CONSTRAINT uq_mfds_reaction_embedding_version
+                    UNIQUE (reaction_id, model_id, source_version)
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_pro_ctcae_alias_embeddings (
+                embedding_id {_id_column_type(engine)},
+                symptom_term TEXT NOT NULL,
+                korean_symptom_name TEXT NOT NULL,
+                sheet_name VARCHAR(160) NOT NULL,
+                alias_text TEXT NOT NULL,
+                normalized_alias TEXT NOT NULL,
+                embedding public.vector(1024) NOT NULL,
+                provider VARCHAR(80) NOT NULL,
+                model_id VARCHAR(160) NOT NULL,
+                model_region VARCHAR(80) NOT NULL,
+                dimensions INTEGER NOT NULL,
+                source_version VARCHAR(160) NOT NULL,
+                source_sha256 VARCHAR(64) NOT NULL,
+                embedded_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT ck_pro_ctcae_embedding_dimensions
+                    CHECK (dimensions = 1024),
+                CONSTRAINT uq_pro_ctcae_alias_embedding_version
+                    UNIQUE (
+                        symptom_term,
+                        korean_symptom_name,
+                        normalized_alias,
+                        model_id,
+                        source_version
+                    )
+            );
+
+            CREATE INDEX IF NOT EXISTS
+                ix_mfds_reaction_embeddings_normalized_text
+            ON mfds_adverse_reaction_embeddings (normalized_text);
+            CREATE INDEX IF NOT EXISTS
+                ix_mfds_reaction_embeddings_model_version
+            ON mfds_adverse_reaction_embeddings (model_id, source_version);
+            CREATE INDEX IF NOT EXISTS
+                ix_mfds_reaction_embeddings_cosine_hnsw
+            ON mfds_adverse_reaction_embeddings
+            USING hnsw (embedding public.vector_cosine_ops);
+
+            CREATE INDEX IF NOT EXISTS
+                ix_pro_ctcae_alias_embeddings_normalized_alias
+            ON agent_pro_ctcae_alias_embeddings (normalized_alias);
+            CREATE INDEX IF NOT EXISTS
+                ix_pro_ctcae_alias_embeddings_model_version
+            ON agent_pro_ctcae_alias_embeddings (model_id, source_version);
+            CREATE INDEX IF NOT EXISTS
+                ix_pro_ctcae_alias_embeddings_cosine_hnsw
+            ON agent_pro_ctcae_alias_embeddings
+            USING hnsw (embedding public.vector_cosine_ops);
+            """,
+        ),
+        (
+            "20260802_0045_pgvector_iterative_scan_requirement",
+            """
+            DO $migration$
+            DECLARE
+                installed_version TEXT;
+                major_version INTEGER;
+                minor_version INTEGER;
+            BEGIN
+                SELECT extversion
+                INTO installed_version
+                FROM pg_extension
+                WHERE extname = 'vector';
+                IF installed_version IS NULL THEN
+                    RAISE EXCEPTION 'agent_vector_extension_required';
+                END IF;
+                major_version := split_part(installed_version, '.', 1)::INTEGER;
+                minor_version := split_part(installed_version, '.', 2)::INTEGER;
+                IF major_version = 0 AND minor_version < 8 THEN
+                    RAISE EXCEPTION
+                        'agent_pgvector_0_8_or_newer_required';
+                END IF;
+            END
+            $migration$;
+            """,
+        ),
+        (
+            "20260802_0046_linked_clinical_symptom_concepts",
+            f"""
+            CREATE TABLE IF NOT EXISTS clinical_symptom_concepts (
+                concept_id {_id_column_type(engine)},
+                symptom_term TEXT NOT NULL,
+                korean_symptom_name TEXT NOT NULL,
+                sheet_name VARCHAR(160) NOT NULL,
+                pro_ctcae_source_version VARCHAR(160) NOT NULL,
+                created_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_clinical_symptom_concept_version
+                    UNIQUE (
+                        symptom_term,
+                        korean_symptom_name,
+                        sheet_name,
+                        pro_ctcae_source_version
+                    )
+            );
+
+            CREATE TABLE IF NOT EXISTS clinical_symptom_aliases (
+                alias_id {_id_column_type(engine)},
+                concept_id BIGINT NOT NULL REFERENCES
+                    clinical_symptom_concepts (concept_id)
+                    ON DELETE CASCADE,
+                alias_text TEXT NOT NULL,
+                normalized_alias TEXT NOT NULL,
+                source_type VARCHAR(32) NOT NULL,
+                source_version VARCHAR(160) NOT NULL,
+                created_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT ck_clinical_symptom_alias_source_type
+                    CHECK (source_type IN ('PRO_CTCAE', 'MFDS', 'CURATED')),
+                CONSTRAINT uq_clinical_symptom_alias_version
+                    UNIQUE (
+                        concept_id,
+                        normalized_alias,
+                        source_type,
+                        source_version
+                    )
+            );
+
+            CREATE TABLE IF NOT EXISTS mfds_reaction_concept_links (
+                link_id {_id_column_type(engine)},
+                reaction_id BIGINT NOT NULL REFERENCES
+                    mfds_adverse_reactions (reaction_id)
+                    ON DELETE CASCADE,
+                concept_id BIGINT NOT NULL REFERENCES
+                    clinical_symptom_concepts (concept_id)
+                    ON DELETE CASCADE,
+                link_type VARCHAR(32) NOT NULL,
+                similarity DOUBLE PRECISION NOT NULL,
+                verifier_model VARCHAR(160) NOT NULL DEFAULT '',
+                verification_status VARCHAR(32) NOT NULL,
+                mfds_source_version VARCHAR(160) NOT NULL,
+                pro_ctcae_source_version VARCHAR(160) NOT NULL,
+                created_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT ck_mfds_reaction_concept_link_type
+                    CHECK (
+                        link_type IN (
+                            'EXACT', 'ALIAS', 'VECTOR_LLM_VERIFIED'
+                        )
+                    ),
+                CONSTRAINT ck_mfds_reaction_concept_status
+                    CHECK (
+                        verification_status IN (
+                            'VERIFIED', 'REJECTED', 'REVIEW_REQUIRED'
+                        )
+                    ),
+                CONSTRAINT ck_mfds_reaction_concept_similarity
+                    CHECK (similarity >= 0.0 AND similarity <= 1.0),
+                CONSTRAINT uq_mfds_reaction_concept_link_version
+                    UNIQUE (
+                        reaction_id,
+                        concept_id,
+                        mfds_source_version,
+                        pro_ctcae_source_version
+                    )
+            );
+
+            CREATE TABLE IF NOT EXISTS mfds_reaction_concept_decisions (
+                decision_id {_id_column_type(engine)},
+                normalized_text TEXT NOT NULL,
+                status VARCHAR(32) NOT NULL,
+                link_type VARCHAR(32) NOT NULL,
+                best_similarity DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                verifier_model VARCHAR(160) NOT NULL DEFAULT '',
+                candidate_concept_ids_json TEXT NOT NULL DEFAULT '[]',
+                mfds_source_version VARCHAR(160) NOT NULL,
+                pro_ctcae_source_version VARCHAR(160) NOT NULL,
+                decided_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT ck_mfds_reaction_concept_decision_status
+                    CHECK (
+                        status IN ('LINKED', 'UNMATCHED', 'REVIEW_REQUIRED')
+                    ),
+                CONSTRAINT ck_mfds_reaction_concept_decision_link_type
+                    CHECK (
+                        link_type IN (
+                            'EXACT', 'ALIAS', 'VECTOR_LLM_VERIFIED'
+                        )
+                    ),
+                CONSTRAINT ck_mfds_reaction_decision_similarity
+                    CHECK (
+                        best_similarity >= 0.0
+                        AND best_similarity <= 1.0
+                    ),
+                CONSTRAINT uq_mfds_reaction_concept_decision_version
+                    UNIQUE (
+                        normalized_text,
+                        mfds_source_version,
+                        pro_ctcae_source_version
+                    )
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_symptom_resolution_states (
+                trace_id VARCHAR(128) NOT NULL,
+                symptom_sha256 VARCHAR(64) NOT NULL,
+                concept_id BIGINT NOT NULL REFERENCES
+                    clinical_symptom_concepts (concept_id)
+                    ON DELETE CASCADE,
+                match_type VARCHAR(32) NOT NULL,
+                similarity DOUBLE PRECISION NOT NULL,
+                pro_ctcae_source_version VARCHAR(160) NOT NULL,
+                created_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at {timestamp} NOT NULL,
+                PRIMARY KEY (trace_id, symptom_sha256),
+                CONSTRAINT ck_agent_symptom_resolution_match_type
+                    CHECK (
+                        match_type IN ('EXACT', 'VECTOR_LLM_VERIFIED')
+                    ),
+                CONSTRAINT ck_agent_symptom_resolution_similarity
+                    CHECK (similarity >= 0.0 AND similarity <= 1.0)
+            );
+
+            CREATE INDEX IF NOT EXISTS
+                ix_clinical_symptom_aliases_lookup
+            ON clinical_symptom_aliases (
+                normalized_alias,
+                source_version
+            );
+            CREATE INDEX IF NOT EXISTS
+                ix_mfds_reaction_concept_links_concept
+            ON mfds_reaction_concept_links (
+                concept_id,
+                verification_status,
+                mfds_source_version,
+                pro_ctcae_source_version
+            );
+            CREATE INDEX IF NOT EXISTS
+                ix_mfds_reaction_concept_links_reaction
+            ON mfds_reaction_concept_links (reaction_id);
+            CREATE INDEX IF NOT EXISTS
+                ix_mfds_reaction_concept_decisions_status
+            ON mfds_reaction_concept_decisions (
+                status,
+                mfds_source_version,
+                pro_ctcae_source_version
+            );
+            CREATE INDEX IF NOT EXISTS
+                ix_agent_symptom_resolution_states_expires_at
+            ON agent_symptom_resolution_states (expires_at);
+            """,
+        ),
+        (
+            "20260802_0047_symptom_concept_link_build_status",
+            f"""
+            CREATE TABLE IF NOT EXISTS
+                clinical_symptom_concept_link_statuses (
+                status_id {_id_column_type(engine)},
+                concept_id BIGINT NOT NULL REFERENCES
+                    clinical_symptom_concepts (concept_id)
+                    ON DELETE CASCADE,
+                mfds_source_version VARCHAR(160) NOT NULL,
+                pro_ctcae_source_version VARCHAR(160) NOT NULL,
+                status VARCHAR(32) NOT NULL,
+                candidate_count INTEGER NOT NULL DEFAULT 0,
+                linked_term_count INTEGER NOT NULL DEFAULT 0,
+                verifier_model VARCHAR(160) NOT NULL DEFAULT '',
+                processed_at {timestamp} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT ck_symptom_concept_link_build_status
+                    CHECK (status IN ('COMPLETED', 'REVIEW_REQUIRED')),
+                CONSTRAINT ck_symptom_concept_link_build_counts
+                    CHECK (
+                        candidate_count >= 0
+                        AND linked_term_count >= 0
+                    ),
+                CONSTRAINT uq_symptom_concept_link_build_version
+                    UNIQUE (
+                        concept_id,
+                        mfds_source_version,
+                        pro_ctcae_source_version
+                    )
+            );
+
+            CREATE INDEX IF NOT EXISTS
+                ix_symptom_concept_link_statuses_version
+            ON clinical_symptom_concept_link_statuses (
+                status,
+                mfds_source_version,
+                pro_ctcae_source_version
+            );
             """,
         ),
     ]

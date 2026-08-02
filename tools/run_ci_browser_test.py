@@ -123,7 +123,6 @@ def main() -> int:
                 "SYSTEM_BASE_URL": base_url,
                 "AGENT_BASE_URL": "http://127.0.0.1:9",
                 "INTERNAL_API_TOKEN": "browser-ci-internal-token",
-                "BACKEND_API_TOKEN": "browser-ci-backend-token",
                 "AGENT_SYNC_API_TOKEN": "browser-ci-agent-token",
                 "LLM_PROVIDER": "deterministic_test",
                 "LLM_MODEL_TIER": "fast",

@@ -17,6 +17,15 @@
 데이터베이스에 영속 저장되고 HTTP 전송 시도 횟수는 0으로 유지된다.
 Backend 주소를 나중에 추가해도 기존 held Callback은 자동 전송되지 않는다.
 
+`POST /agent/sync/chat`은 `application/x-ndjson`을 실제
+`StreamingResponse`로 전송한다. 신규 요청은 최종 텍스트를
+`CONTRACT_STREAM_DELTA_CHUNKS`개(기본 4개)의 손실 없는 delta로 나눠
+각각 별도 `streaming` 이벤트로 전송하고 마지막에 `completed` 이벤트를
+보낸다. 모든 이벤트 사이는 `CONTRACT_STREAM_CHUNK_DELAY_MS`(기본
+150ms)만큼 떨어지며, 네트워크에서 순차 도착을 관찰할 수 있도록
+50~5000ms 범위로 제한한다. 멱등성 replay는 기존 규격대로 저장된
+terminal 이벤트 한 청크만 반환한다.
+
 ## EC2 격리 경로
 
 - 코드: `/opt/dranswer-agent-contract/releases/<release-id>`
@@ -91,7 +100,12 @@ curl -fsS http://127.0.0.1:8701/health
 curl -fsS http://127.0.0.1:8701/health/ready
 sudo systemctl status dranswer-agent-contract-api.service
 sudo journalctl -u dranswer-agent-contract-api.service -n 100 --no-pager
+sudo journalctl -u dranswer-agent-contract-api.service -f
 ```
+
+API unit은 Uvicorn access log를 활성화한다. 정상 호출마다 client IP,
+HTTP method, path, status code가 systemd journal에 기록되며 Bearer token과
+요청/응답 Body는 기록하지 않는다.
 
 규격 원본:
 
@@ -135,7 +149,7 @@ PostgreSQL 호환 application forward-fix로 수행한다. 레거시 SQLite 파�
 ```dotenv
 CALLBACK_MODE=deliver
 BACKEND_CALLBACK_BASE_URL=https://backend.example
-BACKEND_API_TOKEN=<32자 이상 별도 토큰>
+# 수신 인증과 Callback 모두 기존 AGENT_SYNC_API_TOKEN을 사용한다.
 ```
 
 HTTP 테스트 주소가 꼭 필요할 때만

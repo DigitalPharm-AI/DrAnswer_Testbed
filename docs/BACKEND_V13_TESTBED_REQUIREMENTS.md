@@ -266,10 +266,18 @@ Backend는 다음을 검증해야 한다.
 - `POST /agent/sync/notification-policy-change`
 - Bearer 인증 필수
 - `policy_id`는 숫자형 DB PK가 아니라 `reminder_policies.public_id`
-- AI Server는 변경 전에 `get_notification_policies` Read Tool로 공개 ID와 현재 정책을 조회
+- 알림 정책 create API와 AI Tool은 제공하지 않는다. AI Server는 기존 활성 정책만 변경할 수 있다.
+- AI Server는 변경 전에 `get_notification_policies(active_only=true)` Read Tool로 공개 ID와 현재 정책을 조회한다.
+- 조회 결과가 0건이면 승인 카드를 만들거나 신규 정책 생성을 제안하지 않고 fail-closed 처리한다.
+- 승인 카드 생성 직전과 Backend 실제 쓰기 시점에 같은 환자의 `active=true` 정책인지 다시 검증한다.
 - `decision=apply`: 검증 후 변경하고 version 증가
 - `decision=keep`: 변경하지 않고 현재 version 반환
 - `expected_version` 불일치 시 `409 VERSION_CONFLICT`
+
+테스트베드는 복약 시나리오를 적용할 때 Backend 시나리오 준비 단계에서 슬롯별
+기본 활성 정책을 멱등 생성한다. 이는 AI 기능이 아니다. 실제 Backend는 환자 등록·
+복약 일정 온보딩 등 자체 업무 절차에서 정책을 준비해야 하며, AI Server를 연결할
+때는 `get_notification_policies`의 Read View와 위 변경 API만 같은 계약으로 제공한다.
 
 모델이 변경할 수 있는 `changes` 필드는 다음으로 제한한다.
 
@@ -365,7 +373,7 @@ read-only로 설정한다.
 |---|---|---|
 | Backend → AI `/agent/sync/chat` | Bearer | 양쪽 `AGENT_SYNC_API_TOKEN` 동일 |
 | Backend → AI `/agent/async/chat_feedback` | Bearer | 양쪽 `AGENT_SYNC_API_TOKEN` 동일 |
-| AI → Backend 쓰기 API | Bearer | 양쪽 `BACKEND_API_TOKEN` 동일 |
+| AI → Backend 쓰기 API | Bearer | 양쪽 `AGENT_SYNC_API_TOKEN` 동일 |
 | AI → Backend DB 조회 | DB SELECT-only 계정 | AI `BACKEND_READ_DATABASE_URL` |
 
 테스트베드 주요 설정:
@@ -384,7 +392,6 @@ BACKEND_RECORD_CHANGE_PATH=/agent/sync/record-change
 BACKEND_NOTIFICATION_POLICY_CHANGE_PATH=/agent/sync/notification-policy-change
 AGENT_SYNC_API_TOKEN=replace-with-shared-secret
 AGENT_SYNC_MAX_RETRIES=2
-BACKEND_API_TOKEN=replace-with-a-different-shared-secret
 AGENT_FEEDBACK_ENCRYPTION_KEY=replace-with-urlsafe-base64-encoded-32-byte-key
 AGENT_FEEDBACK_ENCRYPTION_KEY_ID=feedback-v1
 LLM_PROVIDER=bedrock_anthropic
@@ -392,8 +399,10 @@ LLM_PROVIDER=bedrock_anthropic
 
 `deterministic_test` provider는 격리된 자동 테스트에서 명시적으로 선택할 때만
 `APP_ENV=test|testing|testbed`에서 허용한다. 9000 기본 실행과 사용자 화면에는
-사용하지 않는다. 운영 환경에서는 두 토큰을 서로 다른 값으로 사용하고 secret
-manager를 통해 주입하며 승인된 외부 생성형 모델 provider를 사용한다.
+사용하지 않는다. Backend↔AI 업무 통신은 `AGENT_SYNC_API_TOKEN` 하나를
+양방향으로 사용한다. 권한 범위가 더 넓은 `INTERNAL_API_TOKEN`은 이 토큰과
+다르게 두고 secret manager를 통해 주입하며, 승인된 외부 생성형 모델
+provider를 사용한다.
 
 ## 8. Backend 개발팀 인수 테스트
 

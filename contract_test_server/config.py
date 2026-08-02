@@ -38,6 +38,16 @@ class ContractServerSettings(BaseSettings):
     contract_db_statement_timeout_ms: int = Field(default=30_000, ge=0)
     contract_db_lock_timeout_ms: int = Field(default=5_000, ge=0)
     contract_specs_dir: Path = Path("docs")
+    contract_stream_chunk_delay_ms: int = Field(
+        default=150,
+        ge=50,
+        le=5_000,
+    )
+    contract_stream_delta_chunks: int = Field(
+        default=4,
+        ge=2,
+        le=20,
+    )
 
     agent_sync_api_token: str = ""
     test_control_token: str = ""
@@ -45,7 +55,6 @@ class ContractServerSettings(BaseSettings):
 
     callback_mode: Literal["hold", "deliver"] = "hold"
     backend_callback_base_url: str = ""
-    backend_api_token: str = ""
     allow_insecure_backend_http: bool = False
     callback_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     callback_max_attempts: int = Field(default=3, ge=1, le=20)
@@ -66,7 +75,7 @@ class ContractServerSettings(BaseSettings):
 
     @property
     def callback_delivery_configured(self) -> bool:
-        if len(self.backend_api_token) < 32:
+        if not self.agent_auth_configured:
             return False
         parsed = urlparse(self.backend_callback_base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -137,7 +146,6 @@ class ContractServerSettings(BaseSettings):
                 self.agent_sync_api_token,
                 self.test_control_token,
                 self.feedback_digest_secret,
-                self.backend_api_token,
             )
             if value
         ]

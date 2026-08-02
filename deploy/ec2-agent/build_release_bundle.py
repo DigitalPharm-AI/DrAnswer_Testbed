@@ -11,11 +11,12 @@ import tarfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-
 BUNDLE_PATHS = (
     "agent_app",
     "shared",
     "data/pro_ctcae_korean_parsed.xlsx",
+    "scripts/backfill_agent_embeddings.py",
+    "scripts/backfill_symptom_concepts.py",
     "requirements.txt",
     "pyproject.toml",
     "deploy/ec2-agent",
@@ -26,6 +27,8 @@ CRITICAL_SOURCE_FILES = (
     "agent_app/llm/prompts.py",
     "shared/backend_read_contract.py",
     "data/pro_ctcae_korean_parsed.xlsx",
+    "scripts/backfill_agent_embeddings.py",
+    "scripts/backfill_symptom_concepts.py",
 )
 MANIFEST_NAME = "release-manifest.json"
 RELEASE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
@@ -34,7 +37,6 @@ PRIVATE_KEY_PATTERN = re.compile(
 )
 COMMON_SECRET_TEMPLATE_KEYS = {
     "INTERNAL_API_TOKEN",
-    "BACKEND_API_TOKEN",
     "AGENT_SYNC_API_TOKEN",
     "AGENT_FEEDBACK_ENCRYPTION_KEY",
     "LANGFUSE_SECRET_KEY",

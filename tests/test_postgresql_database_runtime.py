@@ -10,6 +10,8 @@ from shared.db import DatabaseEngineConfig, create_database_engine
 from shared.settings import Settings
 from system_app.migrations import (
     MIGRATIONS as SYSTEM_MIGRATIONS,
+)
+from system_app.migrations import (
     UI_MEDICATION_PLAN_COLUMNS,
     VERSIONED_TABLE_COLUMNS,
 )
@@ -159,13 +161,13 @@ def test_every_environment_requires_postgresql_and_dedicated_migrations() -> Non
     postgres_settings = Settings(
         app_env="production",
         agent_database_url=(
-            "postgresql+psycopg://agent@db/dranswer_agent"
+            "postgresql+psycopg://agent@db/dranswer_agent?sslmode=require"
         ),
         backend_read_database_url=(
-            "postgresql+psycopg://reader@db/dranswer_backend"
+            "postgresql+psycopg://reader@db/dranswer_backend?sslmode=require"
         ),
         system_database_url=(
-            "postgresql+psycopg://backend@db/dranswer_backend"
+            "postgresql+psycopg://backend@db/dranswer_backend?sslmode=require"
         ),
         system_startup_migrations_enabled=True,
         agent_startup_migrations_enabled=True,
@@ -180,6 +182,28 @@ def test_every_environment_requires_postgresql_and_dedicated_migrations() -> Non
         match="SYSTEM_STARTUP_MIGRATIONS_ENABLED",
     ):
         postgres_settings.require_system_postgresql()
+
+
+def test_production_postgresql_requires_tls_for_every_database_boundary() -> None:
+    settings = Settings(
+        app_env="production",
+        agent_database_url="postgresql+psycopg://agent@db/agent",
+        agent_migration_database_url="postgresql+psycopg://migrator@db/agent",
+        backend_read_database_url="postgresql+psycopg://reader@db/backend",
+        system_database_url="postgresql+psycopg://system@db/backend",
+        system_migration_database_url="postgresql+psycopg://migrator@db/backend",
+    )
+
+    checks = (
+        settings.require_agent_postgresql,
+        settings.require_agent_migration_postgresql,
+        settings.require_backend_read_postgresql,
+        settings.require_system_postgresql,
+        settings.require_system_migration_postgresql,
+    )
+    for check in checks:
+        with pytest.raises(RuntimeError, match="sslmode"):
+            check()
 
 
 def test_runtime_factory_and_schema_verifier_reject_sqlite() -> None:

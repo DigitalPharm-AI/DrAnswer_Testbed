@@ -498,13 +498,13 @@ h4 {
   font-size: 0.7rem;
 }
 
-.result-input-form label {
+.result-input-form .result-input-field {
   display: flex;
   flex-direction: column;
   gap: 5px;
 }
 
-.result-input-form label > span:first-child {
+.result-input-form .result-input-field > label {
   color: var(--accent-dark);
   font-size: 0.72rem;
   font-weight: 800;
@@ -1294,6 +1294,47 @@ h4 {
   font-size: 0.9rem;
 }
 
+.test-scenario-level-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 10px;
+  background: #e9edf2;
+}
+
+.test-scenario-level-toggle button {
+  min-width: 48px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 8px;
+  color: #66717d;
+  background: transparent;
+  font-size: 0.7rem;
+  font-weight: 850;
+  transition:
+    color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.test-scenario-level-toggle button:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.test-scenario-level-toggle button[aria-pressed="true"] {
+  color: #fff;
+  background: var(--success);
+  box-shadow: 0 2px 6px rgba(49, 95, 140, 0.2);
+}
+
+.test-scenario-level-toggle button:focus-visible {
+  outline: 3px solid rgba(49, 95, 140, 0.2);
+  outline-offset: 1px;
+}
+
 .test-scenario-progress {
   display: flex;
   align-items: center;
@@ -1492,6 +1533,94 @@ h4 {
   font-size: 0.65rem;
   font-weight: 900;
   white-space: nowrap;
+}
+
+.test-scenario-conversation {
+  margin-bottom: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  color: #3f4b58;
+  background: #fff;
+}
+
+.test-scenario-conversation-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 9px;
+  margin-bottom: 8px;
+}
+
+.test-scenario-conversation-head span {
+  color: var(--success-ink);
+  font-size: 0.65rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.test-scenario-conversation-head small {
+  color: var(--muted);
+  font-size: 0.62rem;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.test-scenario-conversation ol {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.test-scenario-conversation li {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #f8fafc;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease;
+}
+
+.test-scenario-conversation li.is-next {
+  border-color: var(--success);
+  background: var(--success-soft);
+  box-shadow: inset 0 0 0 1px rgba(49, 95, 140, 0.08);
+}
+
+.test-scenario-turn-user,
+.test-scenario-turn-expected {
+  min-width: 0;
+}
+
+.test-scenario-turn-user span,
+.test-scenario-turn-expected span {
+  display: block;
+  margin-bottom: 4px;
+  color: #7c8792;
+  font-size: 0.58rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.test-scenario-turn-user b,
+.test-scenario-turn-expected p {
+  margin: 0;
+  font-size: 0.68rem;
+  line-height: 1.48;
+}
+
+.test-scenario-turn-user b {
+  display: block;
+  color: var(--ink);
+}
+
+.test-scenario-turn-expected p {
+  color: var(--muted);
 }
 
 .test-scenario-flow {
@@ -1813,6 +1942,57 @@ h4 {
   font-weight: 700;
 }
 
+.contract-message-text .markdown-table-scroll {
+  max-width: 100%;
+  margin: 12px 0 2px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  -webkit-overflow-scrolling: touch;
+}
+
+.contract-message-text .markdown-table-scroll:last-child {
+  margin-bottom: 0;
+}
+
+.contract-message-text .markdown-table-scroll table {
+  width: 100%;
+  min-width: 420px;
+  border-collapse: collapse;
+  color: var(--ink);
+  font-size: 0.75rem;
+}
+
+.contract-message-text .markdown-table-scroll th,
+.contract-message-text .markdown-table-scroll td {
+  padding: 9px 11px;
+  border-right: 1px solid rgba(210, 215, 222, 0.72);
+  border-bottom: 1px solid rgba(210, 215, 222, 0.72);
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+}
+
+.contract-message-text .markdown-table-scroll th:last-child,
+.contract-message-text .markdown-table-scroll td:last-child {
+  border-right: 0;
+}
+
+.contract-message-text .markdown-table-scroll tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.contract-message-text .markdown-table-scroll th {
+  color: var(--accent-dark);
+  background: #f2f5f8;
+  font-weight: 800;
+}
+
+.contract-message-text .markdown-table-scroll tbody tr:nth-child(even) {
+  background: #fafbfc;
+}
+
 .contract-message-tables {
   display: flex;
   flex-direction: column;
@@ -1904,32 +2084,14 @@ h4 {
   gap: 9px;
 }
 
-.result-input-form label small {
+.result-input-form .result-input-field small {
   color: var(--muted);
   font-weight: 650;
 }
 
-.input-with-unit {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--accent-soft);
-}
-
-.input-with-unit input {
-  border: 0;
-  border-radius: 0;
-}
-
-.input-with-unit > span {
-  display: grid;
-  min-width: 48px;
-  place-items: center;
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 800;
+.result-input-form .input-adjustment-hint {
+  display: block;
+  text-align: left;
 }
 
 .result-submit-row {
@@ -2221,6 +2383,18 @@ h4 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .test-scenario-guide > summary {
+    gap: 7px;
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .test-scenario-level-toggle button {
+    min-width: 42px;
+    padding-right: 7px;
+    padding-left: 7px;
+  }
+
   .test-scenario-progress {
     display: none;
   }
@@ -2231,6 +2405,19 @@ h4 {
 
   .test-scenario-mode-badges {
     justify-content: flex-start;
+  }
+
+  .test-scenario-conversation li {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .test-scenario-conversation-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .test-scenario-conversation-head small {
+    text-align: left;
   }
 
   .test-scenario-actions {

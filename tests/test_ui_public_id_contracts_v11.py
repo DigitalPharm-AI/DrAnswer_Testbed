@@ -20,7 +20,6 @@ from system_app.ui_contracts import (
     UiNotification,
 )
 
-
 NOW = datetime(2026, 7, 28, 9, 30, tzinfo=UTC)
 
 

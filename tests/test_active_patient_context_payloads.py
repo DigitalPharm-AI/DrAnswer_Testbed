@@ -10,7 +10,7 @@ from agent_app.jobs import worker
 from agent_app.llm.messages import build_chat_messages
 from agent_app.tools.backend_query import BackendReadContractError
 from shared.async_v13_contracts import MissedDoseEventRequest
-
+from shared.backend_read_contract import BACKEND_READ_CONTRACT_VERSION
 
 REQUEST_ID = "req_0000000012345678"
 PATIENT_ID = "patient_0000000012345678"
@@ -39,7 +39,7 @@ class _RecordingBackendQueries:
             "patient_id": patient_id,
             "as_of": datetime(2026, 7, 25, 9, 30).isoformat(),
             "date": "2026-07-25",
-            "read_contract_version": "1.3",
+            "read_contract_version": BACKEND_READ_CONTRACT_VERSION,
             "context_mode": "complete",
             "availability": {
                 "profile": "available",

@@ -14,6 +14,13 @@ def test_worker_main_initializes_queue_and_runs_worker(monkeypatch):
             events.append("settings_checked")
             return "test-internal-token"
 
+        def require_service_api_token(self) -> str:
+            events.append("service_token_checked")
+            return "test-service-token"
+
+        def require_backend_service_https(self) -> None:
+            events.append("backend_transport_checked")
+
         def require_backend_read_database_url(self) -> None:
             events.append("backend_read_settings_checked")
 
@@ -72,6 +79,8 @@ def test_worker_main_initializes_queue_and_runs_worker(monkeypatch):
 
     assert events == [
         "settings_checked",
+        "service_token_checked",
+        "backend_transport_checked",
         "backend_read_settings_checked",
         "agent_database_settings_checked",
         "backend_read_database_settings_checked",

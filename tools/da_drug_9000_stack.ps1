@@ -366,11 +366,13 @@ function Start-One($Spec) {
     $previousEnvFile = $env:DA_DRUG_ENV_FILE
     $previousRuntimePidFile = $env:DA_DRUG_RUNTIME_PID_FILE
     $previousBedrockBearer = $env:AWS_BEARER_TOKEN_BEDROCK
+    $previousPythonUnbuffered = $env:PYTHONUNBUFFERED
     $runtimePidPath = Worker-Runtime-Pid-Path $Spec
     try {
         $env:DA_DRUG_SERVICE = $Spec.Service
         $env:DA_DRUG_ENV_FILE = $Spec.EnvFiles
         $env:AWS_BEARER_TOKEN_BEDROCK = $null
+        $env:PYTHONUNBUFFERED = "1"
         if ($Spec.Kind -eq "worker") {
             Remove-Item -LiteralPath $runtimePidPath -Force -ErrorAction SilentlyContinue
             $env:DA_DRUG_RUNTIME_PID_FILE = $runtimePidPath
@@ -391,6 +393,7 @@ function Start-One($Spec) {
         $env:DA_DRUG_ENV_FILE = $previousEnvFile
         $env:DA_DRUG_RUNTIME_PID_FILE = $previousRuntimePidFile
         $env:AWS_BEARER_TOKEN_BEDROCK = $previousBedrockBearer
+        $env:PYTHONUNBUFFERED = $previousPythonUnbuffered
     }
     $servicePid = $proc.Id
     Set-Content -LiteralPath (Launcher-Pid-Path $Spec) -Value $proc.Id -Encoding ascii

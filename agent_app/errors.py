@@ -12,6 +12,7 @@ class AgentExecutionError(RuntimeError):
         trace_id: str,
         agent_name: str,
         decision_type: str,
+        retryable: bool | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -19,6 +20,7 @@ class AgentExecutionError(RuntimeError):
         self.trace_id = trace_id
         self.agent_name = agent_name
         self.decision_type = decision_type
+        self.retryable = retryable
 
 
 @dataclass(frozen=True)
@@ -69,19 +71,19 @@ _PUBLIC_AGENT_ERRORS: dict[str, PublicProcessingError] = {
         message="The LLM response did not satisfy the required schema.",
         retryable=False,
     ),
+    "tool_execution_budget_exceeded": PublicProcessingError(
+        code="TOOL_EXECUTION_BUDGET_EXCEEDED",
+        message=("The AI request reached its Tool execution limit. Split the request into smaller steps and try again."),
+        retryable=False,
+    ),
     "pro_ctcae_survey_response_invalid": PublicProcessingError(
         code="PRO_CTCAE_RESPONSE_INVALID",
-        message=(
-            "The questionnaire response is not one of the allowed options."
-        ),
+        message=("The questionnaire response is not one of the allowed options."),
         retryable=False,
     ),
     "pro_ctcae_survey_stale_response": PublicProcessingError(
         code="PRO_CTCAE_STALE_RESPONSE",
-        message=(
-            "The questionnaire response does not belong to the current "
-            "question."
-        ),
+        message=("The questionnaire response does not belong to the current question."),
         retryable=False,
     ),
     "pro_ctcae_survey_expired": PublicProcessingError(
@@ -114,9 +116,22 @@ def public_processing_error(exc: Exception) -> PublicProcessingError:
     if isinstance(exc, AgentExecutionError):
         mapped = _PUBLIC_AGENT_ERRORS.get(exc.error_type)
         if mapped is not None:
-            return mapped
+            return PublicProcessingError(
+                code=mapped.code,
+                message=mapped.message,
+                retryable=(
+                    mapped.retryable
+                    if exc.retryable is None
+                    else exc.retryable
+                ),
+            )
+    retryable_override = getattr(exc, "retryable", None)
     return PublicProcessingError(
         code="AI_PROCESSING_ERROR",
         message="An internal AI Server processing error occurred.",
-        retryable=bool(getattr(exc, "retryable", True)),
+        retryable=(
+            True
+            if retryable_override is None
+            else bool(retryable_override)
+        ),
     )

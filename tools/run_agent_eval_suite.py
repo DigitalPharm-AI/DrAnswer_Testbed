@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.eval_cases import (
+from shared.eval_cases import (  # noqa: E402
     DEFAULT_EVAL_BACKLOG_PATH,
     DEFAULT_EVAL_DATASET_PATH,
     DEFAULT_EVAL_REVIEW_QUEUE_PATH,
@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     status = "failed" if failed_count else "needs_review" if review_count else "ok"
     report = {
         "status": status,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "dataset_path": str(args.dataset),
         "backlog_path": str(args.backlog),
         "case_count": len(cases),
@@ -273,7 +273,7 @@ def _result(case: dict[str, Any], status: str, findings: list[dict[str, Any]]) -
 
 
 def _default_output_path() -> Path:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return Path("outputs/evals") / f"agent-eval-{stamp}.json"
 
 

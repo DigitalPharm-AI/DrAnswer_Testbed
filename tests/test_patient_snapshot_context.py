@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime
+
 from sqlalchemy import event
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -31,6 +32,7 @@ from tests.helpers import (
     build_backend_reader_url,
     build_system_engine,
 )
+from tests.support.adverse_reactions import TestbedAdverseReactionLookup
 
 NOW = datetime(2026, 7, 25, 10, 30, tzinfo=UTC)
 
@@ -514,6 +516,7 @@ def test_side_effect_tool_keeps_all_matches_without_forcing_attribution() -> Non
     result = assess_side_effect_from_snapshot(
         symptom_text="속이 메스꺼웠어",
         patient_snapshot=snapshot,
+        adverse_reactions=TestbedAdverseReactionLookup(),
     )
     assert result.suspected is True
     assert result.matched_items == [
@@ -528,6 +531,7 @@ def test_side_effect_tool_keeps_all_matches_without_forcing_attribution() -> Non
         patient_snapshot=snapshot,
         trace_id="trace-side-effect-all-matches",
         source_event_type="medication_agent",
+        adverse_reactions=TestbedAdverseReactionLookup(),
     )
     assert unscoped_draft["medication_name"] is None
     assert unscoped_draft["matched_items"] == [
@@ -543,6 +547,7 @@ def test_side_effect_tool_keeps_all_matches_without_forcing_attribution() -> Non
         patient_snapshot=snapshot,
         trace_id="trace-side-effect",
         source_event_type="medication_agent",
+        adverse_reactions=TestbedAdverseReactionLookup(),
     )
     assert draft["medication_name"] == "메트포르민"
     assert draft["related_dose_event_id"] == "dose_metformin"

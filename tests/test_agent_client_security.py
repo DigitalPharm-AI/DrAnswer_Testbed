@@ -6,12 +6,12 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
-from shared.settings import get_settings
 from shared.chat_contracts import (
     ChatMessageContent,
     ChatSyncRequest,
     ChatSyncResponse,
 )
+from shared.settings import get_settings
 from system_app.services import agent_client as agent_client_module
 from system_app.services.agent_client import AgentClient, AgentServiceError
 
@@ -59,9 +59,8 @@ def test_agent_client_sends_internal_api_token(monkeypatch):
     assert captured["trust_env"] is False
 
 
-def test_agent_client_uses_only_dedicated_sync_token(monkeypatch):
+def test_agent_client_uses_shared_service_token(monkeypatch):
     monkeypatch.setenv("AGENT_SYNC_API_TOKEN", "agent-sync-token")
-    monkeypatch.setenv("BACKEND_API_TOKEN", "backend-write-token")
     monkeypatch.setenv("INTERNAL_API_TOKEN", "internal-admin-token")
     get_settings.cache_clear()
 
@@ -74,9 +73,8 @@ def test_agent_client_uses_only_dedicated_sync_token(monkeypatch):
         get_settings.cache_clear()
 
 
-def test_agent_client_rejects_missing_dedicated_sync_token(monkeypatch):
+def test_agent_client_rejects_missing_service_token(monkeypatch):
     monkeypatch.setenv("AGENT_SYNC_API_TOKEN", "")
-    monkeypatch.setenv("BACKEND_API_TOKEN", "backend-write-token")
     monkeypatch.setenv("INTERNAL_API_TOKEN", "internal-admin-token")
     get_settings.cache_clear()
 

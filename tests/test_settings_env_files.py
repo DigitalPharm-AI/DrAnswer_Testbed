@@ -102,40 +102,56 @@ def test_internal_api_token_returns_configured_value():
 
 
 @pytest.mark.parametrize("app_env", ["development", "testbed", "production"])
-def test_agent_sync_api_token_is_required_in_every_environment(app_env):
+def test_service_api_token_is_required_in_every_environment(app_env):
     settings = Settings(
         app_env=app_env,
         agent_sync_api_token="",
-        backend_api_token="backend-secret",
     )
 
     with pytest.raises(RuntimeError, match="AGENT_SYNC_API_TOKEN"):
-        settings.require_agent_sync_api_token()
+        settings.require_service_api_token()
 
 
-@pytest.mark.parametrize("app_env", ["development", "testbed", "production"])
-def test_backend_api_token_is_required_in_every_environment(app_env):
+def test_service_api_token_is_shared_by_both_directions():
     settings = Settings(
-        app_env=app_env,
-        agent_sync_api_token="agent-sync-secret",
-        backend_api_token="",
+        app_env="development",
+        agent_sync_api_token="shared-service-secret",
+        internal_api_token="internal-operations-secret",
     )
 
-    with pytest.raises(RuntimeError, match="BACKEND_API_TOKEN"):
-        settings.require_backend_api_token()
+    assert settings.require_service_api_token() == "shared-service-secret"
 
 
-def test_v13_direction_tokens_must_use_distinct_values():
+def test_service_and_internal_tokens_must_use_distinct_values():
     settings = Settings(
         app_env="development",
         agent_sync_api_token="shared-secret",
-        backend_api_token="shared-secret",
+        internal_api_token="shared-secret",
     )
 
     with pytest.raises(RuntimeError, match="must use distinct values"):
-        settings.require_agent_sync_api_token()
-    with pytest.raises(RuntimeError, match="must use distinct values"):
-        settings.require_backend_api_token()
+        settings.require_service_api_token()
+
+
+def test_production_requires_https_for_service_urls():
+    settings = Settings(
+        app_env="production",
+        system_base_url="http://backend.test",
+        agent_base_url="http://agent.test",
+    )
+
+    with pytest.raises(RuntimeError, match="SYSTEM_BASE_URL must use HTTPS"):
+        settings.require_backend_service_https()
+    with pytest.raises(RuntimeError, match="AGENT_BASE_URL must use HTTPS"):
+        settings.require_agent_service_https()
+
+    secure = Settings(
+        app_env="production",
+        system_base_url="https://backend.test",
+        agent_base_url="https://agent.test",
+    )
+    secure.require_backend_service_https()
+    secure.require_agent_service_https()
 
 
 def _chdir_without_parent_env(monkeypatch, tmp_path):

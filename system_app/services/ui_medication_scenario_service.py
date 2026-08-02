@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from calendar import monthrange
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
+from shared.public_ids import new_public_id
 from shared.settings import get_settings
 from shared.time_utils import utc_now
 from system_app.models import (
@@ -16,6 +18,7 @@ from system_app.models import (
     MedicationPlan,
     MissedDoseFlag,
     Notification,
+    ReminderPolicy,
     SideEffectRecord,
     TestMedicationScenario,
     TestMedicationScenarioItem,
@@ -23,10 +26,24 @@ from system_app.models import (
 from system_app.services.clock_service import ensure_clock
 from system_app.services.dose_event_service import ensure_day_events
 from system_app.services.nutrition_service import ensure_nutrition_profile
+from system_app.services.policy_workbook import policy_workbook_manager
 from system_app.services.ui_time import as_seoul_iso
 
 TESTBED_SCENARIO_SOURCE = "testbed_scenario"
+TESTBED_POLICY_SOURCE = "testbed_provisioning"
 TESTBED_SCENARIO_END_DATE = date(9999, 12, 31)
+
+
+def notification_policy_end_date(start_date: date) -> date:
+    """Return the inclusive end date for one calendar month."""
+
+    next_year = start_date.year + (1 if start_date.month == 12 else 0)
+    next_month = 1 if start_date.month == 12 else start_date.month + 1
+    next_day = min(
+        start_date.day,
+        monthrange(next_year, next_month)[1],
+    )
+    return date(next_year, next_month, next_day) - timedelta(days=1)
 
 _MEDICATIONS: dict[str, dict[str, str]] = {
     "med-metformin-500": {
@@ -231,6 +248,12 @@ def apply_test_medication_scenario(
             )
         )
     session.flush()
+    ensure_testbed_notification_policies(
+        session,
+        patient_id=settings.patient_id,
+        slot_labels=[item.slot_label for item in items],
+        schedule_date=schedule_date,
+    )
     ensure_day_events(session, schedule_date)
     session.flush()
     return {
@@ -271,6 +294,30 @@ def ensure_initial_testbed_scenario_state(session: Session) -> bool:
         .limit(1)
     )
     if current_testbed_plan_id is not None:
+        slot_labels = list(
+            session.scalars(
+                select(DoseSchedule.slot_label)
+                .join(
+                    MedicationPlan,
+                    MedicationPlan.id == DoseSchedule.plan_id,
+                )
+                .where(
+                    MedicationPlan.patient_id == settings.patient_id,
+                    MedicationPlan.active.is_(True),
+                    MedicationPlan.source_type
+                    == TESTBED_SCENARIO_SOURCE,
+                    MedicationPlan.start_date <= schedule_date,
+                    MedicationPlan.end_date >= schedule_date,
+                )
+                .distinct()
+            ).all()
+        )
+        ensure_testbed_notification_policies(
+            session,
+            patient_id=settings.patient_id,
+            slot_labels=slot_labels,
+            schedule_date=schedule_date,
+        )
         ensure_day_events(session, schedule_date)
         return False
 
@@ -325,6 +372,89 @@ def ensure_initial_testbed_scenario_state(session: Session) -> bool:
     clock.last_tick_real_at = utc_now()
     session.flush()
     return True
+
+
+def ensure_testbed_notification_policies(
+    session: Session,
+    *,
+    patient_id: str,
+    slot_labels: list[str],
+    schedule_date: date,
+) -> list[ReminderPolicy]:
+    """Provision scenario policy rows outside the AI Agent boundary.
+
+    Testbed setup owns this creation path. Chat and Agent Tools may only read
+    or change one of these existing active rows.
+    """
+
+    provisioned: list[ReminderPolicy] = []
+    normalized_slots = sorted(
+        {
+            value.strip()
+            for value in slot_labels
+            if isinstance(value, str) and value.strip()
+        }
+    )
+    policy_end_date = notification_policy_end_date(schedule_date)
+    for slot_label in normalized_slots:
+        existing = session.scalar(
+            select(ReminderPolicy)
+            .where(
+                ReminderPolicy.patient_id == patient_id,
+                ReminderPolicy.slot_label == slot_label,
+                ReminderPolicy.active.is_(True),
+                ReminderPolicy.effective_start_date <= schedule_date,
+                ReminderPolicy.effective_end_date >= schedule_date,
+            )
+            .order_by(
+                ReminderPolicy.updated_at.desc(),
+                ReminderPolicy.created_at.desc(),
+                ReminderPolicy.id.desc(),
+            )
+            .limit(1)
+        )
+        if existing is not None:
+            if existing.source == TESTBED_POLICY_SOURCE:
+                # Normalize policies created by older testbed versions,
+                # which used an open-ended 9999-12-31 validity window.
+                existing.effective_end_date = policy_end_date
+            provisioned.append(existing)
+            continue
+
+        base = policy_workbook_manager.resolve_default(slot_label)
+        policy = ReminderPolicy(
+            public_id=new_public_id("notification_policy"),
+            patient_id=patient_id,
+            policy_key=base.policy_key,
+            slot_label=slot_label,
+            extra_reminders=base.extra_reminders,
+            interval_minutes=base.interval_minutes,
+            missed_dose_after_minutes=(
+                base.missed_dose_after_minutes
+            ),
+            primary_reminder_timing=base.primary_reminder_timing,
+            primary_reminder_offset_minutes=(
+                base.primary_reminder_offset_minutes
+            ),
+            medication_title_template=(
+                base.medication_title_template
+            ),
+            medication_body_template=base.medication_body_template,
+            extra_title_template=base.extra_title_template,
+            extra_body_template=base.extra_body_template,
+            missed_dose_title_template=base.missed_dose_title_template,
+            missed_dose_body_template=base.missed_dose_body_template,
+            effective_start_date=schedule_date,
+            effective_end_date=policy_end_date,
+            reason="테스트베드 복약 시나리오 기본 정책",
+            source=TESTBED_POLICY_SOURCE,
+            active=True,
+            version=1,
+        )
+        session.add(policy)
+        provisioned.append(policy)
+    session.flush()
+    return provisioned
 
 
 def medication_events_for_date(

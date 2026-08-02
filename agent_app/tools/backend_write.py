@@ -9,13 +9,13 @@ from typing import Any, Literal
 import anyio
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent_app.integration.backend_client import (
-    BackendV13Client,
-    BackendV13ResponseError,
-)
 from agent_app.integration.approval_state import (
     InternalApprovalBinding,
     InternalApprovalStore,
+)
+from agent_app.integration.backend_client import (
+    BackendV13Client,
+    BackendV13ResponseError,
 )
 from agent_app.integration.mutations import (
     ConfirmedMutationContext,
@@ -30,6 +30,8 @@ from agent_app.integration.write_state import (
 )
 from agent_app.persistence.db import SessionLocal
 from agent_app.tools.backend_query import BackendQueryTools
+from shared.schemas import ToolCallResult
+from shared.settings import get_settings
 from shared.tool_names import (
     BACKEND_V13_POLICY_WRITE_TOOLS,
     BACKEND_V13_RECORD_WRITE_TOOLS,
@@ -43,8 +45,6 @@ from shared.tool_names import (
     UPDATE_NUTRITION_FOOD_RECORD,
     UPDATE_NUTRITION_MEAL_RECORD,
 )
-from shared.schemas import ToolCallResult
-from shared.settings import get_settings
 
 BackendWriteEndpoint = Literal["record_change", "notification_policy_change"]
 INTERNAL_WRITE_REASON = "사용자 채팅 메시지에서 명시적으로 확인된 AI Tool 실행"
@@ -608,10 +608,16 @@ def _tool_result_from_response_body(
         if isinstance(error, dict)
         else ""
     )
+    retryable = (
+        bool(error.get("retryable"))
+        if isinstance(error, dict)
+        else False
+    )
     return ToolCallResult(
         tool_name=tool_name,
         status="success" if success else "error",
         response=body,
         error=error_code,
         idempotency_key=request_id,
+        retryable=retryable,
     )

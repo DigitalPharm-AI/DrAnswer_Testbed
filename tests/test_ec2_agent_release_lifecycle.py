@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_DIR = PROJECT_ROOT / "deploy" / "ec2-agent"
 SYSTEMD_DIR = DEPLOY_DIR / "systemd"
@@ -74,6 +73,14 @@ def _minimal_release_repo(tmp_path: Path) -> Path:
         "BACKEND_READ_CONTRACT_VERSION = '1.3'\n",
     )
     _write(repo / "data/pro_ctcae_korean_parsed.xlsx", b"synthetic")
+    _write(
+        repo / "scripts/backfill_agent_embeddings.py",
+        "# synthetic embedding backfill\n",
+    )
+    _write(
+        repo / "scripts/backfill_symptom_concepts.py",
+        "# synthetic symptom concept backfill\n",
+    )
     _write(repo / "requirements.txt", "")
     _write(repo / "pyproject.toml", "[project]\nname='synthetic'\n")
     _write(
@@ -90,7 +97,6 @@ def _minimal_release_repo(tmp_path: Path) -> Path:
                 "LLM_FAST_MODEL=haiku-test",
                 "LLM_SONNET_MODEL=sonnet-test",
                 "INTERNAL_API_TOKEN=CHANGE_ME_INTERNAL",
-                "BACKEND_API_TOKEN=CHANGE_ME_BACKEND",
                 "AGENT_SYNC_API_TOKEN=CHANGE_ME_SYNC",
                 "AGENT_FEEDBACK_ENCRYPTION_KEY=CHANGE_ME_FEEDBACK",
                 "LANGFUSE_SECRET_KEY=CHANGE_ME_LANGFUSE",

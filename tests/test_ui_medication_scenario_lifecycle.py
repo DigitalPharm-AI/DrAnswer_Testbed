@@ -12,6 +12,7 @@ from system_app.models import (
     DoseSchedule,
     MedicationPlan,
     Notification,
+    ReminderPolicy,
 )
 from system_app.services.clock_service import ensure_clock
 from system_app.services.dose_event_service import ensure_day_events
@@ -23,6 +24,7 @@ from system_app.services.ui_medication_scenario_service import (
     apply_test_medication_scenario,
     ensure_initial_testbed_scenario_state,
     medication_events_for_date,
+    notification_policy_end_date,
     seed_test_medication_scenarios,
 )
 from system_app.services.ui_view_service import dashboard_view
@@ -165,6 +167,74 @@ def test_scenario_continues_next_day_with_idempotent_events_and_readiness(
         assert [
             item["medication_name"] for item in dashboard["medications"]
         ] == ["메트포르민 500mg"]
+
+
+def test_testbed_scenario_provisions_active_policies_idempotently(
+    tmp_path,
+) -> None:
+    sessions = _sessions(tmp_path, "scenario_policy_provisioning")
+    patient_id = get_settings().patient_id
+
+    with sessions() as session:
+        seed_test_medication_scenarios(session)
+        schedule_date = ensure_clock(session).current_time.date()
+
+        apply_test_medication_scenario(
+            session,
+            scenario_id="tb-combined-v1",
+            schedule_date=schedule_date,
+        )
+        first_policies = list(
+            session.scalars(
+                select(ReminderPolicy)
+                .where(
+                    ReminderPolicy.patient_id == patient_id,
+                    ReminderPolicy.active.is_(True),
+                )
+                .order_by(ReminderPolicy.slot_label)
+            ).all()
+        )
+        first_ids = {policy.public_id for policy in first_policies}
+        for policy in first_policies:
+            policy.effective_end_date = TESTBED_SCENARIO_END_DATE
+        session.flush()
+
+        apply_test_medication_scenario(
+            session,
+            scenario_id="tb-combined-v1",
+            schedule_date=schedule_date,
+        )
+        second_policies = list(
+            session.scalars(
+                select(ReminderPolicy).where(
+                    ReminderPolicy.patient_id == patient_id,
+                    ReminderPolicy.active.is_(True),
+                )
+            ).all()
+        )
+
+        assert {policy.slot_label for policy in first_policies} == {
+            "아침",
+            "점심",
+            "저녁",
+        }
+        assert len(first_policies) == 3
+        assert {policy.public_id for policy in second_policies} == first_ids
+        assert all(
+            policy.effective_start_date == schedule_date
+            and policy.effective_end_date
+            == notification_policy_end_date(schedule_date)
+            for policy in second_policies
+        )
+
+
+def test_testbed_policy_end_date_is_one_inclusive_calendar_month() -> None:
+    assert notification_policy_end_date(date(2026, 4, 20)) == date(
+        2026, 5, 19
+    )
+    assert notification_policy_end_date(date(2026, 1, 31)) == date(
+        2026, 2, 27
+    )
 
 
 def test_next_day_replacement_preserves_history_and_removes_future_outputs(

@@ -14,6 +14,10 @@ from shared.public_ids import (
     UserMessageId,
     require_public_id,
 )
+from shared.time_utils import (
+    require_aware_datetime,
+    require_optional_aware_datetime,
+)
 
 RecordResourceType = Literal[
     "nutrition_meal",
@@ -33,12 +37,6 @@ POLICY_MAX_MISSED_DOSE_AFTER_MINUTES = 240
 POLICY_MIN_PRIMARY_REMINDER_OFFSET_MINUTES = 0
 POLICY_MAX_PRIMARY_REMINDER_OFFSET_MINUTES = 120
 POLICY_MAX_EFFECTIVE_DAYS = 365
-
-
-def _validate_aware_datetime(value: datetime) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("timezone_offset_required")
-    return value
 
 
 class StrictContractModel(BaseModel):
@@ -110,7 +108,7 @@ class MedicationDoseEventMutationPayload(StrictContractModel):
     @field_validator("taken_at")
     @classmethod
     def validate_taken_at(cls, value: datetime | None) -> datetime | None:
-        return _validate_aware_datetime(value) if value is not None else None
+        return require_optional_aware_datetime(value)
 
 
 class ProCtcaeQuestion(StrictContractModel):
@@ -207,7 +205,7 @@ class RecordChangeRequest(StrictContractModel):
     @field_validator("requested_at")
     @classmethod
     def validate_requested_at(cls, value: datetime) -> datetime:
-        return _validate_aware_datetime(value)
+        return require_aware_datetime(value)
 
     @model_validator(mode="after")
     def validate_resource_contract(self) -> RecordChangeRequest:
@@ -344,7 +342,7 @@ class RecordChangeResponse(StrictContractModel):
     @field_validator("processed_at")
     @classmethod
     def validate_processed_at(cls, value: datetime) -> datetime:
-        return _validate_aware_datetime(value)
+        return require_aware_datetime(value)
 
 
 class NotificationPolicyChanges(StrictContractModel):
@@ -423,7 +421,7 @@ class NotificationPolicyChangeRequest(StrictContractModel):
     @field_validator("requested_at")
     @classmethod
     def validate_requested_at(cls, value: datetime) -> datetime:
-        return _validate_aware_datetime(value)
+        return require_aware_datetime(value)
 
 
 class NotificationPolicyChangeResult(StrictContractModel):
@@ -440,4 +438,4 @@ class NotificationPolicyChangeResponse(StrictContractModel):
     @field_validator("processed_at")
     @classmethod
     def validate_processed_at(cls, value: datetime) -> datetime:
-        return _validate_aware_datetime(value)
+        return require_aware_datetime(value)

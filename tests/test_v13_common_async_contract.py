@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Contract tests for the active v1.3 asynchronous medication boundary."""
+
+from __future__ import annotations
 
 import json
 import os
@@ -20,7 +20,6 @@ from agent_app.persistence.db import SessionLocal as AgentSessionLocal
 from agent_app.persistence.models import AgentAsyncTask
 from shared.schemas import MissedDoseEventPayload
 from system_app import main as system_main
-from system_app.routes import agent_async_api as agent_async_api_routes
 from system_app.db import SessionLocal as SystemSessionLocal
 from system_app.models import (
     AgentAsyncCallbackReceipt,
@@ -36,6 +35,7 @@ from system_app.models import (
 from system_app.openapi_v13 import (
     build_backend_v13_async_callback_openapi,
 )
+from system_app.routes import agent_async_api as agent_async_api_routes
 from system_app.services.agent_jobs import RUNNING, create_agent_job
 from system_app.services.clock_service import ensure_clock
 from system_app.services.dose_event_service import (
@@ -43,12 +43,11 @@ from system_app.services.dose_event_service import (
 )
 from system_app.services.workers import external_agent_request
 
-
 AGENT_HEADERS = {
     "Authorization": "Bearer pytest-agent-sync-token",
 }
 BACKEND_HEADERS = {
-    "Authorization": "Bearer pytest-backend-api-token",
+    "Authorization": "Bearer pytest-agent-sync-token",
 }
 DATABASE_TESTS_CONFIGURED = bool(
     os.getenv("SYSTEM_POSTGRES_TEST_DATABASE_URL")

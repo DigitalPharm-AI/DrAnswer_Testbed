@@ -72,6 +72,11 @@ def test_dedicated_system_migration_is_idempotent_and_publishes_read_contract():
         )
         assert "chat_messages" in inspector.get_table_names()
         assert "ai_v13_chat_messages" in inspector.get_view_names()
+        chat_columns = {
+            column["name"]
+            for column in inspector.get_columns("chat_messages")
+        }
+        assert {"conversation_at", "recorded_at"} <= chat_columns
         assert "simulation_patient_profiles" not in inspector.get_table_names()
         assert "agent_run_traces" not in inspector.get_table_names()
         assert "agent_run_steps" not in inspector.get_table_names()

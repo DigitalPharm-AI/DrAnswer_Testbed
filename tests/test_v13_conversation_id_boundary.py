@@ -49,7 +49,6 @@ from system_app.ui_contracts import (
     UiErrorResponse,
 )
 
-
 PUBLIC_BOUNDARY_MODELS = (
     ChatSyncRequest,
     ChatSyncResponse,

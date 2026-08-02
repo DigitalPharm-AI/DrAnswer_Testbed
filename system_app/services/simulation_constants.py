@@ -3,22 +3,6 @@ from __future__ import annotations
 from datetime import datetime, time
 
 CUSTOM_CHOICE = "__custom__"
-MEDICATION_PRESET_OPTIONS = [
-    "혈압약",
-    "당뇨약",
-    "고지혈증약",
-    # "비타민D",
-    "진통제",
-    # "영양제",
-    CUSTOM_CHOICE,
-]
-DOSAGE_PRESET_OPTIONS = [
-    "1정",
-    "2정",
-    "1캡슐",
-    "10ml",
-    CUSTOM_CHOICE,
-]
 SCHEDULE_TEMPLATE_MAP: dict[str, dict[str, object]] = {
     "morning_lunch_evening": {
         "label": "아침 / 점심 / 야간",

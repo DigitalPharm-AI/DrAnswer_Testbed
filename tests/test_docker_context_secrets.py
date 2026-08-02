@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DOCKERIGNORE = PROJECT_ROOT / ".dockerignore"
 CONTEXT_CHECK_DOCKERFILE = PROJECT_ROOT / "Dockerfile.context-check"

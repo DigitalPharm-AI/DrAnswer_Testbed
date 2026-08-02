@@ -10,7 +10,6 @@ import tarfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-
 MANIFEST_NAME = "release-manifest.json"
 RELEASE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
 COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40,64}")
@@ -18,6 +17,8 @@ REQUIRED_MEMBERS = {
     "agent_app/main.py",
     "agent_app/migrate.py",
     "agent_app/worker_main.py",
+    "scripts/backfill_agent_embeddings.py",
+    "scripts/backfill_symptom_concepts.py",
     "deploy/ec2-agent/requirements.agent.lock",
     "deploy/ec2-agent/systemd/dranswer-agent-api.service",
     "deploy/ec2-agent/systemd/dranswer-agent-worker.service",

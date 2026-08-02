@@ -1,0 +1,29 @@
+services:
+  agent-postgres:
+    image: pgvector/pgvector:0.8.6-pg18-trixie
+    container_name: dranswer-agent-postgres
+    environment:
+      POSTGRES_DB: dranswer_agent
+      POSTGRES_USER: postgres
+      POSTGRES_HOST_AUTH_METHOD: trust
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "127.0.0.1:${AGENT_POSTGRES_PORT:-55433}:5432"
+    volumes:
+      - agent-postgres-data:/var/lib/postgresql/data
+      - type: bind
+        source: ./deploy/local-agent-postgres/init
+        target: /docker-entrypoint-initdb.d
+        read_only: true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dranswer_agent"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    shm_size: 512mb
+    restart: unless-stopped
+
+volumes:
+  agent-postgres-data:
+    name: dranswer-agent-postgres-data

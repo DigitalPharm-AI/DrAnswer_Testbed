@@ -5,7 +5,7 @@ from collections.abc import Iterable
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.engine import Engine, URL, make_url
+from sqlalchemy.engine import URL, Engine, make_url
 from sqlalchemy.exc import DBAPIError
 
 from agent_app.tools.backend_query import BackendQueryTools

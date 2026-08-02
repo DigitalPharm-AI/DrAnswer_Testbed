@@ -7,16 +7,16 @@ import pytest
 
 from agent_app.errors import AgentExecutionError
 from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
+from shared.schemas import ToolCallResult
 from shared.tool_names import (
     PROPOSE_NOTIFICATION_POLICY,
 )
-from shared.schemas import ToolCallResult
-from tests.support.llm import NativeChatProvider
-from tests.test_agent_app_langgraph_native import (
+from tests.support.agent_scenarios import (
     NativeFakeToolExecutor,
     build_daily_pattern,
     build_missed_payload,
 )
+from tests.support.llm import NativeChatProvider
 
 
 class EventToolFinalizingProvider(NativeChatProvider):

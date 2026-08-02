@@ -1,26 +1,29 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import delete, select
 
 from agent_app.integration.approval_state import CONSUMED
-from shared.backend_v13_contracts import (
-    NotificationPolicyChangeResponse,
-    NotificationPolicyChangeResult,
-    RecordChangeResponse,
-    RecordChangeResult,
-)
 from agent_app.llm.messages import langchain_tools_from_catalog
 from agent_app.persistence.db import SessionLocal
 from agent_app.persistence.models import (
     AgentBackendWriteRequest,
     AgentPendingAction,
 )
+from agent_app.tools.approval_display import approval_display
 from agent_app.tools.backend_write import BACKEND_WRITE_TOOL_SPECS
+from agent_app.tools.mcp_server import AgentMcpToolServer
+from agent_app.tools.protocol import tool_result_from_mcp_result
+from shared.backend_v13_contracts import (
+    NotificationPolicyChangeResponse,
+    NotificationPolicyChangeResult,
+    RecordChangeResponse,
+    RecordChangeResult,
+)
+from shared.schemas import ToolCallResult
 from shared.tool_catalog import ToolCatalog
-from agent_app.tools.mcp_server import AgentMcpToolServer, _approval_display
 from shared.tool_names import (
     BACKEND_V13_SYNC_WRITE_TOOLS,
     CHANGE_NOTIFICATION_POLICY,
@@ -38,10 +41,8 @@ from shared.tool_names import (
     UPDATE_NUTRITION_MEAL_RECORD,
     UPSERT_NUTRITION_PREFERENCE_FACT,
 )
-from agent_app.tools.protocol import tool_result_from_mcp_result
-from shared.schemas import ToolCallResult
 
-NOW = datetime(2026, 7, 25, 16, 30, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 25, 16, 30, tzinfo=UTC)
 PATIENT_ID = "patient_0000000000000001"
 SOURCE_CHAT_REQUEST_ID = "req_0000000000000001"
 SOURCE_MESSAGE_ID = "user_msg_0000000000000001"
@@ -53,7 +54,7 @@ BEDROCK_UNSUPPORTED_SCHEMA_COMBINATORS = {
 
 
 def test_meal_approval_display_uses_record_arguments() -> None:
-    display = _approval_display(
+    display = approval_display(
         CREATE_NUTRITION_MEAL_RECORD,
         {
             "meal_type": "breakfast",
@@ -102,7 +103,7 @@ def test_meal_approval_display_uses_record_arguments() -> None:
 
 
 def test_side_effect_approval_display_uses_completed_survey_data() -> None:
-    display = _approval_display(
+    display = approval_display(
         CREATE_MEDICATION_SIDE_EFFECT_RECORD,
         {
             "symptom_text": (
@@ -214,7 +215,7 @@ def test_side_effect_approval_display_uses_completed_survey_data() -> None:
 def test_side_effect_approval_display_preserves_excel_response_type(
     response_type: str,
 ) -> None:
-    display = _approval_display(
+    display = approval_display(
         CREATE_MEDICATION_SIDE_EFFECT_RECORD,
         {
             "symptom_text": "증상 원문",
@@ -252,7 +253,7 @@ def test_side_effect_approval_display_preserves_excel_response_type(
 
 def test_dose_approval_display_uses_scheduled_time_from_snapshot() -> None:
     dose_event_id = "dose_event_0000000000000001"
-    display = _approval_display(
+    display = approval_display(
         UPDATE_MEDICATION_DOSE_EVENT_STATUS,
         {"dose_event_id": dose_event_id},
         display_context={
@@ -287,6 +288,62 @@ def test_dose_approval_display_uses_scheduled_time_from_snapshot() -> None:
             ],
         }
     ]
+
+
+def test_notification_policy_approval_display_shows_requested_change() -> None:
+    display = approval_display(
+        CHANGE_NOTIFICATION_POLICY,
+        {
+            "policy_id": "npol_0000000000000001",
+            "decision": "apply",
+            "changes": {"missed_dose_after_minutes": 120},
+        },
+        display_context={
+            "requested_at": "2026-04-20T09:30:00+09:00",
+            "notification_policy": {
+                "policy_id": "npol_0000000000000001",
+                "slot_label": "아침",
+                "missed_dose_after_minutes": 90,
+            },
+        },
+    )
+
+    assert display == {
+        "title": "알림 정책 확인",
+        "question": (
+            "아침 미복용 알림을 복약 예정 90분 후에서 "
+            "복약 예정 120분 후로 변경할까요?"
+        ),
+        "tables": [
+            {
+                "table_title": None,
+                "rows": [
+                    {"column": "시간대", "value": "아침"},
+                    {
+                        "column": "변경 항목",
+                        "value": "미복용 알림 시점",
+                    },
+                    {
+                        "column": "현재 설정",
+                        "value": "복약 예정 90분 후",
+                    },
+                    {
+                        "column": "변경 설정",
+                        "value": "복약 예정 120분 후",
+                    },
+                    {
+                        "column": "변경 요청 시간",
+                        "value": "2026-04-20 09:30",
+                    },
+                    {
+                        "column": "적용 시점",
+                        "value": "사용자 승인 시점부터",
+                    },
+                ],
+            }
+        ],
+        "action_label": "변경",
+    }
 
 
 @pytest.mark.parametrize(
@@ -353,7 +410,7 @@ def test_every_approval_display_has_request_and_target_time(
     action_name: str,
     arguments: dict,
 ) -> None:
-    display = _approval_display(
+    display = approval_display(
         action_name,
         arguments,
         display_context={
@@ -386,16 +443,28 @@ def test_every_approval_display_has_request_and_target_time(
         for table in display["tables"]
         for row in table["rows"]
     ]
+    request_time_column = (
+        "변경 요청 시간"
+        if action_name == CHANGE_NOTIFICATION_POLICY
+        else "기록 요청 시간"
+    )
+    target_time_column = (
+        "적용 시점"
+        if action_name == CHANGE_NOTIFICATION_POLICY
+        else "기록 대상 시간"
+    )
     time_values = {
         row["column"]: row["value"]
         for row in rows
         if row["column"] in {
             "기록 요청 시간",
             "기록 대상 시간",
+            "변경 요청 시간",
+            "적용 시점",
         }
     }
-    assert time_values["기록 요청 시간"] == "2026-04-20 09:30"
-    assert time_values["기록 대상 시간"] != "확인되지 않음"
+    assert time_values[request_time_column] == "2026-04-20 09:30"
+    assert time_values[target_time_column] != "확인되지 않음"
 
 
 def _schema_property_union(
@@ -509,6 +578,14 @@ class FakeBackendQueryTools:
                 {
                     "policy_id": policy_id or "npol_0000000000000001",
                     "slot_label": slot_label or "아침",
+                    "extra_reminders": 1,
+                    "interval_minutes": 10,
+                    "missed_dose_after_minutes": 90,
+                    "primary_reminder_timing": "at",
+                    "primary_reminder_offset_minutes": 0,
+                    "effective_start_date": "2026-04-20",
+                    "effective_end_date": "2026-05-19",
+                    "active": True,
                     "version": 4,
                 }
             ],
@@ -852,6 +929,107 @@ async def test_request_record_approval_prepares_bound_target_action(
         "tool_name": CREATE_NUTRITION_MEAL_RECORD,
         "arguments": expected_record_arguments,
         "result_tool_name": REQUEST_RECORD_APPROVAL,
+    }
+
+
+@pytest.mark.asyncio
+async def test_meal_approval_returns_input_required_before_portion_confirmation() -> None:
+    server = AgentMcpToolServer(
+        backend_client=FakeBackendV13Client(),
+        backend_queries=FakeBackendQueryTools(),
+    )
+    payload = v13_payload()
+    payload["context"]["record_input_request"] = {
+        "action_name": CREATE_NUTRITION_MEAL_RECORD,
+        "missing_fields": ["foods[].portion"],
+        "input_request": {
+            "message_title": "섭취량 입력",
+            "text": "실제 섭취량을 입력해 주세요.",
+            "tables": None,
+            "selections": None,
+            "inputs": [
+                {
+                    "type": "number",
+                    "label": "1. 토스트 섭취량",
+                    "value": None,
+                    "options": {
+                        "unit": "g",
+                        "lower": 1,
+                        "upper": 5000,
+                        "selections": None,
+                    },
+                }
+            ],
+        },
+    }
+
+    result = await execute(
+        server,
+        name=REQUEST_RECORD_APPROVAL,
+        arguments={
+            "action_name": CREATE_NUTRITION_MEAL_RECORD,
+            "record_arguments": {
+                "meal_type": "breakfast",
+                "foods": [
+                    {
+                        "food_name": "토스트",
+                        "portion": "100g",
+                        "nutrients": {"calories": 250},
+                    }
+                ],
+            },
+        },
+        source_event_type="nutrition_management_agent",
+        tool_call_id="request-meal-approval-needs-portion",
+        payload=payload,
+    )
+
+    assert result.status == "success"
+    assert result.error == ""
+    assert result.response["input_required"] is True
+    assert result.response["approval_created"] is False
+    assert result.response["record_applied"] is False
+    assert result.response["missing_fields"] == [
+        "foods[].portion"
+    ]
+    assert result.response["input_request"]["inputs"][0][
+        "label"
+    ] == "1. 토스트 섭취량"
+
+
+@pytest.mark.asyncio
+async def test_policy_approval_uses_current_backend_policy_in_card() -> None:
+    server = AgentMcpToolServer(
+        backend_client=FakeBackendV13Client(),
+        backend_queries=FakeBackendQueryTools(),
+    )
+
+    result = await execute(
+        server,
+        name=REQUEST_RECORD_APPROVAL,
+        arguments={
+            "action_name": CHANGE_NOTIFICATION_POLICY,
+            "record_arguments": {
+                "policy_id": "npol_0000000000000001",
+                "decision": "apply",
+                "changes": {"missed_dose_after_minutes": 120},
+            },
+        },
+        source_event_type="multiturn_chat",
+        tool_call_id="request-policy-approval-001",
+        payload=v13_payload(),
+    )
+
+    assert result.status == "confirmation_required"
+    display = result.response["mutation_confirmation"]["display"]
+    rows = display["tables"][0]["rows"]
+    assert {row["column"]: row["value"] for row in rows} == {
+        "시간대": "아침",
+        "변경 항목": "미복용 알림 시점",
+        "현재 설정": "복약 예정 90분 후",
+        "변경 설정": "복약 예정 120분 후",
+        "변경 요청 시간": "2026-07-25 16:30",
+        "적용 시점": "사용자 승인 시점부터",
     }
 
 

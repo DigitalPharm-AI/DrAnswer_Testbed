@@ -14,8 +14,8 @@ from shared.async_v13_contracts import (
 from shared.json_utils import dump_json as dump_metadata_json
 from shared.json_utils import parse_json_object as parse_metadata_json
 from shared.redaction import safe_exception_summary
-from shared.settings import get_settings
 from shared.schemas import MissedDoseEventPayload
+from shared.settings import get_settings
 from shared.time_utils import utc_now
 from system_app.db import SessionLocal
 from system_app.models import AgentJob, DoseEvent, Notification

@@ -76,6 +76,8 @@ durable task와 Callback 멱등성으로 실제 발송과 사용자 확인 알�
 
 ## Backend Read-only View 명칭
 
-Backend가 AI Server에 제공하는 Read-only View는 v1.3 계약과 일치하는
-`ai_v13_*` 명칭을 사용한다. AI Server의 전용 DB 계정에는 해당 View의
-`SELECT` 권한만 부여한다.
+Backend가 AI Server에 제공하는 Read-only View는 공개 HTTP v1.3 경계와
+구분되는 내부 read 계약 1.4를 사용한다. 기존 배포 호환을 위해 View의
+`ai_v13_*` 명칭은 유지하며, chat view에는 `conversation_at`, `recorded_at`,
+`conversation_sequence`가 포함된다. AI Server의 전용 DB 계정에는 해당
+View의 `SELECT` 권한만 부여한다.

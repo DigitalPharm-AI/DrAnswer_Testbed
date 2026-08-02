@@ -70,6 +70,47 @@ def test_bedrock_chat_model_applies_generation_timeout_to_runtime_client(
     assert captured["model_kwargs"]["client"] == "runtime-client"
 
 
+def test_bedrock_semantic_verifier_uses_fast_model_without_thinking(
+    monkeypatch,
+):
+    captured: dict = {}
+    expected_model = object()
+
+    class FakeSession:
+        def client(self, _service_name, *, config):
+            return "runtime-client"
+
+    monkeypatch.setattr(boto3, "Session", lambda **_kwargs: FakeSession())
+    monkeypatch.setattr(
+        langchain_aws,
+        "ChatBedrockConverse",
+        lambda **kwargs: captured.update(kwargs) or expected_model,
+    )
+    provider = BedrockAnthropicProvider()
+    provider.settings = SimpleNamespace(
+        aws_bearer_token_bedrock=None,
+        aws_region="ap-northeast-2",
+        aws_profile=None,
+        aws_access_key_id=None,
+        aws_secret_access_key=None,
+        aws_session_token=None,
+        llm_timeout_seconds=17,
+        llm_reasoning_effort="medium",
+        llm_extended_thinking_budget_tokens=1024,
+        model_id_for_tier=lambda tier: f"{tier}-model",
+    )
+
+    model = provider.semantic_verification_model()
+
+    assert model is expected_model
+    assert captured == {
+        "client": "runtime-client",
+        "model": "fast-model",
+        "max_tokens": 256,
+        "temperature": 0.0,
+    }
+
+
 def test_bedrock_chat_model_unwraps_secret_bearer_only_at_provider_sink(
     monkeypatch,
 ):
@@ -134,7 +175,7 @@ def test_other_anthropic_models_keep_temperature():
     assert model_supports_temperature("global.anthropic.claude-sonnet-4-6") is True
 
 
-def test_sonnet_46_uses_adaptive_reasoning_without_temperature(monkeypatch):
+def test_sonnet_5_uses_adaptive_reasoning_without_temperature(monkeypatch):
     captured: dict = {}
 
     class FakeSession:
@@ -158,10 +199,10 @@ def test_sonnet_46_uses_adaptive_reasoning_without_temperature(monkeypatch):
         llm_timeout_seconds=17,
         llm_max_tokens=4096,
         llm_temperature=0.2,
-        llm_reasoning_enabled=True,
+        llm_reasoning_enabled=False,
         llm_reasoning_effort="medium",
         llm_extended_thinking_budget_tokens=1024,
-        model_id_for_tier=lambda _tier: "global.anthropic.claude-sonnet-4-6",
+        model_id_for_tier=lambda _tier: "global.anthropic.claude-sonnet-5",
     )
 
     provider.chat_model()
@@ -172,6 +213,19 @@ def test_sonnet_46_uses_adaptive_reasoning_without_temperature(monkeypatch):
     }
     assert "output_config" not in captured
     assert "temperature" not in captured
+    assert reasoning_request_fields(
+        "global.anthropic.claude-sonnet-5",
+        enabled=False,
+        effort="medium",
+        extended_thinking_budget_tokens=1024,
+        max_tokens=4096,
+    ) == {
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": "medium"},
+    }
+
+
+def test_sonnet_46_keeps_adaptive_reasoning_support():
     assert reasoning_request_fields(
         "global.anthropic.claude-sonnet-4-6",
         enabled=True,
@@ -336,6 +390,58 @@ def test_bedrock_generation_readiness_performs_and_caches_real_probe(
                 }
             ],
             "inferenceConfig": {"maxTokens": 1},
+        }
+    ]
+
+
+def test_bedrock_generation_readiness_uses_low_effort_for_sonnet_5(
+    monkeypatch,
+):
+    calls: list[dict] = []
+
+    class FakeClient:
+        def converse(self, **kwargs):
+            calls.append(kwargs)
+            return {"output": {"message": {"content": [{"text": "OK"}]}}}
+
+    class FakeSession:
+        def get_credentials(self):
+            return object()
+
+        def client(self, _service_name, *, config):
+            return FakeClient()
+
+    monkeypatch.setattr(boto3, "Session", lambda **_kwargs: FakeSession())
+    provider = BedrockAnthropicProvider()
+    provider.settings = SimpleNamespace(
+        aws_bearer_token_bedrock=None,
+        aws_region="ap-northeast-2",
+        aws_profile=None,
+        aws_access_key_id=None,
+        aws_secret_access_key=None,
+        aws_session_token=None,
+        model_id_for_tier=lambda _tier: (
+            "global.anthropic.claude-sonnet-5"
+        ),
+    )
+
+    readiness = provider.generation_readiness()
+
+    assert readiness.ok is True
+    assert calls == [
+        {
+            "modelId": "global.anthropic.claude-sonnet-5",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"text": "Reply with OK."}],
+                }
+            ],
+            "inferenceConfig": {"maxTokens": 32},
+            "additionalModelRequestFields": {
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "low"},
+            },
         }
     ]
 

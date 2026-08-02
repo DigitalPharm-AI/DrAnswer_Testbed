@@ -413,27 +413,6 @@ class ChatFeedbackService:
             )
         )
 
-    @staticmethod
-    def _current_reaction(
-        session: Session,
-        *,
-        payload: ChatFeedbackRequest,
-        patient_id_hash: str,
-    ) -> str | None:
-        value = session.scalar(
-            select(AgentFeedbackLink.feedback)
-            .where(
-                AgentFeedbackLink.api_path == FEEDBACK_API_PATH,
-                AgentFeedbackLink.message_id == payload.message_id,
-                AgentFeedbackLink.patient_id_hash == patient_id_hash,
-                AgentFeedbackLink.feedback.is_not(None),
-            )
-            .order_by(AgentFeedbackLink.id.desc())
-            .limit(1)
-        )
-        return _reaction_contract_value(value)
-
-    @staticmethod
     def _validate_target(
         payload: ChatFeedbackRequest,
         target: dict[str, Any],
@@ -500,14 +479,6 @@ def _reaction_storage_value(
     if reaction == "dislike":
         return False
     return None
-
-
-def _reaction_contract_value(
-    value: bool | None,
-) -> str | None:
-    if value is None:
-        return None
-    return "like" if bool(value) else "dislike"
 
 
 def hmac_compare(left: str, right: str) -> bool:

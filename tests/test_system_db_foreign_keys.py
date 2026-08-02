@@ -5,6 +5,7 @@ from datetime import date, datetime
 import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import sessionmaker
 
 from system_app.models import (
     AgentJob,
@@ -21,7 +22,6 @@ from system_app.services.medication_plan_service import (
     delete_medication_plan,
     reset_simulation_state,
 )
-from sqlalchemy.orm import sessionmaker
 from tests.helpers import build_system_engine
 
 

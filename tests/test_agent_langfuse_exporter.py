@@ -9,6 +9,7 @@ from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
+import agent_app.persistence.retention as retention_module
 from agent_app.observability.langfuse_exporter import (
     LangfuseExportError,
     LangfuseHttpExporter,
@@ -28,7 +29,6 @@ from agent_app.persistence.models import (
     AgentRunStep,
     AgentRunTrace,
 )
-import agent_app.persistence.retention as retention_module
 from agent_app.persistence.retention import purge_expired_agent_state
 from agent_app.persistence.trace_store import AgentTraceStore
 from shared.schemas import AgentResponse

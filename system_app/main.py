@@ -15,8 +15,14 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import system_app.services.workers as worker_services
+from shared.backend_v13_contracts import (
+    CommonErrorResponse,
+    ContractError,
+)
+from shared.contract_errors import contract_error_definition
+from shared.public_ids import request_id_from_body, request_id_from_request
 from system_app.db import SessionLocal, engine
-from system_app.schema import verify_system_schema_current
+from system_app.openapi_v13 import install_system_v13_openapi
 from system_app.routes import (
     create_agent_api_router,
     create_agent_async_api_router,
@@ -26,21 +32,16 @@ from system_app.routes import (
     create_ui_api_router,
     create_ui_feedback_router,
 )
+from system_app.routes.ui_api import UI_PREFIX
+from system_app.routes.ui_responses import ui_error_body
 from system_app.runtime import SystemRuntime
-from system_app.openapi_v13 import install_system_v13_openapi
+from system_app.schema import verify_system_schema_current
 from system_app.services.agent_client import AgentClient
 from system_app.services.audit_retention import (
     purge_expired_backend_audits,
 )
 from system_app.services.backend_v13_service import POLICY_CHANGE_PATH, RECORD_CHANGE_PATH
 from system_app.services.policy_service import reload_policy_workbook
-from system_app.routes.ui_api import UI_PREFIX, ui_error_body
-from shared.backend_v13_contracts import (
-    CommonErrorResponse,
-    ContractError,
-)
-from shared.contract_errors import contract_error_definition
-from shared.public_ids import request_id_from_body
 
 agent_client = AgentClient()
 _APP_DIR = Path(__file__).parent
@@ -61,21 +62,6 @@ def sync_worker_dependencies() -> None:
     worker_services.SessionLocal = SessionLocal
 
 
-def clock_worker(stop_event: threading.Event) -> None:
-    sync_worker_dependencies()
-    worker_services.clock_worker(stop_event, write_lock)
-
-
-def notification_worker(stop_event: threading.Event) -> None:
-    sync_worker_dependencies()
-    worker_services.notification_worker(stop_event, write_lock)
-
-
-def agent_worker(stop_event: threading.Event) -> None:
-    sync_worker_dependencies()
-    worker_services.agent_worker(stop_event, write_lock, agent_client)
-
-
 def get_runtime() -> SystemRuntime:
     return SystemRuntime(
         write_lock=write_lock,
@@ -89,7 +75,8 @@ async def lifespan(_: FastAPI):
 
     settings = get_settings()
     settings.require_internal_api_token()
-    settings.require_backend_api_token()
+    settings.require_service_api_token()
+    settings.require_agent_service_https()
     settings.require_system_postgresql()
     verify_system_schema_current(engine)
     audit_retention_result = purge_expired_backend_audits(
@@ -100,9 +87,8 @@ async def lifespan(_: FastAPI):
             "backend_audit_retention_cleanup result=%s",
             audit_retention_result,
         )
-    from system_app.services.nutrition_preference_service import seed_nutrition_ontology
-
     from system_app.services.food_search_service import seed_food_ref_from_csv
+    from system_app.services.nutrition_preference_service import seed_nutrition_ontology
     from system_app.services.ui_medication_scenario_service import (
         ensure_initial_testbed_scenario_state,
         seed_test_medication_scenarios,
@@ -124,9 +110,24 @@ async def lifespan(_: FastAPI):
             session.commit()
 
     stop_event = threading.Event()
-    clock_thread = threading.Thread(target=clock_worker, args=(stop_event,), name="simulation-clock-thread", daemon=True)
-    alert_thread = threading.Thread(target=notification_worker, args=(stop_event,), name="simulation-alert-thread", daemon=True)
-    agent_thread = threading.Thread(target=agent_worker, args=(stop_event,), name="simulation-agent-thread", daemon=True)
+    clock_thread = threading.Thread(
+        target=worker_services.clock_worker,
+        args=(stop_event, write_lock),
+        name="simulation-clock-thread",
+        daemon=True,
+    )
+    alert_thread = threading.Thread(
+        target=worker_services.notification_worker,
+        args=(stop_event, write_lock),
+        name="simulation-alert-thread",
+        daemon=True,
+    )
+    agent_thread = threading.Thread(
+        target=worker_services.agent_worker,
+        args=(stop_event, write_lock, agent_client),
+        name="simulation-agent-thread",
+        daemon=True,
+    )
     clock_thread.start()
     alert_thread.start()
     agent_thread.start()
@@ -268,7 +269,7 @@ def create_app() -> FastAPI:
         if request.url.path in ASYNC_CALLBACK_CONTRACT_PATHS:
             detail = exc.detail if isinstance(exc.detail, dict) else {}
             body = CommonErrorResponse(
-                request_id=await _request_id_from_request(request),
+                request_id=await request_id_from_request(request),
                 error=ContractError(
                     code=str(
                         detail.get("code")
@@ -311,7 +312,7 @@ def create_app() -> FastAPI:
         detail = exc.detail if isinstance(exc.detail, dict) else {}
         code = str(detail.get("code") or ("UNAUTHORIZED" if exc.status_code == 401 else "INVALID_REQUEST"))
         return _backend_v13_error_response(
-            request_id=await _request_id_from_request(request),
+            request_id=await request_id_from_request(request),
             status_code=exc.status_code,
             code=code,
             message=str(detail.get("message") or code),
@@ -472,23 +473,12 @@ def _business_validation_error(
     return None
 
 
-async def _request_id_from_request(request: Request) -> str | None:
-    try:
-        body = await request.json()
-    except (ValueError, RuntimeError):
-        return None
-    return request_id_from_body(body)
-
-
 app = create_app()
 
 __all__ = [
     "agent_client",
-    "agent_worker",
     "app",
-    "clock_worker",
     "create_app",
     "get_runtime",
-    "notification_worker",
     "write_lock",
 ]

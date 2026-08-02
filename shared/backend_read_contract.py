@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Final
 
-BACKEND_READ_CONTRACT_VERSION: Final = "1.3"
+BACKEND_READ_CONTRACT_VERSION: Final = "1.4"
 
 # These projections are the only Backend DB objects the AI Server is allowed to
 # query. Keep their column order stable: readiness checks compare the live views
@@ -16,7 +16,8 @@ BACKEND_READ_VIEW_DEFINITIONS: Final[dict[str, dict[str, object]]] = {
                 "patient_id",
                 "role",
                 "content",
-                "created_at",
+                "conversation_at",
+                "recorded_at",
                 "message_type",
                 "message_payload_json",
                 "reply_to_message_id",
@@ -28,7 +29,9 @@ BACKEND_READ_VIEW_DEFINITIONS: Final[dict[str, dict[str, object]]] = {
             "patient_id",
             "role",
             "content",
-            "created_at",
+            "conversation_at",
+            "recorded_at",
+            "conversation_sequence",
             "message_type",
             "message_payload_json",
             "reply_to_message_id",
@@ -39,7 +42,9 @@ BACKEND_READ_VIEW_DEFINITIONS: Final[dict[str, dict[str, object]]] = {
                    message.patient_id,
                    message.role,
                    message.content,
-                   message.created_at,
+                   message.conversation_at,
+                   message.recorded_at,
+                   message.id AS conversation_sequence,
                    message.message_type,
                    (
                        COALESCE(
@@ -455,7 +460,13 @@ BACKEND_READ_VIEW_COLUMNS: Final[dict[str, tuple[str, ...]]] = {
 # concurrency must never be NULL. Backend migration backfill and AI readiness
 # both enforce these live-data invariants.
 BACKEND_READ_NON_NULL_INVARIANTS: Final[dict[str, tuple[str, ...]]] = {
-    "ai_v13_chat_messages": ("id", "patient_id"),
+    "ai_v13_chat_messages": (
+        "id",
+        "patient_id",
+        "conversation_at",
+        "recorded_at",
+        "conversation_sequence",
+    ),
     "ai_v13_patient_profiles": ("patient_id",),
     "ai_v13_active_medication_schedules": (
         "patient_id",

@@ -8,12 +8,14 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 from fastapi.responses import JSONResponse
+
 from agent_app.integration.idempotency import (
     StoredHttpResponse,
     SyncRequestClaim,
     canonical_request_hash,
 )
 from agent_app.routes import chat as agent_chat_route
+from agent_app.routes import chat_streaming as agent_chat_streaming
 from agent_app.streaming import agent_text_publisher
 from shared.chat_contracts import (
     ChatMessageContent,
@@ -21,11 +23,38 @@ from shared.chat_contracts import (
     ChatSyncRequest,
 )
 from shared.schemas import AgentResponse
-from system_app.routes import ui_api
+from system_app.routes import ui_chat
 from system_app.services import agent_client as agent_client_module
 from system_app.services.agent_client import AgentClient, AgentServiceError
 from system_app.services.chat_stream import publish_ui_text_with
 from system_app.ui_contracts import UiChatRequest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_agent_contract_state(monkeypatch):
+    class _SurveyService:
+        def start_from_agent_response(self, **_kwargs):
+            return None
+
+    class _SelectionStore:
+        def prepare_from_agent_response(self, **_kwargs) -> None:
+            return None
+
+    monkeypatch.setattr(
+        agent_chat_route,
+        "_pro_ctcae_survey_service",
+        lambda: _SurveyService(),
+    )
+    monkeypatch.setattr(
+        agent_chat_route,
+        "_food_selection_store",
+        lambda: _SelectionStore(),
+    )
+    monkeypatch.setattr(
+        agent_chat_route,
+        "_dose_selection_store",
+        lambda: _SelectionStore(),
+    )
 
 
 def _ndjson_rows(body: str) -> list[dict]:
@@ -54,6 +83,16 @@ async def _stream_body(response) -> str:
             chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
         )
     return "".join(chunks)
+
+
+def _agent_stream_response(**kwargs):
+    return agent_chat_streaming.stream_chat_response(
+        **kwargs,
+        invoke_sync_chat_contract=(
+            agent_chat_route._invoke_sync_chat_contract
+        ),
+        log_sync_chat_completed=lambda **_kwargs: None,
+    )
 
 
 def _patch_httpx_stream(monkeypatch, response: httpx.Response) -> None:
@@ -126,6 +165,7 @@ class _TraceStore:
     def __init__(self) -> None:
         self.completed: list[AgentResponse] = []
         self.failed: list[dict] = []
+        self.model_calls: list[dict] = []
 
     def complete_chat(
         self,
@@ -137,6 +177,49 @@ class _TraceStore:
 
     def fail_chat(self, **kwargs) -> None:
         self.failed.append(kwargs)
+
+    def record_model_calls(self, **kwargs) -> None:
+        self.model_calls.append(kwargs)
+
+
+def test_stream_failure_forwards_tool_observations_to_trace_store() -> None:
+    request = _request("failed-write-trace")
+    gate = _Gate()
+    trace_store = _TraceStore()
+    tool_observations = [
+        {
+            "observation_id": "failed-write-observation",
+            "call": {
+                "id": "failed-write-call",
+                "name": "change_notification_policy",
+                "arguments": {"approval_key": "private-key"},
+            },
+            "result": {
+                "status": "error",
+                "error": "POLICY_EFFECTIVE_DATE_RANGE_TOO_LARGE",
+            },
+        }
+    ]
+    terminal = agent_chat_streaming._stream_error_event(
+        request,
+        code="TOOL_EXECUTION_FAILED",
+        message="write failed",
+        retryable=False,
+    )
+
+    agent_chat_streaming._persist_stream_failure(
+        gate,
+        trace_store,
+        request,
+        claim=_claim(request),
+        terminal=terminal,
+        trace_id="trace-failed-write",
+        tool_call_observations=tool_observations,
+    )
+
+    assert trace_store.failed[0]["tool_call_observations"] == (
+        tool_observations
+    )
 
 
 def _request(suffix: str = "1") -> ChatSyncRequest:
@@ -211,7 +294,7 @@ async def test_agent_ndjson_emits_agent_loop_text_and_one_terminal_event():
 
     gate = _Gate()
     trace_store = _TraceStore()
-    response = agent_chat_route._stream_chat_response(
+    response = _agent_stream_response(
         gate=gate,
         trace_store=trace_store,
         orchestrator=_Orchestrator(),
@@ -264,7 +347,7 @@ async def test_agent_ndjson_forwards_generated_token_deltas_without_duplicate():
                 human_summary="토큰 스트리밍",
             )
 
-    response = agent_chat_route._stream_chat_response(
+    response = _agent_stream_response(
         gate=_Gate(),
         trace_store=_TraceStore(),
         orchestrator=_Orchestrator(),
@@ -314,7 +397,7 @@ async def test_structured_chat_streams_explanation_before_completed_payload():
                 },
             )
 
-    response = agent_chat_route._stream_chat_response(
+    response = _agent_stream_response(
         gate=_Gate(),
         trace_store=_TraceStore(),
         orchestrator=_Orchestrator(),
@@ -356,7 +439,7 @@ async def test_agent_ndjson_timeout_is_http_200_error_terminal():
             await asyncio.sleep(0.05)
             raise AssertionError(trace_id)
 
-    response = agent_chat_route._stream_chat_response(
+    response = _agent_stream_response(
         gate=gate,
         trace_store=trace_store,
         orchestrator=_Orchestrator(),
@@ -381,6 +464,137 @@ async def test_agent_ndjson_timeout_is_http_200_error_terminal():
     assert len(trace_store.failed) == 1
 
 
+async def test_agent_stream_disconnect_finishes_and_replays_without_second_run():
+    request = _request("disconnect-replay")
+    release = asyncio.Event()
+
+    class _Orchestrator:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def invoke(self, _kind, _payload, *, trace_id):
+            self.calls += 1
+            publisher = agent_text_publisher()
+            assert publisher is not None
+            await publisher("먼저 공개된 토큰")
+            await release.wait()
+            return AgentResponse(
+                trace_id=trace_id,
+                agent_name="multiturn_chat_agent",
+                prompt_version_id="test",
+                decision_type="system_guidance",
+                structured_payload={},
+                human_summary="먼저 공개된 토큰과 최종 답변",
+            )
+
+    orchestrator = _Orchestrator()
+    gate = _Gate()
+    trace_store = _TraceStore()
+    response = _agent_stream_response(
+        gate=gate,
+        trace_store=trace_store,
+        orchestrator=orchestrator,
+        payload=request,
+        claim=_claim(request),
+        agent_payload={"message": request.message},
+        trace_id="trace-disconnect-replay",
+        timeout_seconds=1.0,
+    )
+    iterator = response.body_iterator.__aiter__()
+    first_line = await anext(iterator)
+    first_text = (
+        first_line.decode("utf-8")
+        if isinstance(first_line, bytes)
+        else str(first_line)
+    )
+    first_event = ChatStreamEvent.model_validate(
+        _ndjson_rows(first_text)[0]
+    )
+    assert first_event.status == "streaming"
+    assert first_event.delta == "먼저 공개된 토큰"
+
+    pending_read = asyncio.create_task(anext(iterator))
+    await asyncio.sleep(0)
+    pending_read.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pending_read
+
+    assert orchestrator.calls == 1
+    assert len(trace_store.completed) == 1
+    assert trace_store.failed == []
+    assert len(gate.completed) == 1
+    stored_body = gate.completed[0]["body"]
+    assert agent_chat_streaming.STORED_STREAM_EVENTS_KEY in stored_body
+
+    replay = agent_chat_streaming.replay_chat_response(
+        request,
+        StoredHttpResponse(status_code=200, body=stored_body),
+    )
+    replay_rows = [
+        ChatStreamEvent.model_validate(row)
+        for row in _ndjson_rows(await _stream_body(replay))
+    ]
+    assert [row.status for row in replay_rows] == [
+        "streaming",
+        "completed",
+    ]
+    assert [row.sequence for row in replay_rows] == [0, 1]
+    assert replay_rows[-1].message is not None
+    assert replay_rows[-1].message.text == (
+        "먼저 공개된 토큰과 최종 답변"
+    )
+    assert orchestrator.calls == 1
+
+
+async def test_agent_stream_completion_persistence_failure_has_one_error_terminal():
+    request = _request("completion-persistence-failure")
+
+    class _Orchestrator:
+        async def invoke(self, _kind, _payload, *, trace_id):
+            return AgentResponse(
+                trace_id=trace_id,
+                agent_name="multiturn_chat_agent",
+                prompt_version_id="test",
+                decision_type="system_guidance",
+                structured_payload={},
+                human_summary="저장 전 공개된 답변",
+            )
+
+    class _FailingTraceStore(_TraceStore):
+        def complete_chat(self, *_args, **_kwargs) -> None:
+            raise RuntimeError("synthetic completion persistence failure")
+
+    gate = _Gate()
+    trace_store = _FailingTraceStore()
+    response = _agent_stream_response(
+        gate=gate,
+        trace_store=trace_store,
+        orchestrator=_Orchestrator(),
+        payload=request,
+        claim=_claim(request),
+        agent_payload={"message": request.message},
+        trace_id="trace-completion-persistence-failure",
+        timeout_seconds=1.0,
+    )
+    rows = [
+        ChatStreamEvent.model_validate(row)
+        for row in _ndjson_rows(await _stream_body(response))
+    ]
+
+    assert [row.status for row in rows] == ["streaming", "error"]
+    assert [row.sequence for row in rows] == [0, 1]
+    assert rows[0].delta == "저장 전 공개된 답변"
+    assert rows[-1].error is not None
+    assert rows[-1].error.code == "AI_PROCESSING_ERROR"
+    assert sum(
+        row.status in {"completed", "error"} for row in rows
+    ) == 1
+    assert gate.completed == []
+    assert len(gate.failed) == 1
+    assert len(trace_store.failed) == 1
+
+
 async def test_terminal_replay_is_one_ndjson_line_with_sequence_zero():
     request = _request("replay")
     terminal = ChatStreamEvent(
@@ -400,7 +614,7 @@ async def test_terminal_replay_is_one_ndjson_line_with_sequence_zero():
         error=None,
         event_at=datetime.now(UTC),
     )
-    response = agent_chat_route._replay_chat_response(
+    response = agent_chat_streaming.replay_chat_response(
         request,
         StoredHttpResponse(
             status_code=200,
@@ -747,7 +961,6 @@ async def test_backend_agent_client_rejects_invalid_ndjson(
 
 
 async def test_ui_sse_remains_the_browser_boundary_and_starts_at_sequence_zero(
-    monkeypatch,
 ):
     payload = UiChatRequest(
         request_id="req_0000000000000001",
@@ -785,9 +998,12 @@ async def test_ui_sse_remains_the_browser_boundary_and_starts_at_sequence_zero(
             content={"success": True, "data": completed, "error": None},
         )
 
-    monkeypatch.setattr(ui_api, "_sync_ui_chat", fake_sync_chat)
-
-    response = ui_api._stream_ui_chat(object(), object(), payload)
+    response = ui_chat.stream_ui_chat(
+        object(),
+        object(),
+        payload,
+        sync_ui_chat=fake_sync_chat,
+    )
     body = await _stream_body(response)
     rows = _sse_rows(body)
 

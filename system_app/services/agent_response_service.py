@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from shared.json_utils import dump_json, parse_json_object
+from shared.nutrition_domain import normalize_meal_type
+from shared.schemas import AgentResponse, NotificationPolicyDelta
 from shared.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
@@ -14,8 +17,6 @@ from shared.tool_names import (
     UPDATE_NUTRITION_FOOD_RECORD,
     UPDATE_NUTRITION_MEAL_RECORD,
 )
-from shared.json_utils import dump_json, parse_json_object
-from shared.schemas import AgentResponse, NotificationPolicyDelta
 from system_app.models import ChatMessage
 from system_app.services.clock_service import ensure_clock, pause_simulation_clock_for_conversation
 from system_app.services.missed_dose_agent_response_service import missed_dose_adherence_pattern_message
@@ -47,7 +48,6 @@ NUTRITION_WRITE_TOOL_NAMES = {
     DELETE_NUTRITION_FOOD_RECORD,
 }
 FOOD_SELECTION_CANDIDATE_LIMIT = 6
-SUPPORTED_MEAL_TYPES = {"breakfast", "lunch", "dinner", "snack"}
 
 
 def ae_pro_ctcae_payload(response: AgentResponse) -> dict | None:
@@ -127,7 +127,7 @@ def food_selection_chat_metadata(response: AgentResponse) -> dict:
         if isinstance(tool_call, dict) and tool_call.get("name") == SEARCH_NUTRITION_FOOD_CANDIDATES:
             arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else tool_call.get("input", {})
             query = str(arguments.get("query", "")) if isinstance(arguments, dict) else ""
-            meal_type = _valid_meal_type(arguments.get("meal_type")) if isinstance(arguments, dict) else ""
+            meal_type = normalize_meal_type(arguments.get("meal_type")) if isinstance(arguments, dict) else ""
         food_searches = [{"query": query, "candidates": candidates, "meal_type": meal_type}]
     food_searches = [_food_search_entry(row) for row in food_searches if isinstance(row, dict)]
     if not food_searches:
@@ -154,13 +154,8 @@ def _food_search_entry(row: dict) -> dict:
     return {
         "query": row.get("query", ""),
         "candidates": candidates[:FOOD_SELECTION_CANDIDATE_LIMIT],
-        "meal_type": _valid_meal_type(row.get("meal_type")),
+        "meal_type": normalize_meal_type(row.get("meal_type")),
     }
-
-
-def _valid_meal_type(value) -> str:
-    text = str(value or "")
-    return text if text in SUPPORTED_MEAL_TYPES else ""
 
 
 def has_successful_nutrition_write(response: AgentResponse) -> bool:

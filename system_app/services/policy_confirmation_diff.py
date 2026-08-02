@@ -8,9 +8,9 @@ from system_app.services.policy_confirmation_constants import POLICY_ACTION_DECR
 from system_app.services.policy_service import (
     POLICY_TEMPLATE_FIELDS,
     completed_policy_values,
-    relative_primary_reminder_minutes,
     resolve_policy_for_slot,
 )
+from system_app.services.policy_workbook_schema import relative_primary_minutes
 
 settings = get_settings()
 
@@ -27,11 +27,11 @@ def policy_delta_direction(session: Session, delta: NotificationPolicyDelta) -> 
         if delta.primary_reminder_offset_minutes is not None
         else current_policy.primary_reminder_offset_minutes
     )
-    current_primary_minutes = relative_primary_reminder_minutes(
+    current_primary_minutes = relative_primary_minutes(
         current_policy.primary_reminder_timing,
         current_policy.primary_reminder_offset_minutes,
     )
-    next_primary_minutes = relative_primary_reminder_minutes(next_primary_timing, next_primary_offset)
+    next_primary_minutes = relative_primary_minutes(next_primary_timing, next_primary_offset)
     signals: set[str] = set()
     if delta.extra_reminders > current_extra_reminders:
         signals.add(POLICY_ACTION_INCREASE)

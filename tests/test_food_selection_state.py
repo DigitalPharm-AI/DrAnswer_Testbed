@@ -5,11 +5,14 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import delete, select
 
+from agent_app.integration.food_selection_payloads import (
+    food_portion_input_request,
+)
+from agent_app.integration.selection_errors import SelectionStateError
 from agent_app.integration.selection_state import (
     CONSUMED,
     RESOLVED,
     FoodSelectionStateStore,
-    SelectionStateError,
 )
 from agent_app.persistence.db import SessionLocal
 from agent_app.persistence.models import AgentPendingSelection
@@ -298,4 +301,82 @@ def test_food_selection_batch_advances_and_combines_foods() -> None:
         patient_id=PATIENT_ID,
         origin_message_id=ORIGIN_MESSAGE_ID,
         current_user_message_id=final_message_id,
+    )
+
+
+def test_food_portion_input_updates_portions_and_scales_nutrients() -> None:
+    store = FoodSelectionStateStore(
+        SessionLocal,
+        settings=get_settings(),
+    )
+    prepared = store.prepare_from_agent_response(
+        patient_id=PATIENT_ID,
+        origin_message_id=ORIGIN_MESSAGE_ID,
+        source_chat_request_id=SOURCE_REQUEST_ID,
+        trace_id="trace-food-portion",
+        message_at=MESSAGE_AT,
+        response=_food_response(),
+    )
+    assert prepared is not None
+
+    selected = store.resolve(
+        patient_id=PATIENT_ID,
+        current_user_message_id=RESPONSE_MESSAGE_ID,
+        originating_user_message_id=ORIGIN_MESSAGE_ID,
+        submitted_value="토스트(식빵)",
+    )
+    assert selected is not None
+    assert selected.portions_confirmed is False
+    input_request = food_portion_input_request(
+        selected.selected_candidates
+    )
+    assert input_request["message_title"] == "섭취량 입력"
+    assert input_request["inputs"] == [
+        {
+            "type": "number",
+            "label": "1. 토스트(식빵) 섭취량",
+            "value": 230.3,
+            "options": {
+                "unit": "g",
+                "lower": 1.0,
+                "upper": 5000.0,
+                "selections": None,
+            },
+        }
+    ]
+
+    portion_message_id = "user_msg_0000000000000704"
+    completed = store.resolve_portions(
+        patient_id=PATIENT_ID,
+        current_user_message_id=portion_message_id,
+        originating_user_message_id=RESPONSE_MESSAGE_ID,
+        submitted_values={
+            "1. 토스트(식빵) 섭취량": 115.15,
+        },
+    )
+    assert completed is not None
+    assert completed.portions_confirmed is True
+    assert completed.record_arguments() == {
+        "meal_type": "breakfast",
+        "meal_date": "2026-04-20",
+        "foods": [
+            {
+                "food_ref_id": "D402-145000000-0001",
+                "food_name": "토스트(식빵)",
+                "portion": "115.15g",
+                "nutrients": {
+                    "calories": 42.0,
+                    "protein": 1.25,
+                    "sodium": 70.0,
+                    "fat": 0.665,
+                    "carbohydrates": 7.775,
+                },
+            }
+        ],
+    }
+
+    store.consume(
+        patient_id=PATIENT_ID,
+        origin_message_id=ORIGIN_MESSAGE_ID,
+        current_user_message_id=portion_message_id,
     )

@@ -5,7 +5,6 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-
 REACT_BUILD_DIR = Path(__file__).resolve().parents[1] / "static" / "react"
 REACT_INDEX_PATH = REACT_BUILD_DIR / "index.html"
 

@@ -15,12 +15,12 @@ from system_app.models import ChatMessage, DoseEvent, MedicationPlan, Notificati
 from system_app.services.clock_service import ensure_clock
 from system_app.services.nutrition_service import nutrition_dashboard_view
 from system_app.services.patient_profile_service import simulation_readiness
+from system_app.services.ui_feedback_service import (
+    feedback_status_from_metadata,
+)
 from system_app.services.ui_medication_scenario_service import (
     active_test_medication_scenario,
     medication_events_for_date,
-)
-from system_app.services.ui_feedback_service import (
-    feedback_status_from_metadata,
 )
 from system_app.services.ui_policy_service import ui_policy_state
 from system_app.services.ui_time import (
@@ -358,7 +358,7 @@ def chat_history_page(
     )
     available: OrderedDict[date, list[ChatMessage]] = OrderedDict()
     for row in rows:
-        row_date = _display_message_at(row).date()
+        row_date = display_message_at(row).date()
         available.setdefault(row_date, []).append(row)
 
     days: list[dict[str, Any]] = []
@@ -448,7 +448,7 @@ def _bounded_chat_history_rows(
             break
 
         for row in batch:
-            row_date = _display_message_at(row).date()
+            row_date = display_message_at(row).date()
             if row_date not in selected_date_set:
                 if len(selected_dates) >= limit_days:
                     stop = True
@@ -474,7 +474,7 @@ def _bounded_chat_history_rows(
     retained_dates = [initial_date] if initial_date is not None else []
     retained_date_set = set(retained_dates)
     for row in rows:
-        row_date = _display_message_at(row).date()
+        row_date = display_message_at(row).date()
         if row_date in retained_date_set:
             continue
         retained_dates.append(row_date)
@@ -712,7 +712,7 @@ def _chat_message_view(
         "message_type": message.message_type,
         "message": message.content or None,
         "content": _chat_message_content_view(payload),
-        "created_at": _display_message_at(message).isoformat(),
+        "created_at": display_message_at(message).isoformat(),
         "processing_status": pending_response_status or message.processing_status,
         "response_message_id": response_message_id,
         "source_message_id": source_message_id,
@@ -737,7 +737,7 @@ def _chat_message_content_view(
     return content.model_dump(mode="json")
 
 
-def _display_message_at(message: ChatMessage) -> datetime:
+def display_message_at(message: ChatMessage) -> datetime:
     if message.display_at is None:
         raise RuntimeError("chat_message_display_at_required")
     return naive_utc_as_seoul(message.display_at)

@@ -11,7 +11,6 @@ from pydantic import ValidationError
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import sessionmaker
 
-from shared.chat_contracts import ChatSyncRequest
 from agent_app.tools.backend_query import (
     BackendChatMessageNotFound,
     BackendQueryTools,
@@ -21,6 +20,7 @@ from shared.backend_v13_contracts import (
     CommonErrorResponse,
     RecordChangeRequest,
 )
+from shared.chat_contracts import ChatSyncRequest
 from shared.tool_catalog import ToolCatalog
 from shared.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,

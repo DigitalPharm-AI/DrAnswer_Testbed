@@ -15,19 +15,13 @@ from shared.async_v13_contracts import (
     DailyMedicationPatternAnalysisRequest,
     MissedDoseEventRequest,
 )
-from system_app.contracts_ui_feedback import AgentChatFeedbackAccepted
 from shared.chat_contracts import (
     ChatStreamEvent,
     ChatSyncRequest,
     ChatSyncResponse,
 )
-from shared.schemas import (
-    AgentAsyncClinicianAlertRequest,
-    AgentInternalTaskAccepted,
-    AgentModelConfig,
-    AgentModelTierRequest,
-)
 from shared.settings import get_settings
+from system_app.contracts_ui_feedback import AgentChatFeedbackAccepted
 from system_app.services.chat_stream import ui_text_publisher
 
 MAX_CHAT_TOTAL_TIMEOUT_SECONDS = 100.0
@@ -81,7 +75,7 @@ class AgentClient:
         settings = get_settings()
         self.base_url = (base_url or settings.agent_base_url).rstrip("/")
         self.internal_api_token = settings.require_internal_api_token()
-        self.agent_sync_api_token = settings.require_agent_sync_api_token()
+        self.agent_sync_api_token = settings.require_service_api_token()
         self.llm_timeout_seconds = settings.llm_timeout_seconds
 
     def _headers(self) -> dict[str, str]:
@@ -140,19 +134,6 @@ class AgentClient:
                 error_message,
                 error_type="agent_response_invalid",
             ) from exc
-
-    async def get_model_config(self) -> AgentModelConfig:
-        data = await self._request_json("GET", "/agent/model-config", timeout=10.0)
-        return self._validate_response_model(data, AgentModelConfig, "에이전트 모델 설정 응답을 해석하지 못했습니다.")
-
-    async def set_model_tier(self, model_tier: str) -> AgentModelConfig:
-        data = await self._request_json(
-            "POST",
-            "/agent/model-config",
-            payload=AgentModelTierRequest(model_tier=model_tier).model_dump(mode="json"),
-            timeout=10.0,
-        )
-        return self._validate_response_model(data, AgentModelConfig, "에이전트 모델 설정 응답을 해석하지 못했습니다.")
 
     @staticmethod
     def _build_service_error(response: httpx.Response) -> AgentServiceError:
@@ -621,11 +602,6 @@ class AgentClient:
                 retryable=False,
             )
         return accepted
-
-    async def send_clinician_alert_async(self, payload: AgentAsyncClinicianAlertRequest) -> AgentInternalTaskAccepted:
-        data = await self._request_json("POST", "/agent/async/clinician-alerts", payload=payload.model_dump(mode="json"), timeout=10.0)
-        return self._validate_response_model(data, AgentInternalTaskAccepted, "에이전트 비동기 접수 응답을 해석하지 못했습니다.")
-
 
 async def _iter_ndjson_objects(
     response: httpx.Response,

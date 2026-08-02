@@ -5,6 +5,7 @@ from typing import Annotated, Final, Literal
 from uuid import uuid4
 
 from pydantic import StringConstraints
+from starlette.requests import Request
 
 PUBLIC_ID_HEX_LENGTH: Final = 16
 
@@ -129,6 +130,14 @@ def request_id_from_body(body: object) -> str | None:
     if not isinstance(value, str):
         return None
     return value if is_public_id(value, "request") else None
+
+
+async def request_id_from_request(request: Request) -> str | None:
+    try:
+        body = await request.json()
+    except (ValueError, RuntimeError):
+        return None
+    return request_id_from_body(body)
 
 
 def require_public_id(value: str, kind: PublicIdKind) -> str:

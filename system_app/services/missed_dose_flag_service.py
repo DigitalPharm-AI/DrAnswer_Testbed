@@ -9,13 +9,16 @@ from shared.json_utils import dump_json, parse_json_object
 from shared.settings import get_settings
 from shared.time_utils import utc_now
 from system_app.models import DoseEvent, MissedDoseFlag, Notification
+from system_app.services.ui_time import as_simulation_naive_datetime
 
 settings = get_settings()
 
 
 def activate_missed_dose_flag(session: Session, event: DoseEvent, *, activated_at: datetime | None = None) -> MissedDoseFlag:
-    flag_date = event.scheduled_for.date()
-    activated = activated_at or event.missed_detected_at or event.scheduled_for
+    flag_date = as_simulation_naive_datetime(event.scheduled_for).date()
+    activated = as_simulation_naive_datetime(
+        activated_at or event.missed_detected_at or event.scheduled_for
+    )
     flag = _flag_for_date(session, event.patient_id, flag_date)
     if flag is None:
         flag = MissedDoseFlag(
@@ -46,13 +49,17 @@ def activate_missed_dose_flag(session: Session, event: DoseEvent, *, activated_a
 
 
 def clear_missed_dose_flag_after_taken(session: Session, event: DoseEvent, *, taken_at: datetime | None = None) -> MissedDoseFlag | None:
-    flag = _flag_for_date(session, event.patient_id, event.scheduled_for.date())
+    scheduled_for = as_simulation_naive_datetime(event.scheduled_for)
+    flag = _flag_for_date(session, event.patient_id, scheduled_for.date())
     if flag is None or not flag.active:
         return flag
-    observed_at = taken_at or event.taken_at or utc_now()
+    observed_at = as_simulation_naive_datetime(
+        taken_at or event.taken_at or utc_now()
+    )
+    activated_at = as_simulation_naive_datetime(flag.activated_at)
     if flag.related_dose_event_id == event.id:
         return _clear_flag(session, flag, observed_at, "missed_event_marked_taken")
-    if observed_at < flag.activated_at and event.scheduled_for < flag.activated_at:
+    if observed_at < activated_at and scheduled_for < activated_at:
         return flag
     flag.subsequent_taken_count += 1
     return _clear_flag(session, flag, observed_at, "subsequent_same_day_taken")
@@ -83,6 +90,7 @@ def _flag_for_date(session: Session, patient_id: str, flag_date) -> MissedDoseFl
 
 
 def _clear_flag(session: Session, flag: MissedDoseFlag, cleared_at: datetime, reason: str) -> MissedDoseFlag:
+    cleared_at = as_simulation_naive_datetime(cleared_at)
     flag.active = False
     flag.cleared_at = cleared_at
     flag.clear_reason = reason

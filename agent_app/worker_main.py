@@ -31,6 +31,8 @@ def main() -> None:
 def _run_worker() -> None:
     settings = get_settings()
     settings.require_internal_api_token()
+    settings.require_service_api_token()
+    settings.require_backend_service_https()
     settings.require_backend_read_database_url()
     settings.require_agent_postgresql()
     settings.require_backend_read_postgresql()

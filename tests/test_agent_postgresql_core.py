@@ -12,8 +12,8 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from agent_app.jobs.tasks import claim_next_async_task
-from agent_app.persistence.models import AgentAsyncTask, AgentRunTrace
 from agent_app.persistence.migrations import required_migration_versions
+from agent_app.persistence.models import AgentAsyncTask, AgentRunTrace
 from agent_app.persistence.schema import (
     migrate_agent_schema,
     verify_agent_schema_current,

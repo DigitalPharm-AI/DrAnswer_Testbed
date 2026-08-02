@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from shared.backend_read_contract import BACKEND_READ_VIEW_COLUMNS
+from shared.backend_read_contract import BACKEND_READ_VIEW_COLUMNS  # noqa: E402
 
 BEDROCK_BEARER_ENV_KEY = "AWS_BEARER_TOKEN_BEDROCK"
 
@@ -285,6 +285,198 @@ def _boundary_evidence(agent_url: str, system_url: str) -> dict[str, Any]:
     return evidence
 
 
+def _stream_regression_evidence(
+    agent_url: str,
+    system_url: str,
+    summary_path: Path,
+) -> dict[str, Any]:
+    report = json.loads(summary_path.read_text(encoding="utf-8"))
+    cases = {
+        "abort_replay": {
+            "request_id": report["abort_replay"]["request_id"],
+            "assistant_count": 1,
+            "agent_status": "COMPLETED",
+            "user_status": "completed",
+            "trace_rows": {1},
+            "model_calls": 1,
+            "attempt_epoch": 1,
+        },
+        "concurrent_same_request": {
+            "request_id": report["concurrent_same_request"][
+                "request_id"
+            ],
+            "assistant_count": 1,
+            "agent_status": "COMPLETED",
+            "user_status": "completed",
+            "trace_rows": {1, 2},
+            "model_calls": 1,
+            "attempt_epoch": 1,
+        },
+        "failure_after_token": {
+            "request_id": report["failure_after_token"]["request_id"],
+            "assistant_count": 1,
+            "agent_status": "COMPLETED",
+            "user_status": "completed",
+            "trace_rows": {2},
+            "model_calls": 2,
+            "attempt_epoch": 2,
+        },
+        "slow_consumer": {
+            "request_id": report["slow_consumer"]["request_id"],
+            "assistant_count": 1,
+            "agent_status": "COMPLETED",
+            "user_status": "completed",
+            "trace_rows": {1},
+            "model_calls": 1,
+            "attempt_epoch": 1,
+        },
+    }
+    agent_engine = create_engine(agent_url, future=True)
+    system_engine = create_engine(system_url, future=True)
+    evidence: dict[str, Any] = {}
+    try:
+        for case_name, expectation in cases.items():
+            request_id = str(expectation["request_id"])
+            with system_engine.connect() as connection:
+                message_counts = {
+                    str(row.role): int(row.count)
+                    for row in connection.execute(
+                        text(
+                            "SELECT role, COUNT(*) AS count "
+                            "FROM chat_messages "
+                            "WHERE ai_request_id = :request_id "
+                            "GROUP BY role"
+                        ),
+                        {"request_id": request_id},
+                    )
+                }
+                user_status = connection.execute(
+                    text(
+                        "SELECT processing_status FROM chat_messages "
+                        "WHERE ai_request_id = :request_id "
+                        "AND role = 'user'"
+                    ),
+                    {"request_id": request_id},
+                ).scalar_one_or_none()
+            with agent_engine.connect() as connection:
+                sync_rows = int(
+                    connection.execute(
+                        text(
+                            "SELECT COUNT(*) FROM agent_sync_requests "
+                            "WHERE api_path = '/agent/sync/chat' "
+                            "AND request_id = :request_id"
+                        ),
+                        {"request_id": request_id},
+                    ).scalar_one()
+                )
+                sync_status = connection.execute(
+                    text(
+                        "SELECT status FROM agent_sync_requests "
+                        "WHERE api_path = '/agent/sync/chat' "
+                        "AND request_id = :request_id"
+                    ),
+                    {"request_id": request_id},
+                ).scalar_one_or_none()
+                attempt_epoch = connection.execute(
+                    text(
+                        "SELECT attempt_epoch FROM agent_sync_requests "
+                        "WHERE api_path = '/agent/sync/chat' "
+                        "AND request_id = :request_id"
+                    ),
+                    {"request_id": request_id},
+                ).scalar_one_or_none()
+                trace_rows = int(
+                    connection.execute(
+                        text(
+                            "SELECT COUNT(*) FROM agent_run_traces "
+                            "WHERE request_id = :request_id"
+                        ),
+                        {"request_id": request_id},
+                    ).scalar_one()
+                )
+                trace_status_counts = {
+                    str(row.status): int(row.count)
+                    for row in connection.execute(
+                        text(
+                            "SELECT status, COUNT(*) AS count "
+                            "FROM agent_run_traces "
+                            "WHERE request_id = :request_id "
+                            "GROUP BY status"
+                        ),
+                        {"request_id": request_id},
+                    )
+                }
+                model_steps = int(
+                    connection.execute(
+                        text(
+                            "SELECT COUNT(*) FROM agent_run_steps s "
+                            "JOIN agent_run_traces t "
+                            "ON t.trace_id = s.trace_id "
+                            "WHERE t.request_id = :request_id "
+                            "AND s.step_type = 'model_call'"
+                        ),
+                        {"request_id": request_id},
+                    ).scalar_one()
+                )
+                model_trace_rows = int(
+                    connection.execute(
+                        text(
+                            "SELECT COUNT(DISTINCT s.trace_id) "
+                            "FROM agent_run_steps s "
+                            "JOIN agent_run_traces t "
+                            "ON t.trace_id = s.trace_id "
+                            "WHERE t.request_id = :request_id "
+                            "AND s.step_type = 'model_call'"
+                        ),
+                        {"request_id": request_id},
+                    ).scalar_one()
+                )
+            case_evidence = {
+                "request_id": request_id,
+                "backend_user_messages": message_counts.get("user", 0),
+                "backend_assistant_messages": message_counts.get(
+                    "assistant", 0
+                ),
+                "backend_user_status": user_status,
+                "agent_sync_rows": sync_rows,
+                "agent_sync_status": sync_status,
+                "agent_attempt_epoch": attempt_epoch,
+                "agent_trace_rows": trace_rows,
+                "agent_trace_status_counts": trace_status_counts,
+                "agent_model_call_steps": model_steps,
+                "agent_model_execution_traces": model_trace_rows,
+            }
+            evidence[case_name] = case_evidence
+            valid = (
+                case_evidence["backend_user_messages"] == 1
+                and case_evidence["backend_assistant_messages"]
+                == expectation["assistant_count"]
+                and case_evidence["backend_user_status"]
+                == expectation["user_status"]
+                and case_evidence["agent_sync_rows"] == 1
+                and case_evidence["agent_sync_status"]
+                == expectation["agent_status"]
+                and case_evidence["agent_attempt_epoch"]
+                == expectation["attempt_epoch"]
+                and case_evidence["agent_trace_rows"]
+                in expectation["trace_rows"]
+                and case_evidence["agent_model_call_steps"]
+                == expectation["model_calls"]
+                and case_evidence["agent_model_execution_traces"]
+                == expectation["model_calls"]
+            )
+            if not valid:
+                raise RuntimeError(
+                    "stream regression persistence evidence mismatch: "
+                    f"{case_name}: "
+                    f"{json.dumps(case_evidence, ensure_ascii=False)}"
+                )
+    finally:
+        agent_engine.dispose()
+        system_engine.dispose()
+    return evidence
+
+
 def main() -> int:
     postgres_url = (
         os.getenv("BROWSER_POSTGRES_TEST_DATABASE_URL", "").strip()
@@ -499,13 +691,22 @@ def main() -> int:
                 "SYSTEM_BASE_URL": system_base_url,
                 "AGENT_BASE_URL": agent_base_url,
                 "INTERNAL_API_TOKEN": "browser-v13-internal-token",
-                "BACKEND_API_TOKEN": "browser-v13-backend-token",
                 "AGENT_SYNC_API_TOKEN": "browser-v13-agent-token",
                 "AGENT_FEEDBACK_ENCRYPTION_KEY": encryption_key,
                 "AGENT_FEEDBACK_ENCRYPTION_KEY_ID": "browser-v13",
                 "LLM_PROVIDER": "deterministic_test",
                 "LLM_MODEL_TIER": "fast",
                 "DETERMINISTIC_TEST_PROVIDER_DELAY_MS": "350",
+                "DETERMINISTIC_TEST_STREAM_FAILURE_MARKER": (
+                    "[stream-failure-after-token]"
+                ),
+                "DETERMINISTIC_TEST_STREAM_FAILURE_DELAY_MS": "500",
+                "DETERMINISTIC_TEST_STREAM_FAILURE_ONCE": "true",
+                "DETERMINISTIC_TEST_BURST_STREAM_MARKER": (
+                    "[burst-token-stream]"
+                ),
+                "DETERMINISTIC_TEST_BURST_CHUNK_COUNT": "270",
+                "DETERMINISTIC_TEST_BURST_CHUNK_SIZE": "512",
                 "AGENT_SYNC_MAX_RETRIES": "0",
                 "AGENT_SYNC_CHAT_TIMEOUT_SECONDS": "10",
                 "AGENT_SYNC_CHAT_TOTAL_TIMEOUT_SECONDS": "12",
@@ -628,12 +829,25 @@ def main() -> int:
             result_code = completed.returncode
             if result_code == 0:
                 evidence = _boundary_evidence(agent_url, system_url)
-                (
-                    output_root
-                    / "p0-real-service-validation"
-                    / "service-boundary-evidence.json"
-                ).write_text(
+                validation_dir = (
+                    output_root / "p0-real-service-validation"
+                )
+                (validation_dir / "service-boundary-evidence.json").write_text(
                     json.dumps(evidence, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                stream_evidence = _stream_regression_evidence(
+                    agent_url,
+                    system_url,
+                    validation_dir / "summary.json",
+                )
+                (validation_dir / "stream-regression-evidence.json").write_text(
+                    json.dumps(
+                        stream_evidence,
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    + "\n",
                     encoding="utf-8",
                 )
         finally:

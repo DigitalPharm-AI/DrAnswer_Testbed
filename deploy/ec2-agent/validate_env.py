@@ -8,8 +8,7 @@ import re
 import stat
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit
-
+from urllib.parse import parse_qs, urlsplit
 
 REQUIRED_VALUES = (
     "APP_ENV",
@@ -20,11 +19,19 @@ REQUIRED_VALUES = (
     "BACKEND_READ_DATABASE_URL",
     "SYSTEM_BASE_URL",
     "INTERNAL_API_TOKEN",
-    "BACKEND_API_TOKEN",
     "AGENT_SYNC_API_TOKEN",
     "AGENT_FEEDBACK_ENCRYPTION_KEY",
     "AGENT_FEEDBACK_ENCRYPTION_KEY_ID",
     "PRO_CTCAE_WORKBOOK_PATH",
+    "EMBEDDING_PROVIDER",
+    "EMBEDDING_MODEL_ID",
+    "EMBEDDING_AWS_REGION",
+    "EMBEDDING_DIMENSIONS",
+    "ADVERSE_REACTION_VECTOR_TOP_K",
+    "PRO_CTCAE_VECTOR_TOP_K",
+    "SYMPTOM_CONCEPT_MFDS_CANDIDATE_TOP_K",
+    "REFERENCE_VECTOR_MIN_SIMILARITY",
+    "AGENT_SYMPTOM_RESOLUTION_TTL_SECONDS",
 )
 POSTGRES_URLS = (
     "AGENT_DATABASE_URL",
@@ -33,7 +40,6 @@ POSTGRES_URLS = (
 )
 TOKEN_KEYS = (
     "INTERNAL_API_TOKEN",
-    "BACKEND_API_TOKEN",
     "AGENT_SYNC_API_TOKEN",
 )
 PLACEHOLDER_MARKERS = ("CHANGE_ME", "<", ">")
@@ -128,6 +134,13 @@ def validate(
             or not parsed.path.strip("/")
         ):
             errors.append(f"{key}: valid postgresql+psycopg URL required")
+        elif (
+            parse_qs(parsed.query).get("sslmode", [""])[-1].lower()
+            not in {"require", "verify-ca", "verify-full"}
+        ):
+            errors.append(
+                f"{key}: sslmode=require, verify-ca, or verify-full required"
+            )
 
     system_base_url = values.get("SYSTEM_BASE_URL", "")
     try:
@@ -136,17 +149,21 @@ def validate(
         parsed_system_url = None
     if (
         parsed_system_url is None
-        or parsed_system_url.scheme not in {"http", "https"}
+        or parsed_system_url.scheme != "https"
         or not parsed_system_url.hostname
     ):
-        errors.append("SYSTEM_BASE_URL: valid http(s) URL required")
+        errors.append("SYSTEM_BASE_URL: valid HTTPS URL required")
 
     tokens = [values.get(key, "").strip() for key in TOKEN_KEYS]
     for key, token in zip(TOKEN_KEYS, tokens, strict=True):
         if token and len(token) < 32:
             errors.append(f"{key}: use at least 32 random characters")
-    if len({token for token in tokens if token}) != len([token for token in tokens if token]):
-        errors.append("service tokens must all be different")
+    if len({token for token in tokens if token}) != len(
+        [token for token in tokens if token]
+    ):
+        errors.append(
+            "INTERNAL_API_TOKEN and AGENT_SYNC_API_TOKEN must be different"
+        )
 
     encoded_key = values.get("AGENT_FEEDBACK_ENCRYPTION_KEY", "").strip()
     if encoded_key and not any(
@@ -172,6 +189,42 @@ def validate(
         errors.append("AGENT_STARTUP_MIGRATIONS_ENABLED: must be false")
     if values.get("AGENT_EMBEDDED_WORKER_ENABLED", "").lower() != "false":
         errors.append("AGENT_EMBEDDED_WORKER_ENABLED: must be false")
+
+    if values.get("EMBEDDING_PROVIDER", "").strip() != "bedrock_cohere":
+        errors.append("EMBEDDING_PROVIDER: must be bedrock_cohere")
+    if (
+        values.get("EMBEDDING_MODEL_ID", "").strip()
+        != "cohere.embed-multilingual-v3"
+    ):
+        errors.append(
+            "EMBEDDING_MODEL_ID: must be cohere.embed-multilingual-v3"
+        )
+    if values.get("EMBEDDING_AWS_REGION", "").strip() != "ap-northeast-1":
+        errors.append("EMBEDDING_AWS_REGION: must be ap-northeast-1")
+    if values.get("EMBEDDING_DIMENSIONS", "").strip() != "1024":
+        errors.append("EMBEDDING_DIMENSIONS: must be 1024")
+    for key, minimum, maximum in (
+        ("ADVERSE_REACTION_VECTOR_TOP_K", 1, 20),
+        ("PRO_CTCAE_VECTOR_TOP_K", 1, 20),
+        ("SYMPTOM_CONCEPT_MFDS_CANDIDATE_TOP_K", 5, 50),
+        ("AGENT_SYMPTOM_RESOLUTION_TTL_SECONDS", 60, 86_400),
+    ):
+        try:
+            value = int(values.get(key, ""))
+        except ValueError:
+            value = 0
+        if not minimum <= value <= maximum:
+            errors.append(f"{key}: must be between {minimum} and {maximum}")
+    try:
+        minimum_similarity = float(
+            values.get("REFERENCE_VECTOR_MIN_SIMILARITY", "")
+        )
+    except ValueError:
+        minimum_similarity = -2.0
+    if not -1.0 <= minimum_similarity <= 1.0:
+        errors.append(
+            "REFERENCE_VECTOR_MIN_SIMILARITY: must be between -1 and 1"
+        )
 
     langfuse_enabled = values.get(
         "LANGFUSE_EXPORT_ENABLED",

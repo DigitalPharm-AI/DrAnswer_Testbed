@@ -8,7 +8,7 @@ from agent_app.llm.messages import (
     LlmToolArgumentsParseError,
 )
 
-PROMPT_VERSION_ID = "agent_app_v2_tool_runtime"
+PROMPT_VERSION_ID = "agent_app_v3_gfm_table_response"
 
 
 def agent_error(trace_id: str, agent_name: str, decision_type: str, exc: Exception) -> AgentExecutionError:

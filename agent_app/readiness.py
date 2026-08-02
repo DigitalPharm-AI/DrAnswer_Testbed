@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hmac
 from typing import Any
-from urllib.parse import urlsplit
 
 from sqlalchemy import Engine, inspect, text
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
@@ -140,24 +138,22 @@ def _backend_read_component(
 
 
 def _agent_sync_auth_component(settings: Settings) -> dict[str, Any]:
-    agent_token = (settings.agent_sync_api_token or "").strip()
-    backend_token = (settings.backend_api_token or "").strip()
-    if not agent_token:
-        return _component(False, "AGENT_SYNC_TOKEN_MISSING")
-    if backend_token and hmac.compare_digest(agent_token, backend_token):
-        return _component(False, "AGENT_SYNC_TOKEN_NOT_DEDICATED")
+    try:
+        settings.require_service_api_token()
+    except RuntimeError:
+        return _component(False, "SERVICE_API_TOKEN_INVALID")
     return _component(True, "OK")
 
 
 def _backend_write_api_component(settings: Settings) -> dict[str, Any]:
-    backend_token = (settings.backend_api_token or "").strip()
-    agent_token = (settings.agent_sync_api_token or "").strip()
-    if not backend_token:
-        return _component(False, "BACKEND_API_TOKEN_MISSING")
-    if agent_token and hmac.compare_digest(backend_token, agent_token):
-        return _component(False, "BACKEND_API_TOKEN_NOT_DEDICATED")
-    parsed = urlsplit(settings.system_base_url.strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    try:
+        settings.require_service_api_token()
+        settings.require_backend_service_https()
+    except RuntimeError as exc:
+        if "SYSTEM_BASE_URL" in str(exc):
+            return _component(False, "BACKEND_BASE_URL_INVALID")
+        return _component(False, "SERVICE_API_TOKEN_INVALID")
+    if not settings.system_base_url.strip():
         return _component(False, "BACKEND_BASE_URL_INVALID")
     return _component(True, "OK")
 

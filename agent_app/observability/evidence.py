@@ -12,6 +12,7 @@ from typing import Any
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from shared.json_utils import canonical_json
 from shared.settings import Settings
 
 
@@ -28,12 +29,7 @@ class TraceEvidenceContext:
     trace_attempt_number: int
 
     def associated_data(self) -> bytes:
-        return json.dumps(
-            asdict(self),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        return canonical_json(asdict(self)).encode("utf-8")
 
 
 class TraceEvidenceCipher:
@@ -73,7 +69,7 @@ class TraceEvidenceCipher:
         *,
         context: TraceEvidenceContext,
     ) -> tuple[str, str]:
-        canonical = _canonical_json(value)
+        canonical = canonical_json(value).encode("utf-8")
         nonce = os.urandom(12)
         ciphertext = self._cipher.encrypt(
             nonce,
@@ -123,13 +119,3 @@ class TraceEvidenceCipher:
             raise TraceEvidenceEncryptionError(
                 "trace_evidence_ciphertext_authentication_failed"
             ) from exc
-
-
-def _canonical_json(value: Any) -> bytes:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    ).encode("utf-8")

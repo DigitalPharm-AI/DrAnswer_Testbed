@@ -6,24 +6,25 @@ import json
 import secrets
 import sys
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if (PROJECT_ROOT / "contract_test_server").is_dir():
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import httpx
-from sqlalchemy import create_engine, text
+import httpx  # noqa: E402
+from sqlalchemy import create_engine, text  # noqa: E402
 
-from contract_test_server.models import ChatFeedbackRequest
-from contract_test_server.storage import canonical_request_hash
-from shared.async_v13_contracts import (
+from contract_test_server.models import ChatFeedbackRequest  # noqa: E402
+from contract_test_server.storage import canonical_request_hash  # noqa: E402
+from shared.async_v13_contracts import (  # noqa: E402
     MissedDoseResultCallback,
     NotificationPolicyChangeProposalRequest,
 )
-from shared.chat_contracts import ChatStreamEvent
+from shared.chat_contracts import ChatStreamEvent  # noqa: E402
 
 ENV_FILE = Path("/etc/dranswer-agent-contract/contract.env")
 RELEASE_ENV_FILE = Path("/etc/dranswer-agent-contract/release.env")
@@ -549,17 +550,24 @@ def run_initial(
             headers={**agent_headers, "Accept": accept},
         )
         events = ndjson_events(response)
-        assert len(events) == 2
-        assert [event.status for event in events] == [
-            "streaming",
-            "completed",
-        ]
+        expected_delta_chunks = int(
+            env.get("CONTRACT_STREAM_DELTA_CHUNKS", "4")
+        )
+        assert len(events) == expected_delta_chunks + 1
+        assert [event.status for event in events] == (
+            ["streaming"] * expected_delta_chunks
+            + ["completed"]
+        )
         assert all(
             event.request_id == payload["request_id"]
             and event.message_id == payload["message_id"]
             for event in events
         )
         assert events[-1].message_type == return_type
+        assert events[-1].message is not None
+        assert "".join(
+            event.delta or "" for event in events[:-1]
+        ) == events[-1].message.text
         if return_type == "selection_box":
             assert events[-1].message is not None
             assert events[-1].message.selections
@@ -775,6 +783,82 @@ def run_initial(
         "sync chat validation",
         "malformed JSON returns safe contract 400",
         malformed_json_case,
+    )
+
+    def live_stream_chunk_case() -> dict[str, Any]:
+        payload = {
+            "request_id": public_id("req"),
+            "message_id": public_id("user_msg"),
+            "patient_id": chat_patient,
+            "requested_return_type": "text",
+            "message": "live streaming chunk timing probe",
+            "message_at": aware_time(4),
+        }
+        arrival_times: list[float] = []
+        events: list[ChatStreamEvent] = []
+        with client.stream(
+            "POST",
+            "/agent/sync/chat",
+            json=payload,
+            headers=ndjson_headers,
+        ) as response:
+            require_status(response, 200)
+            assert response.headers["content-type"].startswith(
+                "application/x-ndjson"
+            )
+            assert "content-length" not in response.headers
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                arrival_times.append(time.monotonic())
+                events.append(ChatStreamEvent.model_validate_json(line))
+
+        expected_delta_chunks = int(
+            env.get("CONTRACT_STREAM_DELTA_CHUNKS", "4")
+        )
+        assert [event.status for event in events] == (
+            ["streaming"] * expected_delta_chunks
+            + ["completed"]
+        )
+        assert len(arrival_times) == expected_delta_chunks + 1
+        assert events[-1].message is not None
+        assert "".join(
+            event.delta or "" for event in events[:-1]
+        ) == events[-1].message.text
+        gaps_ms = [
+            (current - previous) * 1_000
+            for previous, current in zip(
+                arrival_times,
+                arrival_times[1:],
+                strict=False,
+            )
+        ]
+        configured_delay_ms = int(
+            env.get("CONTRACT_STREAM_CHUNK_DELAY_MS", "150")
+        )
+        minimum_observable_gap_ms = max(
+            20.0,
+            configured_delay_ms * 0.5,
+        )
+        assert all(
+            gap_ms >= minimum_observable_gap_ms
+            for gap_ms in gaps_ms
+        )
+        return {
+            "status": response.status_code,
+            "events": len(events),
+            "content_length": response.headers.get("content-length"),
+            "observed_gaps_ms": [
+                round(gap_ms, 3) for gap_ms in gaps_ms
+            ],
+            "minimum_gap_ms": round(minimum_observable_gap_ms, 3),
+        }
+
+    suite.run(
+        "CHAT-012",
+        "sync chat transport",
+        "NDJSON events arrive as separate observable HTTP chunks",
+        live_stream_chunk_case,
     )
 
     feedback_patient = public_id("patient")

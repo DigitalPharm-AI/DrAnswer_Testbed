@@ -9,7 +9,6 @@ from shared.chat_contracts import ChatSyncRequest
 from system_app.contracts_v13 import BackendChatRequest
 from system_app.ui_contracts import UiChatRequest
 
-
 REQUEST_ID = "req_0000000000000001"
 USER_MESSAGE_ID = "user_msg_0000000000000001"
 PATIENT_ID = "patient_0000000000000001"

@@ -224,15 +224,13 @@ def test_common_9000_profile_rejects_bedrock_bearer_without_value_leak() -> None
     assert marker not in repr(violations)
 
 
-def test_boundary_check_rejects_shared_reader_role_and_tokens() -> None:
+def test_boundary_check_rejects_shared_reader_role() -> None:
     env = read_env_file(PROJECT_ROOT / ".env.9000.example")
     env["BACKEND_READ_DATABASE_URL"] = env["SYSTEM_DATABASE_URL"]
-    env["BACKEND_API_TOKEN"] = env["AGENT_SYNC_API_TOKEN"]
 
     violations = _env_boundary_violations(env)
 
     assert any("dedicated reader role" in item for item in violations)
-    assert any("must be different" in item for item in violations)
 
 
 def test_boundary_check_rejects_deterministic_provider_outside_testbed() -> None:
@@ -306,11 +304,13 @@ def test_boundary_check_rejects_sqlite_production_profile() -> None:
 
 
 def test_real_service_playwright_uses_api_oracle_without_sqlite() -> None:
-    validation_source = (
-        PROJECT_ROOT
-        / "tools"
-        / "playwright_p0_real_service_validation.js"
-    ).read_text(encoding="utf-8")
+    validation_paths = [
+        PROJECT_ROOT / "tools" / "playwright_p0_real_service_validation.js",
+        *(PROJECT_ROOT / "tools" / "playwright").rglob("*.js"),
+    ]
+    validation_source = "\n".join(
+        path.read_text(encoding="utf-8") for path in validation_paths
+    )
     runner_source = (
         PROJECT_ROOT / "tools" / "run_real_llm_playwright.ps1"
     ).read_text(encoding="utf-8")

@@ -5,9 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import run_ci_browser_test
-from tools import run_v13_real_service_browser_test
-
+from tools import run_ci_browser_test, run_v13_real_service_browser_test
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STACK_SCRIPT = PROJECT_ROOT / "tools" / "da_drug_9000_stack.ps1"
@@ -36,9 +34,13 @@ def test_9000_stack_scopes_agent_overlay_to_agent_api_and_worker() -> None:
     assert service_specs.count("EnvFiles = $agentRuntimeEnvFiles") == 2
     assert "$env:DA_DRUG_ENV_FILE = $Spec.EnvFiles" in start_one
     assert f"$env:{BEDROCK_BEARER_ENV_KEY} = $null" in start_one
+    assert '$env:PYTHONUNBUFFERED = "1"' in start_one
     assert (
         f"$env:{BEDROCK_BEARER_ENV_KEY} = $previousBedrockBearer"
         in start_one
+    )
+    assert "$env:PYTHONUNBUFFERED = $previousPythonUnbuffered" in (
+        start_one
     )
 
 

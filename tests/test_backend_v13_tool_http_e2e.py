@@ -8,8 +8,8 @@ import httpx
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from agent_app.integration.backend_client import BackendV13Client
 from agent_app.integration.approval_state import InternalApprovalStore
+from agent_app.integration.backend_client import BackendV13Client
 from agent_app.integration.write_state import BackendWriteStateStore
 from agent_app.persistence.migrations import run_migrations as run_agent_migrations
 from agent_app.tools.backend_query import BackendQueryTools
@@ -19,7 +19,8 @@ from agent_app.tools.backend_write import (
 )
 from shared.tool_names import UPDATE_MEDICATION_DOSE_EVENT_STATUS
 from system_app import main as system_main
-from system_app.db import SessionLocal, engine as system_engine
+from system_app.db import SessionLocal
+from system_app.db import engine as system_engine
 from system_app.models import (
     ChatMessage,
     DoseEvent,
@@ -27,9 +28,9 @@ from system_app.models import (
     MedicationPlan,
 )
 from system_app.services.backend_v13_service import (
+    RECORD_CHANGE_PATH,
     BackendRequestConflict,
     BackendRequestGate,
-    RECORD_CHANGE_PATH,
 )
 from tests.helpers import (
     build_agent_engine,
@@ -195,7 +196,7 @@ async def test_approved_ai_write_uses_bound_version_and_real_backend_boundary(
         base_url="http://backend.test",
         record_change_path="/agent/sync/record-change",
         notification_policy_change_path="/agent/sync/notification-policy-change",
-        bearer_token="pytest-backend-api-token",
+        bearer_token="pytest-agent-sync-token",
         max_retries=0,
         transport=transport,
     )

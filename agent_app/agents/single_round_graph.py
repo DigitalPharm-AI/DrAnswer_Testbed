@@ -7,6 +7,8 @@ from langchain_core.messages import SystemMessage
 from langgraph.graph import END, START, StateGraph
 
 from agent_app import trace_logging
+from agent_app.errors import AgentExecutionError
+from agent_app.llm.generation import PROMPT_VERSION_ID, agent_error
 from agent_app.llm.messages import (
     ai_message_from_tool_calls,
     build_chat_messages,
@@ -16,16 +18,19 @@ from agent_app.llm.messages import (
     tool_calls_from_ai_message,
     tool_messages_from_results,
 )
-from agent_app.errors import AgentExecutionError
-from agent_app.llm.generation import PROMPT_VERSION_ID, agent_error
-from agent_app.observability.model_calls import traced_model_ainvoke
 from agent_app.llm.validation import validate_llm_output
+from agent_app.observability.model_calls import traced_model_ainvoke
 from agent_app.providers.base import BaseLLMProvider
-from shared.tool_catalog import ToolCatalog
+from agent_app.tools.budget import (
+    current_tool_execution_budget,
+    response_with_tool_execution_budget,
+    tool_execution_budget_scope,
+)
 from agent_app.tools.policy import normalize_policy_tool_calls
 from agent_app.tools.runtime import ToolRuntime
 from shared.redaction import safe_exception_summary
 from shared.schemas import AgentResponse
+from shared.tool_catalog import ToolCatalog
 
 AGENT_GRAPH_MODE = "langgraph_state_graph"
 SINGLE_ROUND_TOOL_EXECUTION_MODE = "single_round"
@@ -78,6 +83,18 @@ class SingleRoundToolAgentGraph:
         self.graph = self._build_graph()
 
     async def invoke(self, trace_id: str, request_payload: dict[str, Any]) -> AgentResponse:
+        with tool_execution_budget_scope() as budget:
+            response = await self._invoke_without_budget(
+                trace_id,
+                request_payload,
+            )
+            return response_with_tool_execution_budget(response, budget)
+
+    async def _invoke_without_budget(
+        self,
+        trace_id: str,
+        request_payload: dict[str, Any],
+    ) -> AgentResponse:
         try:
             final_state = await self.graph.ainvoke(
                 {
@@ -132,6 +149,12 @@ class SingleRoundToolAgentGraph:
         tool_calls = normalize_policy_tool_calls(
             tool_calls_from_ai_message(ai_message),
             source_event_type=self.source_event_type,
+        )
+        current_tool_execution_budget().validate_turn_plan(
+            tool_calls,
+            trace_id=state["trace_id"],
+            agent_name=self.agent_name,
+            decision_type=self.validation_decision_type,
         )
         validation_output = model_output_with_tool_calls(model_output, tool_calls)
         self._validate_output(
@@ -243,6 +266,7 @@ class SingleRoundToolAgentGraph:
                 agent_name=self.agent_name,
                 decision_type=self.validation_decision_type,
             ) from exc
+
     def _response_node(self, state: SingleRoundAgentGraphState) -> dict[str, AgentResponse]:
         return {"response": self.response_builder(state)}
 

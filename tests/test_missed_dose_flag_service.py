@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 
 from system_app.models import DoseEvent, DoseSchedule, MedicationPlan
 from system_app.services.missed_dose_flag_service import (
@@ -60,11 +60,24 @@ def test_same_day_subsequent_taken_clears_day_missed_dose_flag():
         )
 
         flag = activate_missed_dose_flag(session, morning_event, activated_at=morning_event.missed_detected_at)
-        cleared = clear_missed_dose_flag_after_taken(session, lunch_event, taken_at=datetime(2026, 4, 20, 12, 5))
+        cleared = clear_missed_dose_flag_after_taken(
+            session,
+            lunch_event,
+            taken_at=datetime(
+                2026,
+                4,
+                20,
+                12,
+                5,
+                tzinfo=timezone(timedelta(hours=9)),
+            ),
+        )
 
         assert flag.id == cleared.id
         assert cleared.active is False
         assert cleared.clear_reason == "subsequent_same_day_taken"
+        assert cleared.cleared_at == datetime(2026, 4, 20, 12, 5)
+        assert cleared.cleared_at.tzinfo is None
         assert active_missed_dose_flag_for_date(session, date(2026, 4, 20)) is None
         assert is_active_missed_dose_flag_for_event(session, morning_event.id) is False
 

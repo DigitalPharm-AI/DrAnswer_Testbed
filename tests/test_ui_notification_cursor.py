@@ -6,7 +6,7 @@ from datetime import timedelta
 from shared.settings import get_settings
 from system_app.models import Notification
 from system_app.services.clock_service import ensure_clock
-from tests.test_ui_api_v1 import _ui_app
+from tests.support.ui import build_ui_app
 
 
 def _notification(
@@ -32,7 +32,7 @@ def _notification(
 def test_incremental_cursor_drains_more_visible_rows_than_limit(
     tmp_path,
 ) -> None:
-    client, sessions = _ui_app(tmp_path)
+    client, sessions = build_ui_app(tmp_path)
     with sessions() as session:
         now = ensure_clock(session).current_time
         baseline = _notification(
@@ -91,7 +91,7 @@ def test_incremental_cursor_drains_more_visible_rows_than_limit(
 def test_incremental_cursor_advances_across_internal_only_rows(
     tmp_path,
 ) -> None:
-    client, sessions = _ui_app(tmp_path)
+    client, sessions = build_ui_app(tmp_path)
     with sessions() as session:
         now = ensure_clock(session).current_time
         baseline = _notification(
@@ -163,7 +163,7 @@ def test_incremental_cursor_advances_across_internal_only_rows(
 def test_incremental_cursor_releases_earlier_created_future_notification(
     tmp_path,
 ) -> None:
-    client, sessions = _ui_app(tmp_path)
+    client, sessions = build_ui_app(tmp_path)
     with sessions() as session:
         now = ensure_clock(session).current_time
         baseline = _notification(

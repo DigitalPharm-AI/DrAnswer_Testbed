@@ -91,6 +91,7 @@ def persist_user_message(
         metadata_json=dump_json(metadata),
         created_at=_naive_utc(message_at),
         display_at=_naive_utc(message_at),
+        conversation_at=_naive_utc(message_at),
     )
     session.add(message)
     session.flush()
@@ -197,6 +198,12 @@ def persist_assistant_response(
                 "pending_response_status": "pending",
             }
         )
+    conversation_at = (
+        user_message.conversation_at
+        or user_message.display_at
+        or user_message.created_at
+        or _naive_utc(response.message_at)
+    )
     assistant = ChatMessage(
         public_id=new_message_public_id("assistant"),
         patient_id=user_message.patient_id,
@@ -211,7 +218,8 @@ def persist_assistant_response(
         processing_status="completed",
         metadata_json=dump_json(response_metadata),
         created_at=_naive_utc(response.message_at),
-        display_at=_naive_utc(response.message_at),
+        display_at=conversation_at,
+        conversation_at=conversation_at,
     )
     session.add(assistant)
     user_message.processing_status = "completed"
@@ -343,7 +351,7 @@ def _latest_pending_response(
             ChatMessage.role == "assistant",
             ChatMessage.message_type.in_(("selection_box", "input_box")),
         )
-        .order_by(desc(ChatMessage.created_at), desc(ChatMessage.id))
+        .order_by(desc(ChatMessage.id))
     ).all()
     for row in rows:
         if parse_json_object(row.metadata_json).get("pending_response_status") == "pending":
@@ -581,7 +589,7 @@ def _response_time(message: ChatMessage) -> datetime:
     parsed = _aware_from_metadata(metadata.get("message_at"))
     if parsed is not None:
         return parsed
-    return message.created_at.replace(tzinfo=UTC)
+    return (message.recorded_at or message.created_at).replace(tzinfo=UTC)
 
 
 def _aware_from_metadata(value) -> datetime | None:

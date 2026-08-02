@@ -11,7 +11,7 @@ WorkingDirectory=/opt/dranswer-agent-contract/current
 EnvironmentFile=/etc/dranswer-agent-contract/contract.env
 EnvironmentFile=/etc/dranswer-agent-contract/release.env
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/opt/dranswer-agent-contract/current/.venv/bin/uvicorn contract_test_server.main:app --host ${CONTRACT_HOST} --port ${CONTRACT_PORT} --workers 1 --no-access-log
+ExecStart=/opt/dranswer-agent-contract/current/.venv/bin/uvicorn contract_test_server.main:app --host ${CONTRACT_HOST} --port ${CONTRACT_PORT} --workers 1 --access-log
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20

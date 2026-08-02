@@ -29,7 +29,7 @@ def require_agent_sync_bearer_token(
     ] = None,
 ) -> None:
     settings = get_settings()
-    expected_token = settings.require_agent_sync_api_token()
+    expected_token = settings.require_service_api_token()
     if (
         credentials is None
         or credentials.scheme.lower() != "bearer"

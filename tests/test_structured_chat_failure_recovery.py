@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 
 from shared.chat_contracts import ChatMessageContent, ChatSyncResponse
 from shared.json_utils import dump_json, parse_json_object
@@ -13,7 +14,6 @@ from system_app.services.backend_chat_service import (
     persist_assistant_response,
     persist_user_message,
 )
-from sqlalchemy.orm import sessionmaker
 from tests.helpers import build_system_engine
 
 

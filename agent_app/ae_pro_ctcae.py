@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
+import json
 import math
 import re
 from collections import Counter, defaultdict
@@ -8,16 +10,38 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
+import anyio
 import openpyxl
+from sqlalchemy import Engine, text
 
+from agent_app.embeddings.reference_text import (
+    pro_ctcae_embedding_text,
+    versioned_pro_ctcae_source,
+)
 from shared.schemas import AEProCtcaeAssessmentResult, AEProCtcaeQuestion
 from shared.settings import get_settings
+
+if TYPE_CHECKING:
+    from agent_app.embeddings.base import EmbeddingProvider
+    from agent_app.embeddings.semantic_verifier import SemanticMatchVerifier
+    from agent_app.persistence.symptom_concept_repository import (
+        ClinicalSymptomConceptMatch,
+    )
 
 PARSED_ITEMS_SHEET = "Parsed_Items"
 OTHER_SYMPTOMS_SHEET = "Other_Symptoms"
 KNOWN_SYMPTOM_ALIASES = {
-    "Nausea": ("메스꺼", "속이메스꺼", "속울렁", "울렁거", "구역", "속불편"),
+    "Nausea": (
+        "메스꺼",
+        "속이메스꺼",
+        "속울렁",
+        "울렁거",
+        "구역",
+        "오심",
+        "속불편",
+    ),
     "Dizziness": ("어지럽", "현기증", "핑돌"),
     "Vomiting": ("구토", "토했", "토할"),
     "Diarrhea": ("설사",),
@@ -83,8 +107,12 @@ def _split_options(value: object) -> tuple[str, ...]:
     return tuple(part.strip() for part in _text(value).split("|") if part and part.strip())
 
 
-def _normalize(value: str) -> str:
+def normalize_pro_ctcae_lookup_key(value: str) -> str:
     return re.sub(r"[^0-9a-zA-Z가-힣]+", "", value).lower()
+
+
+def _normalize(value: str) -> str:
+    return normalize_pro_ctcae_lookup_key(value)
 
 
 def _parenthetical_aliases(value: str) -> list[str]:
@@ -234,6 +262,360 @@ def load_workbook(path: Path | None = None) -> ProCtcaeWorkbook:
             "pro_ctcae_reference_workbook_invalid"
         )
     return workbook
+
+
+def pro_ctcae_source_version(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return versioned_pro_ctcae_source(digest.hexdigest())
+
+
+def pro_ctcae_equivalent_aliases_for_reference_term(
+    term_text: str,
+    *,
+    workbook_path: Path | None = None,
+) -> tuple[str, ...]:
+    """Return only aliases belonging to an exact Pro-CTCAE concept.
+
+    This intentionally performs no fuzzy or local-similarity matching. The
+    caller must first establish a reference term through exact matching or
+    vector retrieval plus LLM verification.
+    """
+
+    normalized = normalize_pro_ctcae_lookup_key(term_text)
+    if not normalized:
+        return ()
+    settings = get_settings()
+    path = Path(
+        workbook_path or settings.pro_ctcae_workbook_path
+    ).resolve()
+    workbook = load_workbook(path)
+    for entry in workbook.parsed_entries:
+        if any(
+            normalize_pro_ctcae_lookup_key(alias) == normalized
+            for alias in entry.aliases
+        ):
+            return tuple(dict.fromkeys(entry.aliases))
+    return ()
+
+
+async def match_pro_ctcae_symptom_semantic(
+    symptom_text: str,
+    *,
+    engine: Engine,
+    embedding_provider: EmbeddingProvider,
+    semantic_verifier: SemanticMatchVerifier,
+    top_k: int,
+    min_similarity: float,
+    workbook_path: Path | None = None,
+) -> AEProCtcaeAssessmentResult:
+    from agent_app.embeddings.semantic_verifier import SemanticCandidate
+
+    settings = get_settings()
+    path = Path(
+        workbook_path or settings.pro_ctcae_workbook_path
+    ).resolve()
+    workbook = load_workbook(path)
+    clean_symptom = symptom_text.strip()
+    if not clean_symptom:
+        raise ValueError("pro_ctcae_symptom_text_required")
+    source_version = pro_ctcae_source_version(path)
+    normalized = normalize_pro_ctcae_lookup_key(clean_symptom)
+    exact_rows = await anyio.to_thread.run_sync(
+        lambda: _pro_ctcae_exact_rows(
+            engine,
+            normalized=normalized,
+            model_id=embedding_provider.identity.model_id,
+            source_version=source_version,
+        )
+    )
+    if exact_rows:
+        return _semantic_pro_ctcae_result(
+            clean_symptom=clean_symptom,
+            workbook=workbook,
+            matched_row=exact_rows[0],
+            candidate_rows=exact_rows[:top_k],
+            match_type="exact",
+            scoring_method="exact",
+            embedding_provider=embedding_provider.identity.provider,
+        )
+
+    query_embedding = await embedding_provider.embed_query(
+        pro_ctcae_embedding_text(clean_symptom)
+    )
+    vector_rows = await anyio.to_thread.run_sync(
+        lambda: _pro_ctcae_vector_rows(
+            engine,
+            embedding=query_embedding,
+            model_id=embedding_provider.identity.model_id,
+            source_version=source_version,
+            top_k=top_k,
+            min_similarity=min_similarity,
+        )
+    )
+    selected_ids = await semantic_verifier.matching_candidate_ids(
+        clean_symptom,
+        [
+            SemanticCandidate(
+                candidate_id=str(row["embedding_id"]),
+                label=(
+                    f"{row['alias_text']} | {row['korean_symptom_name']} "
+                    f"| {row['symptom_term']}"
+                ),
+            )
+            for row in vector_rows
+        ],
+        domain="pro_ctcae_symptom_alias",
+    )
+    matched_row = next(
+        (
+            row
+            for row in vector_rows
+            if str(row["embedding_id"]) in selected_ids
+        ),
+        None,
+    )
+    if matched_row is not None:
+        return _semantic_pro_ctcae_result(
+            clean_symptom=clean_symptom,
+            workbook=workbook,
+            matched_row=matched_row,
+            candidate_rows=vector_rows,
+            match_type="vector_llm_verified",
+            scoring_method="pgvector_cosine_llm",
+            embedding_provider=embedding_provider.identity.provider,
+        )
+    best_similarity = (
+        float(vector_rows[0]["similarity"])
+        if vector_rows
+        else 0.0
+    )
+    return AEProCtcaeAssessmentResult(
+        input_symptom=clean_symptom,
+        matched=False,
+        match_type="other_symptoms",
+        similarity=round(best_similarity, 4),
+        threshold=min_similarity,
+        scoring_method="pgvector_cosine_llm",
+        embedding_provider=embedding_provider.identity.provider,
+        sheet_name=OTHER_SYMPTOMS_SHEET,
+        questions=[
+            _question_model(row) for row in workbook.other_questions
+        ],
+        candidates=[
+            _semantic_candidate(row) for row in vector_rows
+        ],
+    )
+
+
+def pro_ctcae_result_for_concept(
+    symptom_text: str,
+    concept: ClinicalSymptomConceptMatch,
+    *,
+    workbook_path: Path | None = None,
+) -> AEProCtcaeAssessmentResult:
+    """Build questionnaire output from an already resolved concept."""
+
+    settings = get_settings()
+    path = Path(
+        workbook_path or settings.pro_ctcae_workbook_path
+    ).resolve()
+    workbook = load_workbook(path)
+    entry = next(
+        (
+            candidate
+            for candidate in workbook.parsed_entries
+            if candidate.symptom_term == concept.symptom_term
+            and candidate.korean_symptom_name
+            == concept.korean_symptom_name
+            and candidate.sheet_name == concept.sheet_name
+        ),
+        None,
+    )
+    if entry is None:
+        raise ProCtcaeReferenceUnavailable(
+            "pro_ctcae_concept_workbook_version_mismatch"
+        )
+    match_type = (
+        "exact"
+        if concept.match_type == "EXACT"
+        else "vector_llm_verified"
+    )
+    return AEProCtcaeAssessmentResult(
+        input_symptom=symptom_text.strip(),
+        matched=True,
+        match_type=match_type,
+        matched_symptom_term=entry.symptom_term,
+        matched_korean_symptom_name=entry.korean_symptom_name,
+        similarity=round(concept.similarity, 4),
+        threshold=1.0 if match_type == "exact" else 0.0,
+        scoring_method="linked_concept_reuse",
+        embedding_provider="concept_cache",
+        sheet_name=entry.sheet_name,
+        questions=[_question_model(row) for row in entry.questions],
+        candidates=[
+            {
+                "symptom_term": entry.symptom_term,
+                "korean_symptom_name": entry.korean_symptom_name,
+                "sheet_name": entry.sheet_name,
+                "similarity": round(concept.similarity, 4),
+                "match_type": "linked_concept",
+            }
+        ],
+    )
+
+
+def _pro_ctcae_exact_rows(
+    engine: Engine,
+    *,
+    normalized: str,
+    model_id: str,
+    source_version: str,
+) -> list[dict[str, Any]]:
+    with engine.connect() as connection:
+        return list(
+            connection.execute(
+                text(
+                    """
+                    SELECT embedding_id, symptom_term,
+                           korean_symptom_name, sheet_name,
+                           alias_text, 1.0 AS similarity
+                    FROM agent_pro_ctcae_alias_embeddings
+                    WHERE normalized_alias = :normalized
+                      AND model_id = :model_id
+                      AND source_version = :source_version
+                    ORDER BY embedding_id
+                    """
+                ),
+                {
+                    "normalized": normalized,
+                    "model_id": model_id,
+                    "source_version": source_version,
+                },
+            ).mappings()
+        )
+
+
+def _pro_ctcae_vector_rows(
+    engine: Engine,
+    *,
+    embedding: list[float],
+    model_id: str,
+    source_version: str,
+    top_k: int,
+    min_similarity: float,
+) -> list[dict[str, Any]]:
+    with engine.connect() as connection:
+        connection.execute(
+            text("SET LOCAL hnsw.iterative_scan = 'strict_order'")
+        )
+        raw_rows = list(
+            connection.execute(
+                text(
+                    """
+                    SELECT embedding_id, symptom_term,
+                           korean_symptom_name, sheet_name, alias_text,
+                           1 - (
+                               embedding OPERATOR(public.<=>)
+                               CAST(:embedding AS public.vector)
+                           ) AS similarity
+                    FROM agent_pro_ctcae_alias_embeddings
+                    WHERE model_id = :model_id
+                      AND source_version = :source_version
+                    ORDER BY embedding OPERATOR(public.<=>)
+                        CAST(:embedding AS public.vector)
+                    LIMIT :candidate_limit
+                    """
+                ),
+                {
+                    "embedding": json.dumps(
+                        embedding,
+                        separators=(",", ":"),
+                    ),
+                    "model_id": model_id,
+                    "source_version": source_version,
+                    "candidate_limit": min(top_k * 4, 80),
+                },
+            ).mappings()
+        )
+    unique_rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for raw_row in raw_rows:
+        row = dict(raw_row)
+        if float(row["similarity"]) < min_similarity:
+            continue
+        key = (
+            str(row["sheet_name"]),
+            str(row["symptom_term"]),
+            str(row["korean_symptom_name"]),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_rows.append(row)
+        if len(unique_rows) >= top_k:
+            break
+    return unique_rows
+
+
+def _semantic_pro_ctcae_result(
+    *,
+    clean_symptom: str,
+    workbook: ProCtcaeWorkbook,
+    matched_row: dict[str, Any],
+    candidate_rows: list[dict[str, Any]],
+    match_type: str,
+    scoring_method: str,
+    embedding_provider: str,
+) -> AEProCtcaeAssessmentResult:
+    entry = next(
+        (
+            candidate
+            for candidate in workbook.parsed_entries
+            if candidate.symptom_term == str(matched_row["symptom_term"])
+            and candidate.korean_symptom_name
+            == str(matched_row["korean_symptom_name"])
+            and candidate.sheet_name == str(matched_row["sheet_name"])
+        ),
+        None,
+    )
+    if entry is None:
+        raise ProCtcaeReferenceUnavailable(
+            "pro_ctcae_embedding_workbook_version_mismatch"
+        )
+    similarity = float(matched_row["similarity"])
+    return AEProCtcaeAssessmentResult(
+        input_symptom=clean_symptom,
+        matched=True,
+        match_type=match_type,
+        matched_symptom_term=entry.symptom_term,
+        matched_korean_symptom_name=entry.korean_symptom_name,
+        similarity=round(similarity, 4),
+        threshold=1.0 if match_type == "exact" else 0.0,
+        scoring_method=scoring_method,
+        embedding_provider=embedding_provider,
+        sheet_name=entry.sheet_name,
+        questions=[_question_model(row) for row in entry.questions],
+        candidates=[
+            _semantic_candidate(row) for row in candidate_rows
+        ],
+    )
+
+
+def _semantic_candidate(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "symptom_term": str(row["symptom_term"]),
+        "korean_symptom_name": str(row["korean_symptom_name"]),
+        "sheet_name": str(row["sheet_name"]),
+        "similarity": round(float(row["similarity"]), 4),
+        "match_type": (
+            "exact"
+            if float(row["similarity"]) == 1.0
+            else "vector_candidate"
+        ),
+    }
 
 
 def match_pro_ctcae_symptom(symptom_text: str, *, threshold: float | None = None, workbook_path: Path | None = None) -> AEProCtcaeAssessmentResult:

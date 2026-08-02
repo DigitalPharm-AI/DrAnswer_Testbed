@@ -5,9 +5,19 @@ from datetime import datetime, timedelta
 import pytest
 from sqlalchemy.orm import sessionmaker
 
+from agent_app.agents.multiturn_chat import MultiturnChatAgent
 from agent_app.errors import AgentExecutionError
 from agent_app.jobs import worker as async_worker
-from agent_app.agents.multiturn_chat import MultiturnChatAgent
+from agent_app.jobs.status import (
+    WORKER_RUNNING,
+    WORKER_STALE,
+    WORKER_STOPPED,
+    mark_worker_started,
+    mark_worker_stopped,
+    record_worker_heartbeat,
+    record_worker_task_completed,
+    worker_status_payload,
+)
 from agent_app.jobs.tasks import (
     DEAD,
     FAILED,
@@ -31,23 +41,13 @@ from agent_app.jobs.tasks import (
 from agent_app.persistence.models import AgentWorkerHeartbeat
 from agent_app.providers.deterministic_test import DeterministicTestProvider
 from agent_app.tools.runtime import ToolRuntime
-from agent_app.jobs.status import (
-    WORKER_RUNNING,
-    WORKER_STALE,
-    WORKER_STOPPED,
-    mark_worker_started,
-    mark_worker_stopped,
-    record_worker_heartbeat,
-    record_worker_task_completed,
-    worker_status_payload,
-)
-from shared.time_utils import utc_now
-from shared.settings import get_settings
 from shared.schemas import (
     AgentAsyncClinicianAlertRequest,
     AgentCallbackContext,
     MultiturnChatRequest,
 )
+from shared.settings import get_settings
+from shared.time_utils import utc_now
 from system_app.models import (
     DoseEvent,
     DoseSchedule,
@@ -59,7 +59,6 @@ from system_app.services.agent_async_callback_service import (
 )
 from system_app.services.clock_service import ensure_clock
 from tests.helpers import build_agent_engine, build_session
-
 
 TEST_PATIENT_ID = get_settings().patient_id
 

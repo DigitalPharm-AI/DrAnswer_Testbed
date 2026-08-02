@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import httpx
 from sqlalchemy.exc import TimeoutError as SqlAlchemyTimeoutError
 
+from shared.backend_read_contract import BACKEND_READ_CONTRACT_VERSION
 from system_app.services import ui_status_service
 
 
@@ -14,11 +15,12 @@ def _readiness_payload(
     *,
     generation_ok: bool = True,
     generation_code: str = "OK",
+    contract_version: str = BACKEND_READ_CONTRACT_VERSION,
 ) -> dict:
     component = {"ok": status == "ready", "code": "OK"}
     return {
         "status": status,
-        "contract_version": "1.3",
+        "contract_version": contract_version,
         "components": {
             "agent_database": component,
             "backend_read_database": component,
@@ -152,7 +154,7 @@ def test_ai_readiness_probe_requires_http_contract_and_generation_provider(
     assert ready.status == "ready"
     assert ready.evidence == (
         "AGENT_READINESS_HTTP_OK",
-        "AGENT_READINESS_CONTRACT_1_3",
+        "AGENT_READINESS_CONTRACT_1_4",
         "GENERATION_PROVIDER_OK",
     )
     assert captured == {
@@ -239,6 +241,27 @@ def test_ai_readiness_probe_never_marks_failed_generation_provider_ready(
 def test_ai_readiness_probe_distinguishes_incompatible_unreachable_and_timeout(
     monkeypatch,
 ) -> None:
+    _fake_async_client(
+        monkeypatch,
+        httpx.Response(
+            200,
+            json=_readiness_payload(
+                "ready",
+                contract_version="1.3",
+            ),
+        ),
+    )
+    version_mismatch = asyncio.run(
+        ui_status_service._probe_agent_readiness(
+            "http://agent:8001",
+            "agent-sync-token",
+        )
+    )
+    assert version_mismatch.status == "incompatible"
+    assert version_mismatch.evidence == (
+        "AGENT_READINESS_CONTRACT_INCOMPATIBLE",
+    )
+
     legacy_payload = _readiness_payload("ready")
     legacy_payload["components"].pop("generation_provider")
     _fake_async_client(
@@ -358,7 +381,7 @@ def test_ai_readiness_cache_reuses_probe_and_single_flights_concurrent_calls(
         "_probe_agent_readiness",
         counted_probe,
     )
-    ui_status_service._reset_agent_readiness_cache()
+    ui_status_service.reset_agent_readiness_cache()
 
     async def scenario():
         first_batch = await asyncio.gather(
@@ -381,7 +404,7 @@ def test_ai_readiness_cache_reuses_probe_and_single_flights_concurrent_calls(
     try:
         first_batch, uncached = asyncio.run(scenario())
     finally:
-        ui_status_service._reset_agent_readiness_cache()
+        ui_status_service.reset_agent_readiness_cache()
 
     assert calls == 2
     assert len({item.checked_at for item in first_batch}) == 1

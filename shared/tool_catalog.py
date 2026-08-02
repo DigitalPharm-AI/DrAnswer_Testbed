@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from shared.nutrition_domain import MEAL_TYPE_VALUES
 from shared.tool_names import (
     BACKEND_V13_POLICY_WRITE_TOOLS,
     BACKEND_V13_RECORD_WRITE_TOOLS,
@@ -31,7 +32,12 @@ class ToolCatalog:
                 "optional_arguments": [],
                 "inputSchema": _object_schema(
                     {
-                        "symptom_text": {"type": "string", "description": "환자가 말한 원문 증상"},
+                        "symptom_text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S",
+                            "description": "환자가 말한 원문 증상",
+                        },
                     },
                     ["symptom_text"],
                     additional_properties=False,
@@ -42,28 +48,47 @@ class ToolCatalog:
                 "name": "get_medication_side_effect_assessment",
                 "title": "Medication Side Effect Assessment",
                 "description": (
-                    "환자가 표현한 증상과 약 이름·발생 시점만 입력받습니다. "
+                    "환자가 표현한 하나 이상의 증상 원문과 각 발생 시점, 약 이름만 입력받습니다. "
                     "환자 식별자와 현재 복약정보는 AI Server가 신뢰 컨텍스트에서 주입하고, "
                     "Tool이 약 후보 매칭과 의약품 부작용 기준정보 조회를 수행합니다."
                 ),
-                "required_arguments": ["symptom_text"],
-                "optional_arguments": ["medication_name", "symptom_onset_text"],
+                "required_arguments": ["symptom_mentions"],
+                "optional_arguments": ["medication_name"],
                 "inputSchema": _object_schema(
                     {
-                        "symptom_text": {
-                            "type": "string",
-                            "description": "환자가 말한 증상 원문",
+                        "symptom_mentions": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 5,
+                            "description": (
+                                "환자가 실제로 경험했다고 말한 서로 다른 증상 원문 목록. "
+                                "추정 진단명이나 아직 발생하지 않은 증상은 포함하지 않습니다."
+                            ),
+                            "items": _object_schema(
+                                {
+                                    "text": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "pattern": "\\S",
+                                        "description": "환자가 말한 증상 원문",
+                                    },
+                                    "onset_text": {
+                                        "type": "string",
+                                        "description": (
+                                            "어제, 복용 30분 후 등 해당 증상의 발생 시점 원문"
+                                        ),
+                                    },
+                                },
+                                ["text"],
+                                additional_properties=False,
+                            ),
                         },
                         "medication_name": {
                             "type": "string",
                             "description": "환자가 직접 언급했거나 대화에서 명확히 지칭한 약 이름",
                         },
-                        "symptom_onset_text": {
-                            "type": "string",
-                            "description": "어제, 복용 30분 후 등 환자가 표현한 증상 발생 시점",
-                        },
                     },
-                    ["symptom_text"],
+                    ["symptom_mentions"],
                     additional_properties=False,
                 ),
                 "outputSchema": _tool_result_schema(),
@@ -87,6 +112,8 @@ class ToolCatalog:
                     {
                         "symptom_text": {
                             "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S",
                             "description": "환자가 말한 증상 원문",
                         },
                         "medication_name": {
@@ -117,10 +144,10 @@ class ToolCatalog:
                 "optional_arguments": ["target_date", "start_date", "end_date", "limit", "suspected", "medication_name"],
                 "inputSchema": _object_schema(
                     {
-                        "target_date": {"type": "string", "description": "YYYY-MM-DD single-day filter using record created_at."},
-                        "start_date": {"type": "string", "description": "YYYY-MM-DD range start using record created_at. Use with end_date."},
-                        "end_date": {"type": "string", "description": "YYYY-MM-DD range end using record created_at. Use with start_date."},
-                        "limit": {"type": "integer", "description": "Maximum records to return. Default 20, maximum 100."},
+                        "target_date": {"type": "string", "format": "date", "description": "YYYY-MM-DD single-day filter using record created_at."},
+                        "start_date": {"type": "string", "format": "date", "description": "YYYY-MM-DD range start using record created_at. Use with end_date."},
+                        "end_date": {"type": "string", "format": "date", "description": "YYYY-MM-DD range end using record created_at. Use with start_date."},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum records to return. Default 20, maximum 100."},
                         "suspected": {"type": "boolean", "description": "When provided, filter by suspected side-effect status."},
                         "medication_name": {"type": "string", "description": "Optional exact medication name filter."},
                     },
@@ -143,9 +170,9 @@ class ToolCatalog:
                 "optional_arguments": ["target_date", "start_date", "end_date", "status", "medication_name"],
                 "inputSchema": _object_schema(
                     {
-                        "target_date": {"type": "string", "description": "YYYY-MM-DD. Omit to use the simulation clock date."},
-                        "start_date": {"type": "string", "description": "YYYY-MM-DD range start. Use with end_date."},
-                        "end_date": {"type": "string", "description": "YYYY-MM-DD range end. Use with start_date."},
+                        "target_date": {"type": "string", "format": "date", "description": "YYYY-MM-DD. Omit to use the simulation clock date."},
+                        "start_date": {"type": "string", "format": "date", "description": "YYYY-MM-DD range start. Use with end_date."},
+                        "end_date": {"type": "string", "format": "date", "description": "YYYY-MM-DD range end. Use with start_date."},
                         "status": {"type": "string", "enum": ["scheduled", "taken", "missed"], "description": "Optional dose status filter."},
                         "medication_name": {"type": "string", "description": "Optional exact medication name filter."},
                     },
@@ -170,6 +197,8 @@ class ToolCatalog:
                     {
                         "dose_event_id": {
                             "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S",
                             "description": "taken 처리할 복약 이벤트의 공개 opaque ID",
                         },
                     },
@@ -192,6 +221,7 @@ class ToolCatalog:
                             "items": {
                                 "type": "string",
                                 "minLength": 1,
+                                "pattern": "\\S",
                                 "maxLength": 100,
                             },
                             "minItems": 1,
@@ -206,7 +236,7 @@ class ToolCatalog:
                         },
                         "meal_type": {
                             "type": "string",
-                            "enum": ["breakfast", "lunch", "dinner", "snack"],
+                            "enum": list(MEAL_TYPE_VALUES),
                             "description": "사용자 발화에 아침/점심/저녁/간식 식사 종류가 명확할 때 UI 기본 선택값으로 전달합니다.",
                         },
                     },
@@ -229,22 +259,23 @@ class ToolCatalog:
                 "optional_arguments": ["meal_date", "meal_time", "description"],
                 "inputSchema": _object_schema(
                     {
-                        "meal_type": {"type": "string", "enum": ["breakfast", "lunch", "dinner", "snack"]},
-                        "meal_date": {"type": "string", "description": "YYYY-MM-DD, 생략하면 시뮬레이션 현재 날짜"},
-                        "meal_time": {"type": "string", "description": "HH:MM 또는 HH:MM:SS, 생략하면 시뮬레이션 현재 시각"},
+                        "meal_type": {"type": "string", "enum": list(MEAL_TYPE_VALUES)},
+                        "meal_date": {"type": "string", "format": "date", "description": "YYYY-MM-DD, 생략하면 시뮬레이션 현재 날짜"},
+                        "meal_time": {"type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d)?$", "description": "HH:MM 또는 HH:MM:SS, 생략하면 시뮬레이션 현재 시각"},
                         "description": {"type": "string"},
                         "foods": {
                             "type": "array",
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "food_name": {"type": "string"},
+                                    "food_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
                                     "portion": {"type": "string"},
                                     "nutrients": _nutrient_schema(),
                                 },
                                 "required": ["food_name", "nutrients"],
                                 "additionalProperties": False,
                             },
+                            "minItems": 1,
                         },
                     },
                     ["meal_type", "foods"],
@@ -280,11 +311,13 @@ class ToolCatalog:
                     {
                         "meal_id": {
                             "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S",
                             "description": "Existing meal public opaque ID to update",
                         },
-                        "meal_type": {"type": "string", "enum": ["breakfast", "lunch", "dinner", "snack"]},
-                        "meal_date": {"type": "string", "description": "YYYY-MM-DD"},
-                        "meal_time": {"type": "string", "description": "HH:MM or HH:MM:SS"},
+                        "meal_type": {"type": "string", "enum": list(MEAL_TYPE_VALUES)},
+                        "meal_date": {"type": "string", "format": "date", "description": "YYYY-MM-DD"},
+                        "meal_time": {"type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d)?$", "description": "HH:MM or HH:MM:SS"},
                         "scenario_key": {"type": "string"},
                         "description": {"type": "string"},
                         "foods": {
@@ -292,17 +325,19 @@ class ToolCatalog:
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "food_name": {"type": "string"},
+                                    "food_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
                                     "portion": {"type": "string"},
                                     "nutrients": _nutrient_schema(),
                                 },
                                 "required": ["food_name", "nutrients"],
                                 "additionalProperties": False,
                             },
+                            "minItems": 1,
                         },
                     },
                     ["meal_id"],
                     additional_properties=False,
+                    min_properties=2,
                 ),
                 "outputSchema": _tool_result_schema(),
             },
@@ -330,6 +365,8 @@ class ToolCatalog:
                     {
                         "meal_id": {
                             "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S",
                             "description": "Existing meal public opaque ID to delete",
                         },
                     },
@@ -366,19 +403,24 @@ class ToolCatalog:
                     {
                         "meal_id": {
                             "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S",
                             "description": "Existing meal public opaque ID containing the food",
                         },
                         "food_id": {
                             "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S",
                             "description": "Existing food public opaque ID to update",
                         },
                         "food_ref_id": {"type": "string", "description": "Reference id for the replacement food when known"},
-                        "food_name": {"type": "string", "description": "Updated or replacement food name"},
+                        "food_name": {"type": "string", "minLength": 1, "pattern": "\\S", "description": "Updated or replacement food name"},
                         "portion": {"type": "string", "description": "Updated portion text"},
                         "nutrients": _nutrient_schema(),
                     },
                     ["meal_id", "food_id"],
                     additional_properties=False,
+                    min_properties=3,
                 ),
                 "outputSchema": _tool_result_schema(),
             },
@@ -409,10 +451,14 @@ class ToolCatalog:
                     {
                         "meal_id": {
                             "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S",
                             "description": "Existing meal public opaque ID containing the food",
                         },
                         "food_id": {
                             "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S",
                             "description": "Existing food public opaque ID to delete",
                         },
                     },
@@ -429,7 +475,7 @@ class ToolCatalog:
                 "optional_arguments": ["meal_date"],
                 "inputSchema": _object_schema(
                     {
-                        "meal_date": {"type": "string", "description": "YYYY-MM-DD, 생략하면 시뮬레이션 현재 날짜"},
+                        "meal_date": {"type": "string", "format": "date", "description": "YYYY-MM-DD, 생략하면 시뮬레이션 현재 날짜"},
                     },
                     [],
                     additional_properties=False,
@@ -444,7 +490,7 @@ class ToolCatalog:
                 "optional_arguments": ["meal_date"],
                 "inputSchema": _object_schema(
                     {
-                        "meal_date": {"type": "string", "description": "YYYY-MM-DD, 생략하면 시뮬레이션 현재 날짜"},
+                        "meal_date": {"type": "string", "format": "date", "description": "YYYY-MM-DD, 생략하면 시뮬레이션 현재 날짜"},
                     },
                     [],
                     additional_properties=False,
@@ -481,14 +527,14 @@ class ToolCatalog:
                                 "religious_avoids",
                             ],
                         },
-                        "object_label": {"type": "string", "description": "선호/제한 대상 음식, 재료, 음식군, 식단 유형"},
+                        "object_label": {"type": "string", "minLength": 1, "pattern": "\\S", "description": "선호/제한 대상 음식, 재료, 음식군, 식단 유형"},
                         "object_type": {
                             "type": "string",
                             "enum": ["food", "ingredient", "food_category", "cuisine", "preparation", "nutrient", "nutrient_risk", "restriction", "diet_style"],
                         },
-                        "strength": {"type": "number", "description": "0.0-1.0 선호 강도"},
+                        "strength": {"type": "number", "minimum": 0, "maximum": 1, "description": "0.0-1.0 선호 강도"},
                         "safety_level": {"type": "string", "enum": ["hard", "soft"]},
-                        "confidence": {"type": "number", "description": "0.0-1.0 근거 신뢰도"},
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1, "description": "0.0-1.0 근거 신뢰도"},
                         "evidence_text": {"type": "string", "description": "사용자가 말한 원문 근거"},
                     },
                     ["predicate", "object_label"],
@@ -537,6 +583,7 @@ class ToolCatalog:
                     {
                         "constraints": {
                             "type": "object",
+                            "minProperties": 1,
                             "description": (
                                 "영양소별 제약 수준. 키: 나트륨|단백질|칼로리|지방|탄수화물, "
                                 "값: low(낮게 유지) 또는 moderate(적정 범위). "
@@ -549,10 +596,10 @@ class ToolCatalog:
                         },
                         "meal_type": {
                             "type": "string",
-                            "enum": ["breakfast", "lunch", "dinner", "snack"],
+                            "enum": list(MEAL_TYPE_VALUES),
                             "description": "Meal type. breakfast/lunch/dinner prioritizes meal-like foods over snacks or beverages; snack allows snack-like candidates. Optional.",
                         },
-                        "limit": {"type": "integer", "description": "최대 추천 개수 (기본 5)"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "최대 추천 개수 (기본 5)"},
                     },
                     ["constraints"],
                     additional_properties=False,
@@ -561,9 +608,10 @@ class ToolCatalog:
             },
             {
                 "name": "propose_notification_policy",
-                "title": "Create Notification Policy Candidate",
+                "title": "Suggest Existing Notification Policy Change",
                 "description": (
-                    "복약 알림 정책 변경 후보를 생성합니다. 이 도구는 정책을 직접 적용하지 않고, "
+                    "현재 활성 상태인 복약 알림 정책의 변경 후보만 제안합니다. 새 정책을 생성할 수 없으며, "
+                    "일치하는 활성 정책이 없으면 호출하면 안 됩니다. 이 도구는 정책을 직접 적용하지 않고, "
                     "환자 또는 운영자 확인이 필요한 deferred confirmation 결과만 반환합니다. "
                     "알림 횟수/간격, 기본 알림 시점, 미복용 판단 시간과 알림 문구 템플릿을 포함할 수 있습니다. "
                     "source는 pattern_analysis, patient_request, system_request 중 하나만 사용합니다."
@@ -662,10 +710,14 @@ class ToolCatalog:
                     {
                         "policy_id": {
                             "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S",
                             "description": "Backend가 발급한 공개 알림 정책 ID",
                         },
                         "slot_label": {
                             "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S",
                             "description": "정책 대상 복약 시간대",
                         },
                         "active_only": {
@@ -696,7 +748,7 @@ class ToolCatalog:
                 "optional_arguments": ["changes"],
                 "inputSchema": _object_schema(
                     {
-                        "policy_id": {"type": "string", "description": "Backend가 발급한 공개 notification policy ID"},
+                        "policy_id": {"type": "string", "minLength": 1, "pattern": "\\S", "description": "Backend가 발급한 공개 notification policy ID"},
                         "decision": {"type": "string", "enum": ["apply", "keep"]},
                         "changes": _notification_policy_changes_schema(),
                     },
@@ -813,13 +865,17 @@ def _object_schema(
     required: list[str],
     *,
     additional_properties: bool = False,
+    min_properties: int | None = None,
 ) -> dict[str, Any]:
-    return {
+    schema: dict[str, Any] = {
         "type": "object",
         "properties": properties,
         "required": required,
         "additionalProperties": additional_properties,
     }
+    if min_properties is not None:
+        schema["minProperties"] = min_properties
+    return schema
 
 
 def _record_approval_arguments_schema(

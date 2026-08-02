@@ -71,12 +71,19 @@ Bedrock credential은 `.env.agent_app.secret`에만 두며 Agent API와 worker�
 - `LLM_PROVIDER=bedrock_anthropic`
 - `LLM_MODEL_TIER=sonnet`
 - `LLM_FAST_MODEL=global.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `LLM_SONNET_MODEL=global.anthropic.claude-sonnet-4-6`
+- `LLM_SONNET_MODEL=global.anthropic.claude-sonnet-5`
 - `LLM_REASONING_ENABLED=true`
 - `LLM_REASONING_EFFORT=medium`
 - `LLM_EXTENDED_THINKING_BUDGET_TOKENS=1024`
 - `AWS_REGION=ap-northeast-2`
 - `.env.agent_app.secret`의 `AWS_BEARER_TOKEN_BEDROCK`
+- `EMBEDDING_PROVIDER=bedrock_cohere`
+- `EMBEDDING_MODEL_ID=cohere.embed-multilingual-v3`
+- `EMBEDDING_AWS_REGION=ap-northeast-1`
+- `EMBEDDING_DIMENSIONS=1024`
+- `ADVERSE_REACTION_VECTOR_TOP_K=8`
+- `PRO_CTCAE_VECTOR_TOP_K=5`
+- `REFERENCE_VECTOR_MIN_SIMILARITY=0.35`
 
 선택 값:
 
@@ -85,12 +92,26 @@ Bedrock credential은 `.env.agent_app.secret`에만 두며 Agent API와 worker�
 - `.env.agent_app.secret`의 `AWS_PROFILE`: 로컬 AWS profile을 쓰는 경우
 - `LLM_MAX_TOKENS=4096`
 - `LLM_TEMPERATURE=0.2`
+- `ADVERSE_REACTION_VECTOR_TOP_K`, `PRO_CTCAE_VECTOR_TOP_K`: 정확 일치가 없을 때 LLM이 동의어 여부를 검증할 vector 후보 수
+- `REFERENCE_VECTOR_MIN_SIMILARITY`: LLM 검증으로 넘길 vector 후보의 최소 cosine 유사도
 - `AGENT_DATABASE_URL=postgresql+psycopg://...`: AI Internal PostgreSQL runtime role
 - `AGENT_MIGRATION_DATABASE_URL=postgresql+psycopg://...`: 필수 전용 DDL role
 - `AGENT_STARTUP_MIGRATIONS_ENABLED=false`: 모든 환경의 필수값. API/worker는 schema를 검증만 하며 DDL을 실행하지 않습니다.
 - `AGENT_DB_POOL_*`, `BACKEND_READ_DB_POOL_*`: Agent RW와 Backend Read-only connection pool/timeout을 독립 조정
 - `AGENT_TASK_MAX_ATTEMPTS`, `AGENT_TASK_VISIBILITY_TIMEOUT_SECONDS`, `AGENT_TASK_RETRY_BASE_SECONDS`, `AGENT_TASK_RETRY_MAX_SECONDS`: agent 비동기 작업 재시도/lock timeout 조정값
 - `AGENT_EMBEDDED_WORKER_ENABLED=false`: 운영 권장값. agent API 서버 안에서 worker thread를 띄우지 않고 별도 worker 프로세스를 사용합니다.
+
+MFDS/Pro-CTCAE reference embedding은 Agent migration과 MFDS 데이터 적재 후
+별도 데이터 작업으로 생성합니다. 재실행 가능한 백필과 무과금 점검은
+각각 다음과 같습니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.backfill_agent_embeddings --target all
+.\.venv\Scripts\python.exe -m scripts.backfill_agent_embeddings --target all --check
+.\.venv\Scripts\python.exe -m scripts.backfill_symptom_concepts --mode exact
+```
+
+마지막 check는 두 target 중 하나라도 누락되면 non-zero로 종료합니다.
 
 사용할 모델 등급과 모델 ID는 `agent_app` 환경변수로 관리하며 환자용 React 화면에서는 변경하지 않습니다.
 `AWS_BEARER_TOKEN_BEDROCK`를 쓸 때는 Bedrock Converse API를 호출합니다. 서울 리전(`ap-northeast-2`)에서는 Claude Haiku 4.5/Sonnet 4.6을 Global Cross-Region inference로 호출하므로 `global.`로 시작하는 model ID를 기본값으로 둡니다.

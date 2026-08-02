@@ -648,6 +648,44 @@ MIGRATIONS: list[tuple[str, str]] = [
         "20260730_0007_remove_backend_mutation_confirmations",
         "DROP TABLE IF EXISTS mutation_confirmations",
     ),
+    (
+        "20260731_0001_chat_time_axes",
+        """
+        ALTER TABLE chat_messages
+            ADD COLUMN IF NOT EXISTS display_at
+            TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+        ALTER TABLE chat_messages
+            ADD COLUMN IF NOT EXISTS conversation_at TIMESTAMP;
+        ALTER TABLE chat_messages
+            ADD COLUMN IF NOT EXISTS recorded_at
+            TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+
+        UPDATE chat_messages
+        SET conversation_at = COALESCE(
+                conversation_at,
+                display_at,
+                created_at,
+                CURRENT_TIMESTAMP
+            ),
+            recorded_at = COALESCE(
+                created_at,
+                recorded_at,
+                CURRENT_TIMESTAMP
+            );
+
+        ALTER TABLE chat_messages
+            ALTER COLUMN conversation_at SET NOT NULL;
+        ALTER TABLE chat_messages
+            ALTER COLUMN recorded_at SET NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS
+            ix_chat_messages_patient_conversation_at
+        ON chat_messages (patient_id, conversation_at, id);
+        CREATE INDEX IF NOT EXISTS
+            ix_chat_messages_patient_sequence
+        ON chat_messages (patient_id, id)
+        """,
+    ),
 ]
 
 
@@ -678,6 +716,8 @@ CHAT_MESSAGE_COLUMNS: dict[str, str] = {
     "processing_status": "VARCHAR(32) DEFAULT 'completed'",
     "metadata_json": "TEXT DEFAULT '{}'",
     "display_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+    "conversation_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+    "recorded_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
 }
 
 
@@ -807,8 +847,12 @@ def ensure_chat_message_columns(engine: Engine) -> None:
         connection.execute(
             text(
                 "UPDATE chat_messages "
-                "SET display_at = COALESCE(created_at, CURRENT_TIMESTAMP) "
-                "WHERE display_at IS NULL"
+                "SET display_at = COALESCE(display_at, created_at, CURRENT_TIMESTAMP), "
+                "conversation_at = COALESCE(conversation_at, display_at, created_at, CURRENT_TIMESTAMP), "
+                "recorded_at = COALESCE(recorded_at, created_at, CURRENT_TIMESTAMP) "
+                "WHERE display_at IS NULL "
+                "OR conversation_at IS NULL "
+                "OR recorded_at IS NULL"
             )
         )
         connection.execute(
@@ -826,11 +870,37 @@ def ensure_chat_message_columns(engine: Engine) -> None:
                 "WHERE ai_request_id <> ''"
             )
         )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_chat_messages_patient_conversation_at "
+                "ON chat_messages (patient_id, conversation_at, id)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_chat_messages_patient_sequence "
+                "ON chat_messages (patient_id, id)"
+            )
+        )
         if connection.dialect.name == "postgresql":
             connection.execute(
                 text(
                     "ALTER TABLE chat_messages "
                     "ALTER COLUMN display_at SET NOT NULL"
+                )
+            )
+            connection.execute(
+                text(
+                    "ALTER TABLE chat_messages "
+                    "ALTER COLUMN conversation_at SET NOT NULL"
+                )
+            )
+            connection.execute(
+                text(
+                    "ALTER TABLE chat_messages "
+                    "ALTER COLUMN recorded_at SET NOT NULL"
                 )
             )
 def ensure_agent_job_request_ids(engine: Engine) -> None:

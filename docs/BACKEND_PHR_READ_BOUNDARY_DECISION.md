@@ -132,7 +132,7 @@ flowchart LR
   "patient_context_snapshot": {
     "patient_id": "trusted-backend-patient-id",
     "as_of": "2026-07-26T10:30:00+09:00",
-    "read_contract_version": "1.2",
+    "read_contract_version": "1.4",
     "availability": {
       "profile": "available",
       "conditions_and_treatments": "available",
@@ -160,7 +160,12 @@ flowchart LR
 
 - Snapshot은 AI Server 내부의 신뢰 컨텍스트이다.
 - Frontend나 외부 Chat v1.3 응답에 원문 그대로 반환하지 않는다.
-- 매 동기 채팅 요청마다 저장된 `message_at` 기준으로 새로 구성한다.
+- 매 동기 채팅 요청마다 Backend가 결정한 `message_at`을 업무 시각으로 사용해
+  새로 구성한다. 대화 이력 범위는 물리 `created_at`이나 날짜 필터가 아니라
+  read view의 `conversation_sequence`로 현재 user 메시지까지 제한한다.
+- 대화 업무 시각 `conversation_at`과 실제 UTC 기록 시각 `recorded_at`은
+  분리한다. Agent에 전달하는 대화 시각은 `conversation_at`이며,
+  `recorded_at`은 운영·감사 용도다.
 - 사용자 사이에 Snapshot을 공유하거나 환자 범위를 넘는 캐시를 사용하지 않는다.
 - 오늘의 기준은 Backend와 AI가 합의한 Asia/Seoul 업무 날짜로 계산한다.
 - 원본 전체 행이나 불필요한 자유문장을 LLM에 무제한으로 전달하지 않는다.

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -13,13 +13,6 @@ from agent_app.integration.backend_client import (
     BackendV13ResponseError,
     backend_request_attempt_count,
 )
-from shared.backend_v13_contracts import (
-    MedicationSideEffectMutationPayload,
-    NotificationPolicyChangeRequest,
-    NotificationPolicyChanges,
-    NutritionFoodMutationPayload,
-    RecordChangeRequest,
-)
 from agent_app.integration.mutations import (
     ConfirmedMutationContext,
     notification_policy_request,
@@ -30,6 +23,13 @@ from agent_app.tools.backend_write import (
     BackendSyncWriteTools,
     _internal_arguments_from_state,
 )
+from shared.backend_v13_contracts import (
+    MedicationSideEffectMutationPayload,
+    NotificationPolicyChangeRequest,
+    NotificationPolicyChanges,
+    NutritionFoodMutationPayload,
+    RecordChangeRequest,
+)
 from shared.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
     DELETE_NUTRITION_FOOD_RECORD,
@@ -37,7 +37,7 @@ from shared.tool_names import (
     UPDATE_NUTRITION_FOOD_RECORD,
 )
 
-NOW = datetime(2026, 7, 25, 12, 35, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 25, 12, 35, tzinfo=UTC)
 
 
 def mutation_context(*, request_id: str = "req_0000000000000001") -> ConfirmedMutationContext:
@@ -535,5 +535,5 @@ async def test_backend_client_requires_configured_authorization() -> None:
         transport=httpx.MockTransport(lambda _: httpx.Response(500)),
     )
 
-    with pytest.raises(BackendV13ConfigurationError, match="backend_api_token_required"):
+    with pytest.raises(BackendV13ConfigurationError, match="service_api_token_required"):
         await client.change_record(meal_create_request())

@@ -1,21 +1,20 @@
 from __future__ import annotations
 
 import base64
-import binascii
-import hashlib
 import hmac
 import json
-import os
 from dataclasses import asdict, dataclass
 from datetime import timedelta
 from typing import Any, Literal
 from uuid import uuid4
 
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
+from agent_app.integration.state_crypto import (
+    AgentStateCipher,
+    AgentStateCipherError,
+)
 from agent_app.integration.write_state import canonical_payload_hash
 from agent_app.persistence.models import AgentPendingAction
 from shared.json_utils import canonical_json
@@ -61,8 +60,7 @@ class InternalApprovalCipher:
         if not key_id.strip():
             raise ValueError("internal_approval_encryption_key_id_required")
         self.key_id = key_id.strip()
-        self._key = key
-        self._cipher = AESGCM(key)
+        self._state_cipher = AgentStateCipher(key)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> InternalApprovalCipher:
@@ -86,16 +84,12 @@ class InternalApprovalCipher:
         approval_id: str,
         confirmation_message_id: str,
     ) -> str:
-        digest = hmac.new(
-            self._key,
-            (
-                b"agent-approval-capability-v1\0"
-                + approval_id.encode("utf-8")
-                + b"\0"
-                + confirmation_message_id.encode("utf-8")
-            ),
-            hashlib.sha256,
-        ).digest()[:18]
+        digest = self._state_cipher.mac(
+            b"agent-approval-capability-v1\0"
+            + approval_id.encode("utf-8")
+            + b"\0"
+            + confirmation_message_id.encode("utf-8")
+        )[:18]
         token = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
         return f"apv_{token}"
 
@@ -111,15 +105,10 @@ class InternalApprovalCipher:
         *,
         context: ApprovalEncryptionContext,
     ) -> str:
-        nonce = os.urandom(12)
-        ciphertext = self._cipher.encrypt(
-            nonce,
+        return self._state_cipher.encrypt(
             canonical_json(payload).encode("utf-8"),
-            context.associated_data(),
+            associated_data=context.associated_data(),
         )
-        return "v1." + base64.urlsafe_b64encode(
-            nonce + ciphertext
-        ).decode("ascii")
 
     def decrypt_payload(
         self,
@@ -128,22 +117,17 @@ class InternalApprovalCipher:
         context: ApprovalEncryptionContext,
         expected_hash: str,
     ) -> dict[str, Any]:
-        if not token.startswith("v1."):
-            raise InternalApprovalEncryptionError(
-                "internal_approval_ciphertext_version_invalid"
-            )
         try:
-            encoded = token.removeprefix("v1.")
-            raw = base64.urlsafe_b64decode(
-                encoded + ("=" * (-len(encoded) % 4))
-            )
-            if len(raw) < 29:
-                raise ValueError("ciphertext_too_short")
             value = json.loads(
-                self._cipher.decrypt(
-                    raw[:12],
-                    raw[12:],
-                    context.associated_data(),
+                self._state_cipher.decrypt(
+                    token,
+                    associated_data=context.associated_data(),
+                    version_error=(
+                        "internal_approval_ciphertext_version_invalid"
+                    ),
+                    authentication_error=(
+                        "internal_approval_ciphertext_authentication_failed"
+                    ),
                 ).decode("utf-8")
             )
             if not isinstance(value, dict):
@@ -154,19 +138,15 @@ class InternalApprovalCipher:
             ):
                 raise ValueError("approval_payload_hash_mismatch")
             return value
-        except (
-            InvalidTag,
-            UnicodeDecodeError,
-            ValueError,
-            binascii.Error,
-            json.JSONDecodeError,
-        ) as exc:
+        except AgentStateCipherError as exc:
+            raise InternalApprovalEncryptionError(str(exc)) from exc
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
             raise InternalApprovalEncryptionError(
                 "internal_approval_ciphertext_authentication_failed"
             ) from exc
 
     def _digest(self, value: bytes) -> str:
-        return hmac.new(self._key, value, hashlib.sha256).hexdigest()
+        return self._state_cipher.digest(value)
 
 
 @dataclass(frozen=True)

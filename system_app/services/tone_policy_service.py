@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from shared.json_utils import parse_json_object
 from system_app.models import ChatMessage, DoseEvent, Notification
+from system_app.services.ui_time import as_seoul_datetime
 
 TONE_KEYS = {"empathy", "persuasion", "practical", "warning_soft", "side_effect_check"}
 PATTERN_CODES = {"A", "B", "C", "D", "E"}
@@ -206,11 +207,13 @@ def _failed_reaction_count(session: Session, event: DoseEvent, tone_key: str, *,
 
 
 def _recent_persona_reaction_rows(session: Session, event: DoseEvent, *, lookback_days: int) -> list[dict[str, Any]]:
-    cutoff = event.scheduled_for - timedelta(days=lookback_days)
+    cutoff = _conversation_db_time(
+        event.scheduled_for - timedelta(days=lookback_days)
+    )
     rows = session.scalars(
         select(ChatMessage)
         .where(ChatMessage.category == "missed_dose", ChatMessage.patient_id == event.patient_id)
-        .order_by(desc(ChatMessage.created_at), desc(ChatMessage.id))
+        .order_by(desc(ChatMessage.id))
         .limit(100)
     ).all()
     matches: list[dict[str, Any]] = []
@@ -222,7 +225,10 @@ def _recent_persona_reaction_rows(session: Session, event: DoseEvent, *, lookbac
             continue
         if _message_slot_label(session, message, tone_policy) != event.slot_label:
             continue
-        observed_at = _reaction_observed_at(reaction, message.created_at)
+        observed_at = _reaction_observed_at(
+            reaction,
+            message.conversation_at,
+        )
         if observed_at < cutoff:
             continue
         matches.append(
@@ -269,11 +275,13 @@ def _recent_message_variant_usage(
     *,
     lookback_days: int,
 ) -> tuple[set[str], set[str]]:
-    cutoff = event.scheduled_for - timedelta(days=lookback_days)
+    cutoff = _conversation_db_time(
+        event.scheduled_for - timedelta(days=lookback_days)
+    )
     rows = session.scalars(
         select(ChatMessage)
         .where(ChatMessage.category == "missed_dose", ChatMessage.patient_id == event.patient_id)
-        .order_by(desc(ChatMessage.created_at), desc(ChatMessage.id))
+        .order_by(desc(ChatMessage.id))
         .limit(100)
     ).all()
     variants: set[str] = set()
@@ -283,7 +291,7 @@ def _recent_message_variant_usage(
         tone_policy = metadata.get("tone_policy") if isinstance(metadata.get("tone_policy"), dict) else {}
         if not tone_policy:
             continue
-        if message.created_at < cutoff:
+        if message.conversation_at < cutoff:
             continue
         if tone_policy.get("pattern_code") != pattern_code or tone_policy.get("tone_key") != tone_key:
             continue
@@ -309,10 +317,18 @@ def _reaction_observed_at(reaction: dict[str, Any], fallback: datetime) -> datet
     raw = reaction.get("observed_at")
     if isinstance(raw, str) and raw:
         try:
-            return datetime.fromisoformat(raw)
+            return _conversation_db_time(datetime.fromisoformat(raw))
         except ValueError:
             return fallback
     return fallback
+
+
+def _conversation_db_time(value: datetime) -> datetime:
+    return (
+        as_seoul_datetime(value)
+        .astimezone(UTC)
+        .replace(tzinfo=None)
+    )
 
 
 def _recent_reply_signal_tone(session: Session, event: DoseEvent, *, lookback_days: int) -> tuple[str, str] | None:

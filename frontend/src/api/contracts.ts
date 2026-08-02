@@ -273,6 +273,13 @@ export interface ChatHistoryMessage {
   reaction: FeedbackReaction | null;
 }
 
+export interface ClientResponseTiming {
+  status: "running" | "completed" | "failed";
+  startedAtMonotonicMs: number;
+  firstResponseMs: number | null;
+  totalResponseMs: number | null;
+}
+
 export interface ClientChatHistoryMessage
   extends Omit<ChatHistoryMessage, "sort_sequence"> {
   sort_sequence: number | null;
@@ -280,6 +287,7 @@ export interface ClientChatHistoryMessage
   delivery_status?: "sending" | "failed";
   delivery_error?: string | null;
   delivery_retryable?: boolean;
+  response_timing?: ClientResponseTiming;
 }
 
 export interface ChatHistoryDay {

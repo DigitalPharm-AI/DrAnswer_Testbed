@@ -4,7 +4,6 @@ from shared.schemas import SideEffectRecordRequest, SideEffectRecordView
 from shared.settings import Settings
 from system_app.models import SideEffectRecord
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 

@@ -40,6 +40,7 @@ from system_app.services.ui_policy_service import (
     MISSED_DOSE_CONVERSATION,
     ui_policy_enabled,
 )
+from system_app.services.ui_time import as_simulation_naive_datetime
 
 settings = get_settings()
 MISSED_DOSE_PENDING_REPLY_HINTS = (
@@ -287,14 +288,14 @@ def build_conversation_context(
     rows = session.scalars(
         select(ChatMessage)
         .where(ChatMessage.patient_id == settings.patient_id)
-        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+        .order_by(ChatMessage.id.desc())
         .limit(limit)
     ).all()
     return [
         ChatTurn(
             role=row.role if row.role in {"user", "assistant", "system"} else "user",
             content=row.content,
-            created_at=row.created_at,
+            created_at=row.conversation_at,
         )
         for row in reversed(rows)
     ]
@@ -440,7 +441,9 @@ def mark_dose_taken_command(session: Session, dose_event_id: int, taken_at: date
         return None
     if event.status == "taken" and event.taken_at is not None:
         return event
-    event.taken_at = taken_at or ensure_clock(session).current_time
+    event.taken_at = as_simulation_naive_datetime(
+        taken_at or ensure_clock(session).current_time
+    )
     if event.status == "missed":
         event.note = "late_taken_after_miss"
     event.status = "taken"

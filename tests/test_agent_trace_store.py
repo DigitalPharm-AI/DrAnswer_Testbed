@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
@@ -12,6 +13,7 @@ from agent_app.llm.messages import model_output_from_ai_message
 from agent_app.observability.evidence import TraceEvidenceContext
 from agent_app.observability.model_calls import (
     capture_model_calls,
+    record_embedding_observation,
     response_with_model_calls,
     traced_model_ainvoke,
 )
@@ -214,6 +216,25 @@ async def test_model_call_observation_keeps_decision_evidence_internal():
     class FakeModel:
         model = "test-model"
         temperature = 0.2
+        kwargs = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_medication_dose_status",
+                        "description": "Read dose status",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                        },
+                    },
+                }
+            ]
+        }
+        additional_model_request_fields = {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "medium"},
+        }
 
         async def ainvoke(self, _messages):
             return AIMessage(
@@ -229,7 +250,21 @@ async def test_model_call_observation_keeps_decision_evidence_internal():
     with capture_model_calls(observations):
         await traced_model_ainvoke(
             FakeModel(),
-            [AIMessage(content="private input")],
+            [
+                SystemMessage(content="system routing prompt"),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "message": "private input",
+                            "context": {
+                                "patient_context_snapshot": {
+                                    "medication_count": 4,
+                                }
+                            },
+                        }
+                    )
+                ),
+            ],
             name="test.generation",
             prompt_version_id="prompt-v1",
         )
@@ -241,12 +276,39 @@ async def test_model_call_observation_keeps_decision_evidence_internal():
         "input": 21,
         "output": 7,
     }
+    assert observation["model_parameters"]["thinking_type"] == (
+        "adaptive"
+    )
+    assert observation["model_parameters"]["reasoning_effort"] == (
+        "medium"
+    )
     assert observation["decision_evidence"]["public_output"] == (
         '{"message":"private output"}'
     )
     assert observation["decision_evidence"][
         "private_reasoning"
     ]["retained"] is False
+    assert observation["model_call_index"] == 1
+    assert observation["route_decision"] == {
+        "reason_code": "MODEL_FINAL_RESPONSE",
+        "outcome": "final_response",
+        "selected_tool_names": [],
+    }
+    composition = observation["input_composition"]
+    assert composition["measurement_version"] == (
+        "input_composition_v1"
+    )
+    assert composition["provider_input_tokens"] == 21
+    assert composition["message_count"] == 2
+    assert composition["components"]["system_prompt"][
+        "characters"
+    ] == len("system routing prompt")
+    assert composition["payload_components"]["context"][
+        "characters"
+    ] > 0
+    assert composition["tool_schema"]["count"] == 1
+    assert composition["tool_schema"]["estimated_tokens"] > 0
+    assert "private input" not in json.dumps(composition)
     attached = response_with_model_calls(
         AgentResponse(
             trace_id="trace-model-call",
@@ -267,6 +329,56 @@ async def test_model_call_observation_keeps_decision_evidence_internal():
             "model_call_observations"
         ]
     )
+
+
+def test_embedding_observation_is_persisted_as_embedding_step():
+    store, factory = _store()
+    trace_id = "trace-embedding-observation"
+    request = ChatSyncRequest(
+        request_id="req_0000000000000191",
+        message_id="user_msg_0000000000000191",
+        patient_id="patient_0000000000000191",
+        requested_return_type="text",
+        message="비식별 테스트 문장",
+        message_at=datetime(2026, 8, 2, 9, 30, tzinfo=UTC),
+    )
+    observations: list[dict] = []
+    started_at = datetime(2026, 8, 2, 9, 30, tzinfo=UTC)
+    with capture_model_calls(observations):
+        record_embedding_observation(
+            name="cohere_reference_embedding",
+            provider="bedrock_cohere",
+            model_id="cohere.embed-multilingual-v3",
+            region="ap-northeast-1",
+            input_type="search_query",
+            texts=["비식별 테스트 문장"],
+            dimensions=1024,
+            embeddings=[[0.0] * 1024],
+            started_at=started_at,
+            completed_at=started_at,
+            latency_ms=12,
+            status="COMPLETED",
+        )
+
+    store.start_chat(request, trace_id=trace_id, api_path="/agent/sync/chat")
+    store.record_model_calls(
+        trace_id=trace_id,
+        observations=observations,
+    )
+
+    with factory() as session:
+        step = session.scalar(
+            select(AgentRunStep).where(
+                AgentRunStep.trace_id == trace_id,
+                AgentRunStep.step_type == "embedding",
+            )
+        )
+
+    assert step is not None
+    assert step.observation_type == "embedding"
+    assert step.provider == "bedrock_cohere"
+    assert step.model_id == "cohere.embed-multilingual-v3"
+    assert "비식별 테스트 문장" not in step.metadata_json
 
 
 async def test_trace_encrypts_selection_and_model_decision_evidence():
@@ -345,7 +457,7 @@ async def test_trace_encrypts_selection_and_model_decision_evidence():
             agent_name="nutrition_management_agent",
             prompt_version_id="prompt-v1",
             decision_type="tool_call",
-            structured_payload={},
+            structured_payload={"routing_mode": "delegated_agent"},
             human_summary="후보를 확인했습니다.",
         ),
         observations,
@@ -410,6 +522,18 @@ async def test_trace_encrypts_selection_and_model_decision_evidence():
     assert model_evidence["tool_calls"][0]["arguments"][
         "food_queries"
     ] == ["마카롱_호박고구마 마카롱"]
+    model_metadata = json.loads(model_step.metadata_json)
+    assert model_metadata["model_call_index"] == 1
+    assert model_metadata["workflow_route"] == "delegated_agent"
+    assert model_metadata["decision_reason_code"] == (
+        "STRUCTURED_SELECTION_AUTHORITATIVE_FOOD_LOOKUP"
+    )
+    assert model_metadata["route_decision"]["outcome"] == (
+        "tool_call"
+    )
+    assert model_metadata["input_composition"][
+        "measurement_version"
+    ] == "input_composition_v1"
 
 
 def test_trace_retries_append_observations_and_keep_field_semantics():
@@ -538,3 +662,181 @@ def test_trace_retries_append_observations_and_keep_field_semantics():
     assert [row.trace_attempt_number for row in executions] == [1, 2]
     assert all(row.latency_ms == 17 for row in executions)
     assert all(row.attempt_count == 2 for row in executions)
+
+
+def test_trace_uses_runtime_tool_observation_after_response_overlay():
+    store, factory = _store()
+    trace_id = "trace-runtime-tool-observation"
+    request = ChatSyncRequest(
+        request_id="req_0000000000000201",
+        message_id="user_msg_0000000000000201",
+        patient_id="patient_0000000000000201",
+        requested_return_type="text",
+        message="survey response",
+        message_at=datetime(2026, 7, 31, 9, 30, tzinfo=UTC),
+    )
+    started_at = datetime(2026, 7, 31, 9, 30, 1)
+    completed_at = datetime(2026, 7, 31, 9, 30, 1, 23_000)
+    tool_observations = [
+        {
+            "observation_id": "runtime-tool-observation-1",
+            "call": {
+                "id": "runtime-tool-call-1",
+                "name": "get_pro_ctcae_questionnaire",
+                "arguments": {"symptom_text": "private symptom"},
+            },
+            "result": {
+                "tool_name": "get_pro_ctcae_questionnaire",
+                "status": "success",
+                "response": {"matched": True},
+                "elapsed_ms": 23,
+                "attempt_count": 1,
+                "retryable": False,
+            },
+            "started_at": started_at.isoformat(),
+            "completed_at": completed_at.isoformat(),
+            "latency_ms": 23,
+        }
+    ]
+    store.start_chat(
+        request,
+        trace_id=trace_id,
+        api_path="/agent/sync/chat",
+    )
+    store.complete_chat(
+        request,
+        AgentResponse(
+            trace_id=trace_id,
+            agent_name="pro_ctcae_survey_state",
+            prompt_version_id="pro_ctcae_survey_v1",
+            decision_type="pro_ctcae_questionnaire",
+            structured_payload={
+                "final_answer_source": "deterministic_survey_state",
+            },
+            human_summary="survey question",
+        ),
+        tool_call_observations=tool_observations,
+    )
+
+    with factory() as session:
+        trace = session.scalar(
+            select(AgentRunTrace).where(
+                AgentRunTrace.trace_id == trace_id
+            )
+        )
+        execution = session.scalar(
+            select(AgentToolExecution).where(
+                AgentToolExecution.trace_id == trace_id
+            )
+        )
+        step = session.scalar(
+            select(AgentRunStep).where(
+                AgentRunStep.trace_id == trace_id,
+                AgentRunStep.step_type == "tool_call",
+            )
+        )
+
+    assert trace is not None
+    assert trace.tool_count == 1
+    assert json.loads(trace.metadata_json)["tool_timing_source"] == (
+        "runtime_observation"
+    )
+    assert execution is not None
+    assert execution.started_at == started_at
+    assert execution.completed_at == completed_at
+    assert execution.latency_ms == 23
+    assert step is not None
+    assert step.observation_id == "runtime-tool-observation-1"
+    assert step.started_at == started_at
+    assert step.completed_at == completed_at
+
+
+def test_failed_trace_persists_write_tool_runtime_observation() -> None:
+    store, factory = _store()
+    trace_id = "trace-failed-write-tool-observation"
+    request = ChatSyncRequest(
+        request_id="req_0000000000000202",
+        message_id="user_msg_0000000000000202",
+        patient_id="patient_0000000000000202",
+        requested_return_type="text",
+        message="변경",
+        message_at=datetime(2026, 7, 31, 9, 30, tzinfo=UTC),
+    )
+    observation = {
+        "observation_id": "failed-write-tool-observation-1",
+        "call": {
+            "id": "failed-write-tool-call-1",
+            "name": "change_notification_policy",
+            "arguments": {
+                "approval_key": "private-approval-key",
+            },
+        },
+        "result": {
+            "tool_name": "change_notification_policy",
+            "status": "error",
+            "response": {
+                "request_id": "private-backend-request-id",
+            },
+            "error": "POLICY_EFFECTIVE_DATE_RANGE_TOO_LARGE",
+            "elapsed_ms": 102,
+            "attempt_count": 1,
+            "retryable": False,
+        },
+        "started_at": "2026-07-31T09:30:01",
+        "completed_at": "2026-07-31T09:30:01.102000",
+        "latency_ms": 102,
+    }
+    store.start_chat(
+        request,
+        trace_id=trace_id,
+        api_path="/agent/sync/chat",
+    )
+    store.fail_chat(
+        trace_id=trace_id,
+        error_code="TOOL_EXECUTION_FAILED",
+        error_message="write tool failed",
+        retryable=False,
+        tool_call_observations=[observation],
+    )
+
+    with factory() as session:
+        trace = session.scalar(
+            select(AgentRunTrace).where(
+                AgentRunTrace.trace_id == trace_id
+            )
+        )
+        execution = session.scalar(
+            select(AgentToolExecution).where(
+                AgentToolExecution.trace_id == trace_id
+            )
+        )
+        steps = list(
+            session.scalars(
+                select(AgentRunStep)
+                .where(AgentRunStep.trace_id == trace_id)
+                .order_by(AgentRunStep.sequence)
+            ).all()
+        )
+
+    assert trace is not None
+    assert trace.status == "FINAL_FAILED"
+    assert trace.tool_count == 1
+    assert json.loads(trace.metadata_json)["tool_timing_source"] == (
+        "runtime_observation"
+    )
+    assert execution is not None
+    assert execution.tool_name == "change_notification_policy"
+    assert execution.status == "ERROR"
+    assert execution.error_code == (
+        "POLICY_EFFECTIVE_DATE_RANGE_TOO_LARGE"
+    )
+    assert execution.latency_ms == 102
+    assert [step.step_type for step in steps][-2:] == [
+        "tool_call",
+        "final_response",
+    ]
+    tool_step = steps[-2]
+    assert tool_step.observation_id == "failed-write-tool-observation-1"
+    assert tool_step.status == "ERROR"
+    assert "private-approval-key" not in tool_step.metadata_json
+    assert "private-backend-request-id" not in tool_step.metadata_json

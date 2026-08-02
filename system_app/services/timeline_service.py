@@ -92,6 +92,7 @@ def add_chat_message(
         processing_status=processing_status,
         created_at=current_time,
         display_at=display_at,
+        conversation_at=display_at,
         related_dose_event_id=related_dose_event_id,
         metadata_json=dump_json(resolved_metadata),
     )
@@ -109,7 +110,7 @@ def chat_message_for_conversation_alert(
     rows = session.scalars(
         select(ChatMessage)
         .where(ChatMessage.category.in_(CONVERSATION_ALERT_CHAT_CATEGORIES))
-        .order_by(desc(ChatMessage.created_at), desc(ChatMessage.id))
+        .order_by(desc(ChatMessage.id))
         .limit(100)
     ).all()
     for row in rows:

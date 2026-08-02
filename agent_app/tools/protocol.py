@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
-from shared.tool_names import ALL_TOOL_NAMES
 from shared.redaction import redact_for_logging, redacted_clinical_text_label
 from shared.schemas import ToolCallResult
+from shared.tool_names import ALL_TOOL_NAMES
 
 ALLOWED_TOOL_NAMES = set(ALL_TOOL_NAMES)
 

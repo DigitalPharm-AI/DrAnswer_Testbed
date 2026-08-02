@@ -22,8 +22,7 @@ from system_app.routes.ui_feedback import (
     create_ui_feedback_router,
 )
 from system_app.services import agent_client as agent_client_module
-from system_app.services.agent_client import AgentClient
-from system_app.services.agent_client import AgentServiceError
+from system_app.services.agent_client import AgentClient, AgentServiceError
 from system_app.services.ui_feedback_service import feedback_status_from_metadata
 from tests.helpers import build_system_engine
 

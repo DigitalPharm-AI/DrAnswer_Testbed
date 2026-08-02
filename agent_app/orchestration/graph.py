@@ -8,8 +8,15 @@ from langgraph.graph import END, StateGraph
 
 from agent_app.agents import DailyPatternAgent, MissedDoseAgent, MultiturnChatAgent
 from agent_app.errors import AgentExecutionError
-from agent_app.providers.base import BaseLLMProvider
+from agent_app.integration.food_selection_payloads import (
+    food_portion_input_request,
+)
 from agent_app.orchestration.state import AgentGraphState
+from agent_app.providers.base import BaseLLMProvider
+from agent_app.tools.budget import (
+    response_with_tool_execution_budget,
+    tool_execution_budget_scope,
+)
 from agent_app.tools.protocol import AgentToolExecutorProtocol
 from agent_app.tools.runtime import ToolRuntime
 from shared.schemas import AgentResponse
@@ -79,6 +86,21 @@ class AgentLangGraphNativeOrchestrator:
         *,
         trace_id: str | None = None,
     ) -> AgentResponse:
+        with tool_execution_budget_scope() as budget:
+            response = await self._invoke_without_budget(
+                request_kind,
+                payload,
+                trace_id=trace_id,
+            )
+            return response_with_tool_execution_budget(response, budget)
+
+    async def _invoke_without_budget(
+        self,
+        request_kind: str,
+        payload: dict[str, Any],
+        *,
+        trace_id: str | None = None,
+    ) -> AgentResponse:
         trace_id = trace_id or str(uuid4())
         started = perf_counter()
         try:
@@ -111,46 +133,62 @@ class AgentLangGraphNativeOrchestrator:
         record_arguments: dict[str, Any],
         selection_id: str,
         origin_message_id: str,
+        require_portion_input: bool = True,
+    ) -> AgentResponse:
+        with tool_execution_budget_scope() as budget:
+            response = await self._continue_nutrition_food_selection_without_budget(
+                trace_id=trace_id,
+                payload=payload,
+                record_arguments=record_arguments,
+                selection_id=selection_id,
+                origin_message_id=origin_message_id,
+                require_portion_input=require_portion_input,
+            )
+            return response_with_tool_execution_budget(response, budget)
+
+    async def _continue_nutrition_food_selection_without_budget(
+        self,
+        *,
+        trace_id: str,
+        payload: dict[str, Any],
+        record_arguments: dict[str, Any],
+        selection_id: str,
+        origin_message_id: str,
+        require_portion_input: bool = True,
     ) -> AgentResponse:
         """Continue a Backend-validated food card without another LLM lookup."""
 
-        response = await (
-            self.multiturn_chat_agent
-            .nutrition_management_agent
-            .continue_with_tool_calls(
-                trace_id,
-                payload,
-                tool_calls=[
-                    {
-                        "id": (
-                            "trusted_food_selection_approval"
-                        ),
-                        "name": REQUEST_RECORD_APPROVAL,
-                        "arguments": {
-                            "action_name": (
-                                CREATE_NUTRITION_MEAL_RECORD
-                            ),
-                            "record_arguments": record_arguments,
-                        },
-                    }
-                ],
-            )
+        continuation_payload = dict(payload)
+        if require_portion_input:
+            continuation_context = dict(payload.get("context") or {})
+            continuation_context["record_input_request"] = {
+                "action_name": CREATE_NUTRITION_MEAL_RECORD,
+                "missing_fields": ["foods[].portion"],
+                "input_request": food_portion_input_request(list(record_arguments.get("foods") or [])),
+            }
+            continuation_payload["context"] = continuation_context
+
+        response = await self.multiturn_chat_agent.nutrition_management_agent.continue_with_tool_calls(
+            trace_id,
+            continuation_payload,
+            tool_calls=[
+                {
+                    "id": ("trusted_food_selection_approval"),
+                    "name": REQUEST_RECORD_APPROVAL,
+                    "arguments": {
+                        "action_name": (CREATE_NUTRITION_MEAL_RECORD),
+                        "record_arguments": record_arguments,
+                    },
+                }
+            ],
         )
-        response.structured_payload[
-            "selection_state_resolution"
-        ] = {
-            "reason_code": (
-                "TRUSTED_FOOD_SELECTION_STATE_REUSED"
-            ),
+        response.structured_payload["selection_state_resolution"] = {
+            "reason_code": ("TRUSTED_FOOD_SELECTION_STATE_REUSED"),
             "selection_id": selection_id,
             "origin_message_id": origin_message_id,
             "candidate_reused": True,
             "search_repeated": False,
         }
-        response.structured_payload["routing_mode"] = (
-            "trusted_food_selection_continuation"
-        )
-        response.structured_payload["final_answer_source"] = (
-            "deterministic_selection_state"
-        )
+        response.structured_payload["routing_mode"] = "trusted_food_selection_continuation"
+        response.structured_payload["final_answer_source"] = "deterministic_selection_state"
         return response

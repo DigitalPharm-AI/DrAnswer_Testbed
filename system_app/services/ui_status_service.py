@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import TimeoutError as SqlAlchemyTimeoutError
 from sqlalchemy.orm import Session
 
+from shared.backend_read_contract import BACKEND_READ_CONTRACT_VERSION
 from shared.redaction import stable_hash
 from shared.settings import get_settings
 
@@ -47,7 +48,7 @@ class _AgentReadinessPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: Literal["ready", "not_ready"]
-    contract_version: Literal["1.3"]
+    contract_version: str
     components: _AgentReadinessComponents
 
 
@@ -171,7 +172,7 @@ def _agent_readiness_lock() -> asyncio.Lock:
     return _agent_readiness_cache_lock
 
 
-def _reset_agent_readiness_cache() -> None:
+def reset_agent_readiness_cache() -> None:
     """Clear process-local status state for deterministic tests."""
 
     global _agent_readiness_cache
@@ -296,6 +297,16 @@ async def _probe_agent_readiness(
             status="incompatible",
             evidence=("AGENT_READINESS_SCHEMA_INCOMPATIBLE",),
         )
+    if payload.contract_version != BACKEND_READ_CONTRACT_VERSION:
+        return _ServiceProbe(
+            status="incompatible",
+            evidence=("AGENT_READINESS_CONTRACT_INCOMPATIBLE",),
+        )
+
+    contract_evidence = (
+        "AGENT_READINESS_CONTRACT_"
+        + BACKEND_READ_CONTRACT_VERSION.replace(".", "_")
+    )
 
     components = (
         ("agent_database", payload.components.agent_database),
@@ -329,7 +340,7 @@ async def _probe_agent_readiness(
             status="ready",
             evidence=(
                 "AGENT_READINESS_HTTP_OK",
-                "AGENT_READINESS_CONTRACT_1_3",
+                contract_evidence,
                 "GENERATION_PROVIDER_OK",
             ),
         )
@@ -342,7 +353,7 @@ async def _probe_agent_readiness(
             status="not_ready",
             evidence=(
                 "AGENT_READINESS_HTTP_503",
-                "AGENT_READINESS_CONTRACT_1_3",
+                contract_evidence,
                 *failed_codes,
             ),
         )

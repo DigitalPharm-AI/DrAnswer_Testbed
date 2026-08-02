@@ -13,6 +13,7 @@ from system_app.schema import migrate_system_schema
 
 def main() -> int:
     settings = get_settings()
+    settings.require_system_migration_postgresql()
     database_url = settings.system_migration_database_url.strip()
     if not database_url:
         raise RuntimeError(

@@ -17,8 +17,10 @@ from agent_app.routes.tasks import (
 from shared.openapi_schema import (
     openapi_components,
     referenced_schemas,
+    remove_openapi_response,
     selected_openapi_paths,
 )
+
 AGENT_V13_CHAT_PATHS = (
     SYNC_CHAT_PATH,
     FEEDBACK_API_PATH,
@@ -38,7 +40,7 @@ def build_agent_v13_chat_openapi(app: FastAPI) -> dict[str, Any]:
 
     source = app.openapi()
     paths = selected_openapi_paths(source, AGENT_V13_CHAT_PATHS)
-    _remove_v13_validation_responses(paths)
+    remove_openapi_response(paths, AGENT_V13_ACTIVE_PATHS, "422")
     keep_only_ndjson_chat_success(
         paths,
         sync_chat_path=SYNC_CHAT_PATH,
@@ -100,7 +102,7 @@ def build_agent_v13_async_medication_openapi(
         source,
         AGENT_V13_ASYNC_MEDICATION_PATHS,
     )
-    _remove_v13_validation_responses(paths)
+    remove_openapi_response(paths, AGENT_V13_ACTIVE_PATHS, "422")
     schemas = referenced_schemas(
         paths,
         source.get("components", {}).get("schemas", {}),
@@ -141,7 +143,7 @@ def install_agent_v13_openapi(app: FastAPI) -> None:
         info["version"] = "1.3"
         info["title"] = "닥터앤서 AI Server v1.3 연동 API"
         paths = schema.get("paths", {})
-        _remove_v13_validation_responses(paths)
+        remove_openapi_response(paths, AGENT_V13_ACTIVE_PATHS, "422")
         keep_only_ndjson_chat_success(
             paths,
             sync_chat_path=SYNC_CHAT_PATH,
@@ -152,16 +154,3 @@ def install_agent_v13_openapi(app: FastAPI) -> None:
         return schema
 
     app.openapi = contract_aware_openapi
-
-
-def _remove_v13_validation_responses(
-    paths: dict[str, Any],
-) -> None:
-    for path in AGENT_V13_ACTIVE_PATHS:
-        responses = (
-            paths.get(path, {})
-            .get("post", {})
-            .get("responses")
-        )
-        if isinstance(responses, dict):
-            responses.pop("422", None)

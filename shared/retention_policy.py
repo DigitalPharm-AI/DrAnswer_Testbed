@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-
 # Logs and Agent execution evidence have one fixed retention rule. 1095 days
 # is deliberately used instead of a calendar-year replacement so every row
 # receives the same deterministic expiry interval.

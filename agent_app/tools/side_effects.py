@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from shared.tool_names import GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE
 from shared.schemas import ToolCallResult
+from shared.tool_names import GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE
 
 
 def positive_side_effect_lookup(result: ToolCallResult) -> bool:
@@ -11,16 +11,66 @@ def positive_side_effect_lookup(result: ToolCallResult) -> bool:
         result.tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT
         and result.status == "success"
         and result.response.get("suspected") is True
+        and result.response.get("requires_clarification") is not True
     )
 
 
-def ae_tool_call_from_lookup(tool_call: dict[str, Any], result: ToolCallResult, payload: dict[str, Any]) -> dict[str, Any]:
-    arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
-    symptom_text = _text(arguments.get("symptom_text")) or _text(payload.get("message")) or _text(result.response.get("evidence")) or "증상"
-    return {
-        "name": GET_PRO_CTCAE_QUESTIONNAIRE,
-        "arguments": {"symptom_text": symptom_text},
-    }
+def ae_tool_calls_from_lookup(
+    result: ToolCallResult,
+    *,
+    source_tool_call: dict[str, Any] | None = None,
+    payload: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    assessments = result.response.get("assessments")
+    if not isinstance(assessments, list):
+        source_arguments = (
+            source_tool_call.get("arguments")
+            if isinstance(source_tool_call, dict)
+            and isinstance(source_tool_call.get("arguments"), dict)
+            else {}
+        )
+        symptom_text = (
+            _text(source_arguments.get("symptom_text"))
+            or _text((payload or {}).get("message"))
+        )
+        assessments = (
+            [
+                {
+                    "match_status": "MATCHED",
+                    "suspected": result.response.get("suspected"),
+                    "symptom_text": symptom_text,
+                }
+            ]
+            if symptom_text
+            else []
+        )
+    calls: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for assessment in assessments:
+        if (
+            not isinstance(assessment, dict)
+            or assessment.get("match_status") != "MATCHED"
+            or assessment.get("suspected") is not True
+        ):
+            continue
+        symptom_text = _text(assessment.get("symptom_text"))
+        concept = assessment.get("matched_concept")
+        concept_id = (
+            _text(concept.get("concept_id"))
+            if isinstance(concept, dict)
+            else ""
+        )
+        fingerprint = concept_id or symptom_text.casefold()
+        if not symptom_text or fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        calls.append(
+            {
+                "name": GET_PRO_CTCAE_QUESTIONNAIRE,
+                "arguments": {"symptom_text": symptom_text},
+            }
+        )
+    return calls
 
 
 def side_effect_pro_ctcae_summary(results: list[ToolCallResult]) -> str:

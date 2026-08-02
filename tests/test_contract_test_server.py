@@ -17,7 +17,11 @@ from sqlalchemy.pool import NullPool
 
 from contract_test_server.callbacks import CallbackDispatcher
 from contract_test_server.config import ContractServerSettings
-from contract_test_server.main import create_app
+from contract_test_server.main import (
+    _split_stream_text,
+    _stream_ndjson_lines,
+    create_app,
+)
 from contract_test_server.storage import (
     CallbackInsert,
     ContractStore,
@@ -31,7 +35,6 @@ from shared.chat_contracts import ChatStreamEvent
 
 AGENT_TOKEN = "agent-token-" + ("a" * 32)
 CONTROL_TOKEN = "control-token-" + ("b" * 32)
-BACKEND_TOKEN = "backend-token-" + ("c" * 32)
 AUTH = {"Authorization": f"Bearer {AGENT_TOKEN}"}
 CONTROL_AUTH = {"X-Test-Control-Token": CONTROL_TOKEN}
 
@@ -162,6 +165,37 @@ def _ndjson_rows(response: httpx.Response) -> list[dict[str, object]]:
     ]
 
 
+@pytest.mark.asyncio
+async def test_ndjson_lines_are_yielded_as_separate_timed_chunks() -> None:
+    stream = _stream_ndjson_lines(
+        (b'{"status":"streaming"}\n', b'{"status":"completed"}\n'),
+        chunk_delay_seconds=0.05,
+    )
+    started = time.monotonic()
+    first = await anext(stream)
+    first_elapsed = time.monotonic() - started
+    second = await anext(stream)
+    second_elapsed = time.monotonic() - started
+
+    assert first == b'{"status":"streaming"}\n'
+    assert second == b'{"status":"completed"}\n'
+    assert first_elapsed < 0.04
+    assert second_elapsed >= 0.045
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
+
+
+def test_stream_text_is_split_without_loss() -> None:
+    text = "여러 델타를 이어 붙이면 최종 문장과 같아야 합니다."
+
+    chunks = _split_stream_text(text, chunk_count=4)
+
+    assert len(chunks) == 4
+    assert all(chunks)
+    assert "".join(chunks) == text
+    assert max(map(len, chunks)) - min(map(len, chunks)) <= 1
+
+
 def test_hold_mode_is_ready_without_backend_address(
     contract_database_url: str,
 ) -> None:
@@ -209,11 +243,22 @@ def test_chat_ndjson_and_terminal_only_replay(
     assert first.headers["content-type"].startswith("application/x-ndjson")
     assert first.headers["cache-control"] == "no-cache"
     assert first.headers["x-accel-buffering"] == "no"
+    assert "content-length" not in first.headers
     rows = _ndjson_rows(first)
-    assert [row["sequence"] for row in rows] == [0, 1]
-    assert [row["status"] for row in rows] == ["streaming", "completed"]
+    assert [row["sequence"] for row in rows] == list(range(5))
+    assert [row["status"] for row in rows] == [
+        "streaming",
+        "streaming",
+        "streaming",
+        "streaming",
+        "completed",
+    ]
     events = [ChatStreamEvent.model_validate(row) for row in rows]
     assert events[-1].message_type == return_type
+    assert events[-1].message is not None
+    assert "".join(event.delta or "" for event in events[:-1]) == (
+        events[-1].message.text
+    )
 
     replay_rows = _ndjson_rows(replay)
     assert len(replay_rows) == 1
@@ -498,7 +543,6 @@ def test_held_callback_is_not_auto_released_after_delivery_configuration(
     hold_settings = _settings(
         contract_database_url,
         backend_callback_base_url="https://backend.example",
-        backend_api_token=BACKEND_TOKEN,
     )
     with TestClient(create_app(hold_settings)) as client:
         client.post(
@@ -523,7 +567,6 @@ def test_held_callback_is_not_auto_released_after_delivery_configuration(
         contract_database_url,
         callback_mode="deliver",
         backend_callback_base_url="https://backend.example",
-        backend_api_token=BACKEND_TOKEN,
     )
     store = ContractStore(deliver_settings.contract_database_url)
     dispatcher = CallbackDispatcher(
@@ -543,7 +586,7 @@ def test_held_callback_is_not_auto_released_after_delivery_configuration(
     assert dispatcher.deliver_one().delivered is True
     assert len(calls) == 1
     assert calls[0].url.path == "/api/agent/async/missed-dose-results"
-    assert calls[0].headers["authorization"] == f"Bearer {BACKEND_TOKEN}"
+    assert calls[0].headers["authorization"] == f"Bearer {AGENT_TOKEN}"
     assert store.list_callbacks()[0]["status"] == "completed"
 
 
@@ -554,7 +597,6 @@ def test_policy_callback_requires_correlated_http_status_and_ack(
         contract_database_url,
         callback_mode="deliver",
         backend_callback_base_url="https://backend.example",
-        backend_api_token=BACKEND_TOKEN,
         callback_max_attempts=1,
     )
     app = create_app(settings)
@@ -598,7 +640,6 @@ def test_permanent_callback_http_error_is_not_retried(
         contract_database_url,
         callback_mode="deliver",
         backend_callback_base_url="https://backend.example",
-        backend_api_token=BACKEND_TOKEN,
     )
     with TestClient(create_app(settings)) as client:
         client.post(
@@ -628,7 +669,6 @@ def test_invalid_ack_retries_byte_identical_payload_and_accepts_duplicate_ack(
         contract_database_url,
         callback_mode="deliver",
         backend_callback_base_url="https://backend.example",
-        backend_api_token=BACKEND_TOKEN,
         callback_max_attempts=2,
     )
     with TestClient(create_app(settings)) as client:
@@ -683,7 +723,6 @@ def test_callback_claim_lease_prevents_live_worker_recovery(
         contract_database_url,
         callback_mode="deliver",
         backend_callback_base_url="https://backend.example",
-        backend_api_token=BACKEND_TOKEN,
     )
     with TestClient(create_app(settings)) as client:
         client.post(

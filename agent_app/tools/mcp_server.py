@@ -12,6 +12,15 @@ from agent_app import trace_logging
 from agent_app.ae_pro_ctcae import (
     ProCtcaeReferenceUnavailable,
     match_pro_ctcae_symptom,
+    match_pro_ctcae_symptom_semantic,
+    pro_ctcae_result_for_concept,
+    pro_ctcae_source_version,
+)
+from agent_app.embeddings.base import EmbeddingProvider
+from agent_app.embeddings.factory import get_embedding_provider
+from agent_app.embeddings.semantic_verifier import (
+    LlmSemanticMatchVerifier,
+    SemanticMatchVerifier,
 )
 from agent_app.integration.backend_client import (
     BackendV13Client,
@@ -19,6 +28,19 @@ from agent_app.integration.backend_client import (
     BackendV13TransportError,
 )
 from agent_app.llm.context import context_value
+from agent_app.persistence.adverse_reaction_repository import (
+    AdverseReactionLookup,
+    AgentAdverseReactionRepository,
+)
+from agent_app.persistence.symptom_concept_repository import (
+    ClinicalSymptomConceptMatch,
+    SymptomConceptRepository,
+)
+from agent_app.providers.base import BaseLLMProvider
+from agent_app.tools.approval_display import (
+    approval_display,
+    project_record_arguments_to_action_schema,
+)
 from agent_app.tools.backend_query import BackendQueryTools
 from agent_app.tools.backend_write import (
     MODEL_WRITE_ARGUMENTS,
@@ -26,8 +48,12 @@ from agent_app.tools.backend_write import (
     BackendWriteInvocationContext,
     is_backend_v13_sync_write,
 )
+from agent_app.tools.medication_dose_resolution import (
+    resolve_dose_target,
+)
 from agent_app.tools.medication_side_effects import (
     assess_side_effect_from_snapshot,
+    assess_side_effect_from_snapshot_semantic,
     side_effect_record_draft_from_snapshot,
 )
 from agent_app.tools.policy import DEFERRED_POLICY_TOOL_NAMES, deferred_policy_tool_result
@@ -50,14 +76,13 @@ from shared.schemas import (
     ToolCallResult,
 )
 from shared.settings import get_settings
+from shared.tool_argument_validation import tool_argument_validation_error
 from shared.tool_catalog import ToolCatalog
 from shared.tool_confirmations import ConfirmationActionRegistry
 from shared.tool_names import (
     CHANGE_NOTIFICATION_POLICY,
     CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     CREATE_NUTRITION_MEAL_RECORD,
-    DELETE_NUTRITION_FOOD_RECORD,
-    DELETE_NUTRITION_MEAL_RECORD,
     GET_MEDICATION_DOSE_STATUS,
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     GET_NOTIFICATION_POLICIES,
@@ -71,8 +96,6 @@ from shared.tool_names import (
     REQUEST_RECORD_APPROVAL,
     SEARCH_NUTRITION_FOOD_CANDIDATES,
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
-    UPDATE_NUTRITION_FOOD_RECORD,
-    UPDATE_NUTRITION_MEAL_RECORD,
     UPSERT_NUTRITION_PREFERENCE_FACT,
 )
 from shared.tool_permissions import allowed_tool_names_for_source, permission_denied_result, validate_tool_permission
@@ -81,540 +104,172 @@ JSON_RPC_INVALID_REQUEST = -32600
 JSON_RPC_METHOD_NOT_FOUND = -32601
 
 
-def _project_record_arguments_to_action_schema(
-    action_name: str,
-    arguments: dict[str, Any],
+def _validated_symptom_mentions(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list) or not 1 <= len(value) <= 5:
+        return []
+    mentions: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in value:
+        if not isinstance(raw, dict) or set(raw).difference(
+            {"text", "onset_text"}
+        ):
+            return []
+        text_value = str(raw.get("text") or "").strip()
+        onset_text = str(raw.get("onset_text") or "").strip()
+        if not text_value:
+            return []
+        fingerprint = (text_value.casefold(), onset_text.casefold())
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        mentions.append({"text": text_value, "onset_text": onset_text})
+    return mentions
+
+
+def _symptom_concept_payload(
+    concept: ClinicalSymptomConceptMatch,
 ) -> dict[str, Any]:
-    """Keep only fields declared by the selected canonical write action."""
-
-    action_tools = ToolCatalog.tools_for(action_name)
-    if len(action_tools) != 1:
-        raise ValueError("record_approval_action_schema_missing")
-    input_schema = action_tools[0].get("inputSchema")
-    if not isinstance(input_schema, dict):
-        raise ValueError("record_approval_action_schema_missing")
-    projected = _project_value_to_schema(arguments, input_schema)
-    if not isinstance(projected, dict):
-        raise ValueError("record_approval_arguments_invalid")
-    return projected
-
-
-def _project_value_to_schema(value: Any, schema: dict[str, Any]) -> Any:
-    schema_type = schema.get("type")
-    if schema_type == "object" and isinstance(value, dict):
-        properties = schema.get("properties")
-        if not isinstance(properties, dict):
-            return {}
-        return {
-            key: _project_value_to_schema(child, properties[key])
-            for key, child in value.items()
-            if key in properties and isinstance(properties[key], dict)
-        }
-    if schema_type == "array" and isinstance(value, list):
-        item_schema = schema.get("items")
-        if not isinstance(item_schema, dict):
-            return list(value)
-        return [
-            _project_value_to_schema(item, item_schema)
-            for item in value
-        ]
-    return value
-
-
-def _approval_display(
-    action_name: str,
-    arguments: dict[str, Any],
-    *,
-    display_context: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build the non-secret approval card owned by the AI Server."""
-
-    if action_name == CREATE_MEDICATION_SIDE_EFFECT_RECORD:
-        display = {
-            "title": "부작용 평가 기록",
-            "question": "다음 부작용 평가 결과를 기록할까요?",
-            "tables": [
-                {
-                    "table_title": None,
-                    "rows": _side_effect_approval_rows(
-                        arguments,
-                        display_context=display_context,
-                    ),
-                }
-            ],
-            "action_label": "기록",
-        }
-    elif action_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
-        display = {
-            "title": "복약 완료 기록",
-            "question": "선택한 복약 일정을 복약 완료로 기록할까요?",
-            "action_label": "기록",
-        }
-    elif action_name == CREATE_NUTRITION_MEAL_RECORD:
-        display = {
-            "title": "식사 기록",
-            "question": "다음 식사 내용을 기록할까요?",
-            "tables": [
-                {
-                    "table_title": None,
-                    "rows": _nutrition_meal_approval_rows(arguments),
-                }
-            ],
-            "action_label": "기록",
-        }
-    elif action_name == UPDATE_NUTRITION_MEAL_RECORD:
-        display = {
-            "title": "식사 기록 수정",
-            "question": "확인한 내용으로 식사 기록을 수정할까요?",
-            "action_label": "수정",
-        }
-    elif action_name == DELETE_NUTRITION_MEAL_RECORD:
-        display = {
-            "title": "식사 기록 삭제",
-            "question": "선택한 식사 기록을 삭제할까요?",
-            "action_label": "삭제",
-        }
-    elif action_name == UPDATE_NUTRITION_FOOD_RECORD:
-        display = {
-            "title": "음식 기록 수정",
-            "question": "확인한 내용으로 음식 기록을 수정할까요?",
-            "action_label": "수정",
-        }
-    elif action_name == DELETE_NUTRITION_FOOD_RECORD:
-        display = {
-            "title": "음식 기록 삭제",
-            "question": "선택한 음식 기록을 삭제할까요?",
-            "action_label": "삭제",
-        }
-    elif action_name == CHANGE_NOTIFICATION_POLICY:
-        keep = str(arguments.get("decision") or "") == "keep"
-        display = {
-            "title": "알림 정책 확인",
-            "question": (
-                "현재 알림 정책을 유지할까요?"
-                if keep
-                else "확인한 내용으로 알림 정책을 변경할까요?"
-            ),
-            "action_label": "유지" if keep else "변경",
-        }
-    else:
-        display = {
-            "title": "기록 확인",
-            "question": "확인한 내용을 적용할까요?",
-            "action_label": "적용",
-        }
-    return _with_approval_time_rows(
-        display,
-        action_name=action_name,
-        arguments=arguments,
-        display_context=display_context,
-    )
-
-
-def _with_approval_time_rows(
-    display: dict[str, Any],
-    *,
-    action_name: str,
-    arguments: dict[str, Any],
-    display_context: dict[str, Any] | None,
-) -> dict[str, Any]:
-    context = display_context or {}
-    requested_at = _display_datetime(context.get("requested_at"))
-    target_time = _record_target_time(
-        action_name,
-        arguments,
-        display_context=context,
-    )
-    time_rows = [
-        {
-            "column": "기록 요청 시간",
-            "value": requested_at or "확인되지 않음",
-        },
-        {
-            "column": "기록 대상 시간",
-            "value": target_time or "확인되지 않음",
-        },
-    ]
-
-    tables = display.get("tables")
-    normalized_tables = (
-        [
-            {
-                **table,
-                "rows": list(table.get("rows") or []),
-            }
-            for table in tables
-            if isinstance(table, dict)
-        ]
-        if isinstance(tables, list)
-        else []
-    )
-    if normalized_tables:
-        normalized_tables[0]["rows"].extend(time_rows)
-    else:
-        normalized_tables = [
-            {
-                "table_title": None,
-                "rows": time_rows,
-            }
-        ]
     return {
-        **display,
-        "tables": normalized_tables,
+        "concept_id": str(concept.concept_id),
+        "symptom_term": concept.symptom_term,
+        "korean_symptom_name": concept.korean_symptom_name,
+        "match_type": concept.match_type,
+        "similarity": concept.similarity,
     }
 
 
-def _record_target_time(
-    action_name: str,
-    arguments: dict[str, Any],
-    *,
-    display_context: dict[str, Any],
+def _symptom_clarification_question(
+    symptom_text: str,
+    candidates: list[dict[str, Any]],
 ) -> str:
-    if action_name == CREATE_MEDICATION_SIDE_EFFECT_RECORD:
-        return str(
-            arguments.get("symptom_onset_text")
-            or display_context.get("symptom_onset_text")
-            or ""
-        ).strip()
-
-    if action_name == CREATE_NUTRITION_MEAL_RECORD:
-        return _meal_target_time(
-            arguments,
-            requested_at=display_context.get("requested_at"),
-            default_to_requested_date=True,
+    labels = list(
+        dict.fromkeys(
+            str(candidate.get("korean_symptom_name") or "").strip()
+            for candidate in candidates
+            if str(candidate.get("korean_symptom_name") or "").strip()
         )
-
-    if action_name == UPDATE_NUTRITION_MEAL_RECORD:
-        snapshot_target = _meal_target_time_from_snapshot(
-            arguments,
-            display_context=display_context,
-            apply_updates=True,
-        )
-        if snapshot_target:
-            return snapshot_target
-        return _meal_target_time(
-            arguments,
-            requested_at=display_context.get("requested_at"),
-            default_to_requested_date=False,
-        )
-
-    if action_name in {
-        DELETE_NUTRITION_MEAL_RECORD,
-        UPDATE_NUTRITION_FOOD_RECORD,
-        DELETE_NUTRITION_FOOD_RECORD,
-    }:
-        return _meal_target_time_from_snapshot(
-            arguments,
-            display_context=display_context,
-            apply_updates=False,
-        )
-
-    if action_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
-        return _dose_target_time_from_snapshot(
-            arguments,
-            display_context=display_context,
-        )
-
-    if action_name == CHANGE_NOTIFICATION_POLICY:
-        changes = arguments.get("changes")
-        if isinstance(changes, dict):
-            start = str(changes.get("effective_start_date") or "").strip()
-            end = str(changes.get("effective_end_date") or "").strip()
-            if start and end:
-                return f"{start} ~ {end}"
-            if start:
-                return f"{start}부터"
-            if end:
-                return f"{end}까지"
-        return "사용자 승인 시점부터"
-
-    if action_name == UPSERT_NUTRITION_PREFERENCE_FACT:
-        return "사용자 승인 시점부터"
-    return ""
-
-
-def _meal_target_time(
-    arguments: dict[str, Any],
-    *,
-    requested_at: Any,
-    default_to_requested_date: bool,
-) -> str:
-    meal_date = str(arguments.get("meal_date") or "").strip()
-    meal_time = str(arguments.get("meal_time") or "").strip()
-    meal_type = str(arguments.get("meal_type") or "").strip()
-    if not meal_date and default_to_requested_date:
-        meal_date = _display_date(requested_at)
-    if not meal_date:
-        return ""
-    if meal_time:
-        return f"{meal_date} {meal_time[:5]}"
-    meal_type_label = _meal_type_label(meal_type)
-    return (
-        f"{meal_date} {meal_type_label}"
-        if meal_type_label
-        else meal_date
     )
-
-
-def _meal_target_time_from_snapshot(
-    arguments: dict[str, Any],
-    *,
-    display_context: dict[str, Any],
-    apply_updates: bool,
-) -> str:
-    meal_id = str(arguments.get("meal_id") or "").strip()
-    if not meal_id:
-        return ""
-    snapshot = display_context.get("trusted_patient_context")
-    if not isinstance(snapshot, dict):
-        return ""
-    meals = snapshot.get("today_meals")
-    if not isinstance(meals, list):
-        return ""
-    for meal in meals:
-        if not isinstance(meal, dict):
-            continue
-        candidate_id = str(
-            meal.get("meal_id") or meal.get("id") or ""
-        ).strip()
-        if candidate_id != meal_id:
-            continue
-        target_values = dict(meal)
-        if apply_updates:
-            for key in ("meal_date", "meal_time", "meal_type"):
-                if arguments.get(key) is not None:
-                    target_values[key] = arguments[key]
-        return _meal_target_time(
-            target_values,
-            requested_at=display_context.get("requested_at"),
-            default_to_requested_date=False,
+    if labels:
+        return (
+            f"'{symptom_text}'은(는) "
+            f"{', '.join(labels)} 중 어느 증상에 더 가깝나요?"
         )
-    return ""
+    return f"'{symptom_text}' 증상을 조금 더 구체적으로 알려주세요."
 
 
-def _dose_target_time_from_snapshot(
-    arguments: dict[str, Any],
-    *,
-    display_context: dict[str, Any],
-) -> str:
-    dose_event_id = str(
-        arguments.get("dose_event_id") or ""
-    ).strip()
-    if not dose_event_id:
-        return ""
-    snapshot = display_context.get("trusted_patient_context")
-    if not isinstance(snapshot, dict):
-        return ""
-    today_medication = snapshot.get("today_medication")
-    if not isinstance(today_medication, dict):
-        return ""
-    events = today_medication.get("dose_events")
-    if not isinstance(events, list):
-        return ""
-    for event in events:
-        if not isinstance(event, dict):
-            continue
-        candidate_id = str(
-            event.get("dose_event_id") or event.get("id") or ""
-        ).strip()
-        if candidate_id == dose_event_id:
-            return _display_datetime(event.get("scheduled_for"))
-    return ""
-
-
-def _display_datetime(value: Any) -> str:
-    if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d %H:%M")
-    if isinstance(value, date):
-        return value.isoformat()
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        try:
-            return date.fromisoformat(text).isoformat()
-        except ValueError:
-            return text
-    return parsed.strftime("%Y-%m-%d %H:%M")
-
-
-def _display_date(value: Any) -> str:
-    if isinstance(value, datetime):
-        return value.date().isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    try:
-        return datetime.fromisoformat(
-            text.replace("Z", "+00:00")
-        ).date().isoformat()
-    except ValueError:
-        try:
-            return date.fromisoformat(text).isoformat()
-        except ValueError:
-            return ""
-
-
-def _meal_type_label(meal_type: str) -> str:
-    return {
-        "breakfast": "아침",
-        "lunch": "점심",
-        "dinner": "저녁",
-        "snack": "간식",
-    }.get(meal_type, meal_type)
-
-
-def _nutrition_meal_approval_rows(
-    arguments: dict[str, Any],
-) -> list[dict[str, str]]:
-    meal_type = str(arguments.get("meal_type") or "").strip()
-    meal_type_label = _meal_type_label(meal_type) or "확인 필요"
-
-    food_names: list[str] = []
-    foods = arguments.get("foods")
-    if isinstance(foods, list):
-        for food in foods:
-            if not isinstance(food, dict):
-                continue
-            food_name = str(food.get("food_name") or "").strip()
-            if food_name and food_name not in food_names:
-                food_names.append(food_name)
-
-    return [
-        {"column": "시기", "value": meal_type_label},
-        {
-            "column": "음식 종류",
-            "value": ", ".join(food_names) or "확인 필요",
-        },
+def _side_effect_batch_response(
+    assessments: list[dict[str, Any]],
+) -> dict[str, Any]:
+    matched = [
+        item
+        for item in assessments
+        if item.get("match_status") == "MATCHED"
     ]
-
-
-def _side_effect_approval_rows(
-    arguments: dict[str, Any],
-    *,
-    display_context: dict[str, Any] | None,
-) -> list[dict[str, str]]:
-    context = display_context or {}
-    symptom_name = str(context.get("symptom_name") or "").strip()
-    if not symptom_name:
-        symptom_name = _symptom_name_from_matched_effects(arguments)
-    if not symptom_name:
-        symptom_name = str(
-            arguments.get("symptom_text") or "증상"
-        ).strip()
-
-    rows = [{"column": "증상", "value": symptom_name}]
-    rows.extend(_pro_ctcae_response_rows(arguments.get("severity")))
-
-    matched_items = _unique_text_values(
-        arguments.get("matched_items")
+    suspected_items = [item for item in matched if item.get("suspected") is True]
+    matched_effects = list(
+        dict.fromkeys(
+            str(value).strip()
+            for item in suspected_items
+            for value in item.get("matched_effects", [])
+            if str(value).strip()
+        )
     )
-    if matched_items:
-        rows.append(
-            {
-                "column": "관련 가능 약물",
-                "value": ", ".join(matched_items),
-            }
+    matched_medications = list(
+        dict.fromkeys(
+            str(value).strip()
+            for item in suspected_items
+            for value in item.get("matched_items", [])
+            if str(value).strip()
         )
-    return rows
-
-
-def _symptom_name_from_matched_effects(
-    arguments: dict[str, Any],
-) -> str:
-    for value in _unique_text_values(
-        arguments.get("matched_effects")
-    ):
-        _, separator, effect = value.partition(":")
-        normalized = effect.strip() if separator else value.strip()
-        if normalized:
-            return normalized
-    return ""
-
-
-def _pro_ctcae_response_rows(
-    severity: Any,
-) -> list[dict[str, str]]:
-    if not isinstance(severity, dict):
-        return []
-    questions = severity.get("questions")
-    responses = severity.get("responses")
-    if not isinstance(questions, list) or not isinstance(
-        responses,
-        list,
-    ):
-        return []
-
-    questions_by_code = {
-        str(question.get("item_code") or ""): question
-        for question in questions
-        if isinstance(question, dict)
+    )
+    reference_matches = [
+        reference
+        for item in suspected_items
+        for reference in item.get("reference_matches", [])
+        if isinstance(reference, dict)
+    ]
+    drafts = [
+        item["side_effect_record_draft"]
+        for item in suspected_items
+        if isinstance(item.get("side_effect_record_draft"), dict)
+    ]
+    response: dict[str, Any] = {
+        "suspected": bool(suspected_items),
+        "requires_clarification": any(
+            item.get("match_status") == "AMBIGUOUS"
+            for item in assessments
+        ),
+        "assessments": assessments,
+        "matched_effects": matched_effects,
+        "matched_items": matched_medications,
+        "severity": (
+            str(suspected_items[0].get("severity") or "none")
+            if suspected_items
+            else "none"
+        ),
+        "evidence": " ".join(
+            str(item.get("evidence") or "").strip()
+            for item in suspected_items
+            if str(item.get("evidence") or "").strip()
+        ),
+        "recommendation": " ".join(
+            dict.fromkeys(
+                str(item.get("recommendation") or "").strip()
+                for item in assessments
+                if str(item.get("recommendation") or "").strip()
+            )
+        ),
+        "reference_source": (
+            str(suspected_items[0].get("reference_source") or "")
+            if suspected_items
+            else ""
+        ),
+        "reference_status": (
+            str(suspected_items[0].get("reference_status") or "")
+            if suspected_items
+            else ""
+        ),
+        "reference_matches": reference_matches,
+        "side_effect_record_drafts": drafts,
     }
-    rows: list[dict[str, str]] = []
-    for index, response in enumerate(responses):
-        if not isinstance(response, dict):
-            continue
-        response_text = str(
-            response.get("response_text") or ""
-        ).strip()
-        if not response_text:
-            continue
-        item_code = str(response.get("item_code") or "")
-        question = questions_by_code.get(item_code)
-        question_text = (
-            str(question.get("question") or "").strip()
-            if isinstance(question, dict)
-            else ""
-        )
-        response_type = (
-            str(question.get("response_type") or "").strip()
-            if isinstance(question, dict)
-            else ""
-        )
-        rows.append(
-            {
-                "column": (
-                    response_type
-                    or question_text
-                    or f"문항 {index + 1}"
-                ),
-                "value": response_text,
-            }
-        )
-    return rows
-
-
-def _unique_text_values(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    result: list[str] = []
-    for item in value:
-        normalized = str(item or "").strip()
-        if normalized and normalized not in result:
-            result.append(normalized)
-    return result
+    if len(drafts) == 1:
+        response["side_effect_record_draft"] = drafts[0]
+    return response
 
 
 class AgentMcpToolServer:
     def __init__(
         self,
         *,
-        system_base_url: str | None = None,
-        timeout_seconds: float = 30.0,
         backend_queries: BackendQueryTools | None = None,
         backend_client: BackendV13Client | None = None,
+        adverse_reactions: AdverseReactionLookup | None = None,
+        llm_provider: BaseLLMProvider | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
+        semantic_verifier: SemanticMatchVerifier | None = None,
+        symptom_concepts: SymptomConceptRepository | None = None,
     ) -> None:
         settings = get_settings()
-        # Kept as a constructor compatibility argument only. Approval state is
-        # Agent-owned and no longer calls a Backend "prepare" extension.
-        del system_base_url
-        self.timeout_seconds = timeout_seconds
+        self.settings = settings
+        from agent_app.persistence.db import engine as agent_engine
+
+        self.agent_engine = agent_engine
         self.backend_queries = backend_queries or BackendQueryTools.from_settings(settings)
         self.backend_client = backend_client or BackendV13Client.from_settings()
+        if adverse_reactions is None:
+            adverse_reactions = AgentAdverseReactionRepository(agent_engine)
+        self.adverse_reactions = adverse_reactions
+        self.embedding_provider = (
+            embedding_provider or get_embedding_provider()
+        )
+        self.semantic_verifier = semantic_verifier or (
+            LlmSemanticMatchVerifier(llm_provider)
+            if llm_provider is not None
+            else None
+        )
+        self.symptom_concepts = (
+            symptom_concepts or SymptomConceptRepository(agent_engine)
+        )
         self.backend_writes = BackendSyncWriteTools(
             self.backend_client,
             self.backend_queries,
@@ -736,45 +391,15 @@ class AgentMcpToolServer:
         payload: dict[str, Any],
         tool_call_id: str = "",
     ) -> ToolCallResult:
-        if tool_name not in ALLOWED_TOOL_NAMES:
-            return ToolCallResult(tool_name=tool_name or "unknown", status="error", error=f"unsupported_tool:{tool_name}")
-        approved_key_call = self._is_approved_key_call(
+        approved_key_call, rejection = self._tool_call_rejection(
             tool_name,
             arguments,
-            payload,
+            trace_id=trace_id,
+            source_event_type=source_event_type,
+            payload=payload,
         )
-        denial_reason = (
-            None
-            if approved_key_call
-            else validate_tool_permission(
-                {"name": tool_name, "arguments": arguments},
-                source_event_type=source_event_type,
-                payload=payload,
-            )
-        )
-        if denial_reason:
-            return permission_denied_result(
-                {"name": tool_name, "arguments": arguments},
-                trace_id=trace_id,
-                source_event_type=source_event_type,
-                reason=denial_reason,
-            )
-        if (
-            tool_name == CREATE_MEDICATION_SIDE_EFFECT_RECORD
-            and not approved_key_call
-        ):
-            allowed_side_effect_arguments = {
-                "symptom_text",
-                "symptom_onset_text",
-                "medication_name",
-            }
-            if set(arguments).difference(allowed_side_effect_arguments):
-                return ToolCallResult(
-                    tool_name=tool_name,
-                    status="error",
-                    error="unsupported_model_arguments",
-                    idempotency_key=f"{trace_id}:{tool_name}",
-                )
+        if rejection is not None:
+            return rejection
         if tool_name == REQUEST_RECORD_APPROVAL:
             return await self._request_record_approval(
                 arguments,
@@ -784,34 +409,14 @@ class AgentMcpToolServer:
                 payload=payload,
             )
         if tool_name in RECORD_APPROVAL_ACTIONS:
-            if not approved_key_call:
-                return ToolCallResult(
-                    tool_name=tool_name,
-                    status="error",
-                    error="record_approval_required",
-                    response={
-                        "contract_version": "v1.3",
-                        "required_tool": REQUEST_RECORD_APPROVAL,
-                    },
-                    idempotency_key=(
-                        f"{trace_id}:{tool_name}:approval_required"
-                    ),
-                )
-            if tool_name == UPSERT_NUTRITION_PREFERENCE_FACT:
-                return ToolCallResult(
-                    tool_name=tool_name,
-                    status="error",
-                    error="agent_internal_preference_write_not_implemented",
-                    idempotency_key=f"{trace_id}:{tool_name}:disabled",
-                )
-            if is_backend_v13_sync_write(tool_name):
-                return await self._execute_confirmed_backend_write_v13(
-                    tool_name,
-                    approval_key=str(arguments.get("approval_key") or ""),
-                    trace_id=trace_id,
-                    source_event_type=source_event_type,
-                    payload=payload,
-                )
+            return await self._execute_record_action(
+                tool_name,
+                arguments,
+                approved_key_call=approved_key_call,
+                trace_id=trace_id,
+                source_event_type=source_event_type,
+                payload=payload,
+            )
         if ConfirmationActionRegistry.requires_confirmation(tool_name):
             return ToolCallResult(
                 tool_name=tool_name,
@@ -821,21 +426,184 @@ class AgentMcpToolServer:
                 idempotency_key=f"{trace_id}:{tool_name}:unsupported_write",
             )
         if tool_name in DEFERRED_POLICY_TOOL_NAMES:
-            return deferred_policy_tool_result({"name": tool_name, "arguments": arguments}, trace_id=trace_id, source_event_type=source_event_type)
+            return deferred_policy_tool_result(
+                {"name": tool_name, "arguments": arguments},
+                trace_id=trace_id,
+                source_event_type=source_event_type,
+            )
+        result = await self._execute_general_read_tool(
+            tool_name,
+            arguments,
+            trace_id=trace_id,
+            source_event_type=source_event_type,
+            payload=payload,
+        )
+        if result is not None:
+            return result
+        result = await self._execute_nutrition_read_tool(
+            tool_name,
+            arguments,
+            trace_id=trace_id,
+            payload=payload,
+        )
+        if result is not None:
+            return result
+        return ToolCallResult(
+            tool_name=tool_name or "unknown",
+            status="error",
+            error=f"unsupported_tool:{tool_name}",
+        )
+
+    def _tool_call_rejection(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        trace_id: str,
+        source_event_type: str,
+        payload: dict[str, Any],
+    ) -> tuple[bool, ToolCallResult | None]:
+        if tool_name not in ALLOWED_TOOL_NAMES:
+            return False, ToolCallResult(
+                tool_name=tool_name or "unknown",
+                status="error",
+                error=f"unsupported_tool:{tool_name}",
+            )
+        approved_key_call = self._is_approved_key_call(
+            tool_name,
+            arguments,
+            payload,
+        )
+        denial_reason = None
+        if not approved_key_call:
+            denial_reason = validate_tool_permission(
+                {"name": tool_name, "arguments": arguments},
+                source_event_type=source_event_type,
+                payload=payload,
+            )
+        if denial_reason:
+            return approved_key_call, permission_denied_result(
+                {"name": tool_name, "arguments": arguments},
+                trace_id=trace_id,
+                source_event_type=source_event_type,
+                reason=denial_reason,
+            )
+        if self._has_unsupported_side_effect_arguments(
+            tool_name,
+            arguments,
+            approved_key_call=approved_key_call,
+        ):
+            return approved_key_call, ToolCallResult(
+                tool_name=tool_name,
+                status="error",
+                error="unsupported_model_arguments",
+                idempotency_key=f"{trace_id}:{tool_name}",
+            )
+        if (
+            not approved_key_call
+            and tool_name not in RECORD_APPROVAL_ACTIONS
+            and tool_name != REQUEST_RECORD_APPROVAL
+        ):
+            schema_error = tool_argument_validation_error(
+                tool_name,
+                arguments,
+            )
+            if schema_error:
+                return approved_key_call, ToolCallResult(
+                    tool_name=tool_name,
+                    status="error",
+                    error="invalid_tool_arguments",
+                    response={"reason": schema_error},
+                    idempotency_key=f"{trace_id}:{tool_name}",
+                )
+        return approved_key_call, None
+
+    @staticmethod
+    def _has_unsupported_side_effect_arguments(
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        approved_key_call: bool,
+    ) -> bool:
+        if (
+            tool_name != CREATE_MEDICATION_SIDE_EFFECT_RECORD
+            or approved_key_call
+        ):
+            return False
+        allowed_arguments = {
+            "symptom_text",
+            "symptom_onset_text",
+            "medication_name",
+        }
+        return bool(set(arguments).difference(allowed_arguments))
+
+    async def _execute_record_action(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        approved_key_call: bool,
+        trace_id: str,
+        source_event_type: str,
+        payload: dict[str, Any],
+    ) -> ToolCallResult:
+        if not approved_key_call:
+            return ToolCallResult(
+                tool_name=tool_name,
+                status="error",
+                error="record_approval_required",
+                response={
+                    "contract_version": "v1.3",
+                    "required_tool": REQUEST_RECORD_APPROVAL,
+                },
+                idempotency_key=(
+                    f"{trace_id}:{tool_name}:approval_required"
+                ),
+            )
+        if tool_name == UPSERT_NUTRITION_PREFERENCE_FACT:
+            return ToolCallResult(
+                tool_name=tool_name,
+                status="error",
+                error="agent_internal_preference_write_not_implemented",
+                idempotency_key=f"{trace_id}:{tool_name}:disabled",
+            )
+        if is_backend_v13_sync_write(tool_name):
+            return await self._execute_confirmed_backend_write_v13(
+                tool_name,
+                approval_key=str(arguments.get("approval_key") or ""),
+                trace_id=trace_id,
+                source_event_type=source_event_type,
+                payload=payload,
+            )
+        return ToolCallResult(
+            tool_name=tool_name,
+            status="error",
+            error="backend_write_tool_not_supported",
+            response={"contract_version": "v1.3"},
+            idempotency_key=f"{trace_id}:{tool_name}:unsupported_write",
+        )
+
+    async def _execute_general_read_tool(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        trace_id: str,
+        source_event_type: str,
+        payload: dict[str, Any],
+    ) -> ToolCallResult | None:
         if tool_name == GET_MEDICATION_DOSE_STATUS:
-            return await self._get_medication_dose_status(arguments, trace_id=trace_id, payload=payload)
+            return await self._get_medication_dose_status(
+                arguments,
+                trace_id=trace_id,
+                payload=payload,
+            )
         if tool_name == GET_NOTIFICATION_POLICIES:
-            return await self._get_notification_policies(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == SEARCH_NUTRITION_FOOD_CANDIDATES:
-            return await self._search_nutrition_food_candidates(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == GET_NUTRITION_MEAL_RECORD_LIST:
-            return await self._get_nutrition_meal_record_list(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == GET_NUTRITION_DAILY_SUMMARY:
-            return await self._get_nutrition_daily_summary(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == GET_NUTRITION_PREFERENCE_SUMMARY:
-            return await self._get_nutrition_preference_summary(arguments, trace_id=trace_id, payload=payload)
-        if tool_name == GET_NUTRITION_RECOMMENDATION_CANDIDATES:
-            return await self._get_nutrition_recommendation_candidates(arguments, trace_id=trace_id, payload=payload)
+            return await self._get_notification_policies(
+                arguments,
+                trace_id=trace_id,
+                payload=payload,
+            )
         if tool_name == GET_MEDICATION_SIDE_EFFECT_ASSESSMENT:
             return await self._get_medication_side_effect_assessment(
                 arguments,
@@ -844,10 +612,57 @@ class AgentMcpToolServer:
                 payload=payload,
             )
         if tool_name == GET_SIDE_EFFECT_HISTORY:
-            return await self._get_side_effect_history(arguments, trace_id=trace_id, payload=payload)
+            return await self._get_side_effect_history(
+                arguments,
+                trace_id=trace_id,
+                payload=payload,
+            )
         if tool_name == GET_PRO_CTCAE_QUESTIONNAIRE:
-            return self._ae_pro_ctcae(arguments, trace_id=trace_id)
-        return ToolCallResult(tool_name=tool_name or "unknown", status="error", error=f"unsupported_tool:{tool_name}")
+            return await self._ae_pro_ctcae_semantic(
+                arguments,
+                trace_id=trace_id,
+            )
+        return None
+
+    async def _execute_nutrition_read_tool(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        trace_id: str,
+        payload: dict[str, Any],
+    ) -> ToolCallResult | None:
+        if tool_name == SEARCH_NUTRITION_FOOD_CANDIDATES:
+            return await self._search_nutrition_food_candidates(
+                arguments,
+                trace_id=trace_id,
+                payload=payload,
+            )
+        if tool_name == GET_NUTRITION_MEAL_RECORD_LIST:
+            return await self._get_nutrition_meal_record_list(
+                arguments,
+                trace_id=trace_id,
+                payload=payload,
+            )
+        if tool_name == GET_NUTRITION_DAILY_SUMMARY:
+            return await self._get_nutrition_daily_summary(
+                arguments,
+                trace_id=trace_id,
+                payload=payload,
+            )
+        if tool_name == GET_NUTRITION_PREFERENCE_SUMMARY:
+            return await self._get_nutrition_preference_summary(
+                arguments,
+                trace_id=trace_id,
+                payload=payload,
+            )
+        if tool_name == GET_NUTRITION_RECOMMENDATION_CANDIDATES:
+            return await self._get_nutrition_recommendation_candidates(
+                arguments,
+                trace_id=trace_id,
+                payload=payload,
+            )
+        return None
 
     async def _execute_confirmed_backend_write_v13(
         self,
@@ -922,13 +737,238 @@ class AgentMcpToolServer:
                 error="record_approval_arguments_invalid",
                 idempotency_key=f"{trace_id}:{REQUEST_RECORD_APPROVAL}",
             )
-        record_arguments = _project_record_arguments_to_action_schema(
+        if action_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
+            resolution = resolve_dose_target(
+                record_arguments,
+                payload=payload,
+            )
+            resolution_kind = resolution.get("kind")
+            trace_logging.log_info(
+                "agent_dose_target_resolution",
+                trace_id=trace_id,
+                source_event_type=source_event_type,
+                resolution_kind=str(resolution_kind or ""),
+                supplied_id_present=bool(
+                    str(
+                        record_arguments.get("dose_event_id")
+                        or ""
+                    ).strip()
+                ),
+                medication_reference_present=bool(
+                    str(
+                        record_arguments.get("medication_name")
+                        or ""
+                    ).strip()
+                ),
+                candidate_count=len(
+                    resolution.get("candidates") or []
+                ),
+                resolved_id_present=bool(
+                    str(
+                        resolution.get("dose_event_id") or ""
+                    ).strip()
+                ),
+            )
+            if resolution_kind == "selection_required":
+                return ToolCallResult(
+                    tool_name=REQUEST_RECORD_APPROVAL,
+                    status="success",
+                    response={
+                        "selection_required": True,
+                        "approval_created": False,
+                        "record_applied": False,
+                        "action_name": action_name,
+                        "selection_request": resolution.get(
+                            "selection_request"
+                        ),
+                        "dose_selection": {
+                            "action_name": action_name,
+                            "candidates": resolution.get(
+                                "candidates",
+                                [],
+                            ),
+                        },
+                        "message": (
+                            "복용한 약을 먼저 선택해야 합니다."
+                        ),
+                    },
+                    idempotency_key=(
+                        f"{trace_id}:{REQUEST_RECORD_APPROVAL}:"
+                        "dose_selection_required"
+                    ),
+                )
+            if resolution_kind == "clarification_required":
+                return ToolCallResult(
+                    tool_name=REQUEST_RECORD_APPROVAL,
+                    status="success",
+                    response={
+                        "clarification_required": True,
+                        "approval_created": False,
+                        "record_applied": False,
+                        "action_name": action_name,
+                        "message": (
+                            "현재 복약 일정에서 대상을 확인하지 "
+                            "못했습니다. 복용한 약 이름과 시간을 "
+                            "다시 물어보세요."
+                        ),
+                    },
+                    idempotency_key=(
+                        f"{trace_id}:{REQUEST_RECORD_APPROVAL}:"
+                        "dose_clarification_required"
+                    ),
+                )
+            if resolution_kind == "already_taken":
+                candidate = resolution.get("candidate")
+                return ToolCallResult(
+                    tool_name=REQUEST_RECORD_APPROVAL,
+                    status="success",
+                    response={
+                        "approval_created": False,
+                        "record_applied": False,
+                        "already_recorded": True,
+                        "action_name": action_name,
+                        "dose_event": (
+                            candidate
+                            if isinstance(candidate, dict)
+                            else {}
+                        ),
+                        "message": (
+                            "해당 복약은 이미 복용 완료로 "
+                            "기록되어 있습니다."
+                        ),
+                    },
+                    idempotency_key=(
+                        f"{trace_id}:{REQUEST_RECORD_APPROVAL}:"
+                        "dose_already_taken"
+                    ),
+                )
+            resolved_id = str(
+                resolution.get("dose_event_id") or ""
+            ).strip()
+            if resolution_kind != "resolved" or not resolved_id:
+                return ToolCallResult(
+                    tool_name=REQUEST_RECORD_APPROVAL,
+                    status="error",
+                    error="dose_event_resolution_invalid",
+                    idempotency_key=(
+                        f"{trace_id}:{REQUEST_RECORD_APPROVAL}:"
+                        "dose_resolution_invalid"
+                    ),
+                )
+            # The approval and eventual write only receive the exact identifier
+            # copied from the trusted Backend snapshot.  Medication text from
+            # the model remains a lookup hint and is never persisted.
+            record_arguments = {"dose_event_id": resolved_id}
+        resolved_notification_policy: dict[str, Any] | None = None
+        if action_name == CHANGE_NOTIFICATION_POLICY:
+            policy_resolution = (
+                await self._resolve_active_notification_policy_target(
+                    record_arguments,
+                    trace_id=trace_id,
+                    source_event_type=source_event_type,
+                    payload=payload,
+                )
+            )
+            if policy_resolution["kind"] != "resolved":
+                return ToolCallResult(
+                    tool_name=REQUEST_RECORD_APPROVAL,
+                    status="success",
+                    response={
+                        "policy_target_unavailable": True,
+                        "approval_created": False,
+                        "record_applied": False,
+                        "action_name": action_name,
+                        "reason_code": policy_resolution[
+                            "reason_code"
+                        ],
+                        "message": (
+                            "수정할 수 있는 활성 알림 정책을 "
+                            "확인하지 못했습니다. 채팅에서는 새 "
+                            "알림 정책을 생성할 수 없습니다."
+                        ),
+                    },
+                    idempotency_key=(
+                        f"{trace_id}:{REQUEST_RECORD_APPROVAL}:"
+                        "notification_policy_target_unavailable"
+                    ),
+                )
+            record_arguments = {
+                **record_arguments,
+                "policy_id": policy_resolution["policy_id"],
+            }
+            resolved_policy = policy_resolution.get("policy")
+            if isinstance(resolved_policy, dict):
+                resolved_notification_policy = resolved_policy
+        record_arguments = project_record_arguments_to_action_schema(
             action_name,
             record_arguments,
         )
+        schema_error = tool_argument_validation_error(
+            action_name,
+            record_arguments,
+        )
+        if schema_error:
+            return ToolCallResult(
+                tool_name=REQUEST_RECORD_APPROVAL,
+                status="error",
+                error="record_approval_arguments_invalid",
+                response={"reason": schema_error},
+                idempotency_key=f"{trace_id}:{REQUEST_RECORD_APPROVAL}",
+            )
+        record_input_request = context_value(
+            payload,
+            "record_input_request",
+        )
+        if (
+            action_name == CREATE_NUTRITION_MEAL_RECORD
+            and isinstance(record_input_request, dict)
+            and record_input_request.get("action_name")
+            == CREATE_NUTRITION_MEAL_RECORD
+        ):
+            input_request = record_input_request.get(
+                "input_request"
+            )
+            if not isinstance(input_request, dict):
+                return ToolCallResult(
+                    tool_name=REQUEST_RECORD_APPROVAL,
+                    status="error",
+                    error="record_input_request_invalid",
+                    idempotency_key=(
+                        f"{trace_id}:{REQUEST_RECORD_APPROVAL}"
+                    ),
+                )
+            return ToolCallResult(
+                tool_name=REQUEST_RECORD_APPROVAL,
+                status="success",
+                response={
+                    "input_required": True,
+                    "approval_created": False,
+                    "record_applied": False,
+                    "action_name": action_name,
+                    "missing_fields": list(
+                        record_input_request.get(
+                            "missing_fields"
+                        )
+                        or []
+                    ),
+                    "input_request": input_request,
+                    "message": (
+                        "음식 기록 전에 실제 섭취량을 "
+                        "입력해야 합니다."
+                    ),
+                },
+                idempotency_key=(
+                    f"{trace_id}:{REQUEST_RECORD_APPROVAL}:"
+                    "input_required"
+                ),
+            )
         approval_display_context: dict[str, Any] = {
             "requested_at": payload.get("current_time"),
         }
+        if resolved_notification_policy is not None:
+            approval_display_context["notification_policy"] = (
+                resolved_notification_policy
+            )
         trusted_patient_context = context_value(
             payload,
             "trusted_patient_context",
@@ -997,8 +1037,8 @@ class AgentMcpToolServer:
         del arguments
         return payload.get("patient_id")
 
-    @staticmethod
     def _authoritative_side_effect_record_arguments(
+        self,
         arguments: dict[str, Any],
         *,
         trace_id: str,
@@ -1056,6 +1096,7 @@ class AgentMcpToolServer:
             patient_snapshot=patient_snapshot,
             trace_id=trace_id,
             source_event_type=source_event_type,
+            adverse_reactions=self.adverse_reactions,
         )
         draft["severity"] = severity.model_dump(mode="json")
         return draft
@@ -1090,7 +1131,7 @@ class AgentMcpToolServer:
                 action_name=tool_name,
                 tool_call_id=tool_call_id,
                 arguments=prepare_arguments,
-                display=_approval_display(
+                display=approval_display(
                     tool_name,
                     prepare_arguments,
                     display_context=display_context,
@@ -1107,6 +1148,72 @@ class AgentMcpToolServer:
                 f"{trace_id}:{tool_name}:{proposal.action_fingerprint}"
             ),
         )
+
+    async def _resolve_active_notification_policy_target(
+        self,
+        record_arguments: dict[str, Any],
+        *,
+        trace_id: str,
+        source_event_type: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        supplied_policy_id = str(
+            record_arguments.get("policy_id") or ""
+        ).strip()
+        policies: list[dict[str, Any]] = []
+        if supplied_policy_id and self.backend_queries is not None:
+            result = await anyio.to_thread.run_sync(
+                lambda: self.backend_queries.notification_policies(
+                    patient_id=str(payload.get("patient_id") or ""),
+                    policy_id=supplied_policy_id,
+                    active_only=True,
+                )
+            )
+            raw_policies = result.get("policies")
+            if isinstance(raw_policies, list):
+                policies = [
+                    policy
+                    for policy in raw_policies
+                    if isinstance(policy, dict)
+                    and policy.get("active") is True
+                    and str(policy.get("policy_id") or "").strip()
+                    == supplied_policy_id
+                ]
+
+        if not supplied_policy_id:
+            kind = "policy_id_missing"
+            reason_code = "ACTIVE_NOTIFICATION_POLICY_ID_REQUIRED"
+        elif self.backend_queries is None:
+            kind = "backend_read_unavailable"
+            reason_code = "ACTIVE_NOTIFICATION_POLICY_LOOKUP_UNAVAILABLE"
+        elif len(policies) == 1:
+            kind = "resolved"
+            reason_code = "ACTIVE_NOTIFICATION_POLICY_RESOLVED"
+        elif not policies:
+            kind = "not_found"
+            reason_code = "ACTIVE_NOTIFICATION_POLICY_NOT_FOUND"
+        else:
+            kind = "ambiguous"
+            reason_code = "ACTIVE_NOTIFICATION_POLICY_AMBIGUOUS"
+
+        trace_logging.log_info(
+            "agent_notification_policy_target_resolution",
+            trace_id=trace_id,
+            source_event_type=source_event_type,
+            resolution_kind=kind,
+            supplied_policy_id_present=bool(supplied_policy_id),
+            active_policy_count=len(policies),
+        )
+        response = {
+            "kind": kind,
+            "reason_code": reason_code,
+        }
+        if kind == "resolved":
+            response["policy_id"] = str(
+                policies[0]["policy_id"]
+            )
+            response["policy"] = dict(policies[0])
+        return response
 
     @staticmethod
     def _is_approved_key_call(
@@ -1184,10 +1291,41 @@ class AgentMcpToolServer:
         result = await anyio.to_thread.run_sync(
             lambda: self.backend_queries.notification_policies(**params)
         )
+        raw_policies = result.get("policies")
+        policies = (
+            [item for item in raw_policies if isinstance(item, dict)]
+            if isinstance(raw_policies, list)
+            else []
+        )
+        active_policy_count = sum(
+            1 for item in policies if item.get("active") is True
+        )
+        if active_policy_count == 0:
+            target_status = "not_found"
+        elif active_policy_count == 1:
+            target_status = "single"
+        else:
+            target_status = "multiple"
+        response = dict(result)
+        response["operation_constraints"] = {
+            "creation_supported": False,
+            "change_requires_active_policy": True,
+            "active_target_status": target_status,
+        }
+        trace_logging.log_info(
+            "agent_notification_policy_lookup_completed",
+            trace_id=trace_id,
+            active_only=bool(params["active_only"]),
+            policy_id_filter_present=bool(params.get("policy_id")),
+            slot_label_filter_present=bool(params.get("slot_label")),
+            policy_count=len(policies),
+            active_policy_count=active_policy_count,
+            active_target_status=target_status,
+        )
         return ToolCallResult(
             tool_name=GET_NOTIFICATION_POLICIES,
             status="success",
-            response=result,
+            response=response,
             idempotency_key=f"{trace_id}:{GET_NOTIFICATION_POLICIES}",
         )
 
@@ -1394,12 +1532,14 @@ class AgentMcpToolServer:
                 error="patient_context_incomplete",
                 idempotency_key=f"{trace_id}:{GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}",
             )
-        symptom_text = str(arguments.get("symptom_text") or "").strip()
-        if not symptom_text:
+        symptom_mentions = _validated_symptom_mentions(
+            arguments.get("symptom_mentions")
+        )
+        if not symptom_mentions:
             return ToolCallResult(
                 tool_name=GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
                 status="error",
-                error="symptom_text_required",
+                error="symptom_mentions_required",
                 idempotency_key=f"{trace_id}:{GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}",
             )
         medication_name = str(
@@ -1408,15 +1548,163 @@ class AgentMcpToolServer:
             or context_value(payload, "medication_name")
             or ""
         ).strip()
-        symptom_onset_text = str(
-            arguments.get("symptom_onset_text") or ""
-        ).strip()
         try:
-            result = assess_side_effect_from_snapshot(
-                symptom_text=symptom_text,
-                patient_snapshot=patient_snapshot,
-                medication_name=medication_name or None,
-            )
+            assessments: list[dict[str, Any]] = []
+            if isinstance(
+                self.adverse_reactions,
+                AgentAdverseReactionRepository,
+            ):
+                if self.semantic_verifier is None:
+                    raise RuntimeError(
+                        "reference_semantic_verifier_unavailable"
+                    )
+                pro_source = pro_ctcae_source_version(
+                    self.settings.pro_ctcae_workbook_path
+                )
+                for mention_index, mention in enumerate(symptom_mentions):
+                    symptom_text = mention["text"]
+                    resolution = (
+                        await self.symptom_concepts.resolve_with_status(
+                            symptom_text=symptom_text,
+                            pro_ctcae_source_version=pro_source,
+                            embedding_provider=self.embedding_provider,
+                            semantic_verifier=self.semantic_verifier,
+                            top_k=self.settings.pro_ctcae_vector_top_k,
+                            min_similarity=(
+                                self.settings
+                                .reference_vector_min_similarity
+                            ),
+                        )
+                    )
+                    candidate_payloads = [
+                        _symptom_concept_payload(candidate)
+                        for candidate in resolution.candidates
+                    ]
+                    if resolution.status != "MATCHED":
+                        assessments.append(
+                            {
+                                "mention_index": mention_index,
+                                "symptom_text": symptom_text,
+                                "symptom_onset_text": mention["onset_text"],
+                                "match_status": resolution.status,
+                                "matched_concept": None,
+                                "candidate_concepts": candidate_payloads,
+                                "clarification_question": (
+                                    _symptom_clarification_question(
+                                        symptom_text,
+                                        candidate_payloads,
+                                    )
+                                    if resolution.status == "AMBIGUOUS"
+                                    else ""
+                                ),
+                                "suspected": False,
+                                "matched_effects": [],
+                                "matched_items": [],
+                                "severity": "none",
+                                "evidence": "",
+                                "recommendation": (
+                                    "증상 표현을 더 구체적으로 확인해야 합니다."
+                                    if resolution.status == "AMBIGUOUS"
+                                    else "매칭되는 표준 증상 개념을 확인하지 못했습니다."
+                                ),
+                                "reference_source": "",
+                                "reference_status": "",
+                                "reference_matches": [],
+                            }
+                        )
+                        continue
+                    symptom_concept = resolution.match
+                    if symptom_concept is None:
+                        raise RuntimeError(
+                            "matched_symptom_concept_missing"
+                        )
+                    await anyio.to_thread.run_sync(
+                        lambda symptom_text=symptom_text,
+                        symptom_concept=symptom_concept: (
+                            self.symptom_concepts.remember(
+                                trace_id=trace_id,
+                                symptom_text=symptom_text,
+                                concept=symptom_concept,
+                                ttl_seconds=(
+                                    self.settings
+                                    .agent_symptom_resolution_ttl_seconds
+                                ),
+                            )
+                        )
+                    )
+                    result = await assess_side_effect_from_snapshot_semantic(
+                        symptom_text=symptom_text,
+                        patient_snapshot=patient_snapshot,
+                        medication_name=medication_name or None,
+                        adverse_reactions=self.adverse_reactions,
+                        embedding_provider=self.embedding_provider,
+                        semantic_verifier=self.semantic_verifier,
+                        symptom_concept=symptom_concept,
+                        symptom_concepts=self.symptom_concepts,
+                        top_k=self.settings.adverse_reaction_vector_top_k,
+                        min_similarity=(
+                            self.settings.reference_vector_min_similarity
+                        ),
+                    )
+                    assessment = result.model_dump(mode="json")
+                    assessment.update(
+                        {
+                            "mention_index": mention_index,
+                            "symptom_text": symptom_text,
+                            "symptom_onset_text": mention["onset_text"],
+                            "match_status": "MATCHED",
+                            "matched_concept": _symptom_concept_payload(
+                                symptom_concept
+                            ),
+                            "candidate_concepts": candidate_payloads,
+                            "clarification_question": "",
+                        }
+                    )
+                    assessment["side_effect_record_draft"] = (
+                        side_effect_record_draft_from_snapshot(
+                            symptom_text=symptom_text,
+                            symptom_onset_text=mention["onset_text"],
+                            medication_name=medication_name or None,
+                            patient_snapshot=patient_snapshot,
+                            trace_id=trace_id,
+                            source_event_type=source_event_type,
+                            assessment=result,
+                        )
+                    )
+                    assessments.append(assessment)
+            else:
+                for mention_index, mention in enumerate(symptom_mentions):
+                    symptom_text = mention["text"]
+                    result = assess_side_effect_from_snapshot(
+                        symptom_text=symptom_text,
+                        patient_snapshot=patient_snapshot,
+                        medication_name=medication_name or None,
+                        adverse_reactions=self.adverse_reactions,
+                    )
+                    assessment = result.model_dump(mode="json")
+                    assessment.update(
+                        {
+                            "mention_index": mention_index,
+                            "symptom_text": symptom_text,
+                            "symptom_onset_text": mention["onset_text"],
+                            "match_status": "MATCHED",
+                            "matched_concept": None,
+                            "candidate_concepts": [],
+                            "clarification_question": "",
+                        }
+                    )
+                    assessment["side_effect_record_draft"] = (
+                        side_effect_record_draft_from_snapshot(
+                            symptom_text=symptom_text,
+                            symptom_onset_text=mention["onset_text"],
+                            medication_name=medication_name or None,
+                            patient_snapshot=patient_snapshot,
+                            trace_id=trace_id,
+                            source_event_type=source_event_type,
+                            assessment=result,
+                        )
+                    )
+                    assessments.append(assessment)
         except ValueError as exc:
             return ToolCallResult(
                 tool_name=GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
@@ -1424,17 +1712,7 @@ class AgentMcpToolServer:
                 error=str(exc),
                 idempotency_key=f"{trace_id}:{GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}",
             )
-        response_payload = result.model_dump(mode="json")
-        response_payload["side_effect_record_draft"] = (
-            side_effect_record_draft_from_snapshot(
-                symptom_text=symptom_text,
-                symptom_onset_text=symptom_onset_text,
-                medication_name=medication_name or None,
-                patient_snapshot=patient_snapshot,
-                trace_id=trace_id,
-                source_event_type=source_event_type,
-            )
-        )
+        response_payload = _side_effect_batch_response(assessments)
         return ToolCallResult(
             tool_name=GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
             status="success",
@@ -1509,6 +1787,70 @@ class AgentMcpToolServer:
             status="success",
             response=result.model_dump(mode="json"),
             idempotency_key=f"{trace_id}:{GET_PRO_CTCAE_QUESTIONNAIRE}",
+        )
+
+    async def _ae_pro_ctcae_semantic(
+        self,
+        arguments: dict[str, Any],
+        *,
+        trace_id: str,
+    ) -> ToolCallResult:
+        request = AEProCtcaeAssessmentRequest.model_validate(arguments)
+        if self.semantic_verifier is None:
+            return ToolCallResult(
+                tool_name=GET_PRO_CTCAE_QUESTIONNAIRE,
+                status="error",
+                error="reference_semantic_verifier_unavailable",
+                idempotency_key=(
+                    f"{trace_id}:{GET_PRO_CTCAE_QUESTIONNAIRE}"
+                ),
+            )
+        try:
+            pro_source = pro_ctcae_source_version(
+                self.settings.pro_ctcae_workbook_path
+            )
+            concept = await anyio.to_thread.run_sync(
+                lambda: self.symptom_concepts.recall(
+                    trace_id=trace_id,
+                    symptom_text=request.symptom_text,
+                    pro_ctcae_source_version=pro_source,
+                )
+            )
+            if concept is not None:
+                result = pro_ctcae_result_for_concept(
+                    request.symptom_text,
+                    concept,
+                    workbook_path=(
+                        self.settings.pro_ctcae_workbook_path
+                    ),
+                )
+            else:
+                result = await match_pro_ctcae_symptom_semantic(
+                    request.symptom_text,
+                    engine=self.agent_engine,
+                    embedding_provider=self.embedding_provider,
+                    semantic_verifier=self.semantic_verifier,
+                    top_k=self.settings.pro_ctcae_vector_top_k,
+                    min_similarity=(
+                        self.settings.reference_vector_min_similarity
+                    ),
+                )
+        except ProCtcaeReferenceUnavailable as exc:
+            return ToolCallResult(
+                tool_name=GET_PRO_CTCAE_QUESTIONNAIRE,
+                status="error",
+                error=str(exc),
+                idempotency_key=(
+                    f"{trace_id}:{GET_PRO_CTCAE_QUESTIONNAIRE}"
+                ),
+            )
+        return ToolCallResult(
+            tool_name=GET_PRO_CTCAE_QUESTIONNAIRE,
+            status="success",
+            response=result.model_dump(mode="json"),
+            idempotency_key=(
+                f"{trace_id}:{GET_PRO_CTCAE_QUESTIONNAIRE}"
+            ),
         )
 
 

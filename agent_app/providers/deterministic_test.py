@@ -2,33 +2,43 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import AsyncIterator
 from datetime import date, datetime, timedelta
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.outputs import (
+    ChatGeneration,
+    ChatGenerationChunk,
+    ChatResult,
+)
 from pydantic import ConfigDict, Field
 
+from agent_app.llm.context import context_value
 from agent_app.llm.messages import (
     ai_message_from_tool_calls,
     human_payload_from_messages,
     tool_results_from_messages,
 )
-from agent_app.llm.validation import validate_llm_output
-from agent_app.llm.context import context_value
-from agent_app.providers.base import BaseLLMProvider, GenerationReadiness
 from agent_app.llm.responses import natural_chat_summary
+from agent_app.llm.validation import validate_llm_output
+from agent_app.providers.base import BaseLLMProvider, GenerationReadiness
 from agent_app.tools.calling import normalize_tool_calls
+from agent_app.tools.results import tool_result_summary
 from shared.tool_names import (
-    DELEGATION_TOOL_NAMES,
+    CREATE_MEDICATION_SIDE_EFFECT_RECORD,
+    CREATE_NUTRITION_MEAL_RECORD,
     DELEGATE_TO_MEDICATION_AGENT,
+    DELEGATION_TOOL_NAMES,
     GET_MEDICATION_DOSE_STATUS,
     GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
     PROPOSE_NOTIFICATION_POLICY,
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
     UPSERT_NUTRITION_PREFERENCE_FACT,
 )
-from agent_app.tools.results import tool_result_summary
+
+_STREAM_FAILURE_INJECTED_MESSAGES: set[str] = set()
 
 
 class DeterministicTestProvider(BaseLLMProvider):
@@ -45,6 +55,12 @@ class DeterministicTestProvider(BaseLLMProvider):
 
     def model_output(self, user_payload: dict[str, Any]) -> dict[str, Any]:
         response_mode = user_payload.get("response_mode")
+        if response_mode == "approved_write_finalization":
+            return {
+                "message": _approved_write_summary(
+                    user_payload.get("approved_write_result")
+                )
+            }
         if response_mode == "daily_pattern_analysis":
             missed_slots = _missed_slots(user_payload)
             return {
@@ -136,6 +152,18 @@ class DeterministicTestProvider(BaseLLMProvider):
         return {"message": "요청을 확인했습니다."}
 
 
+def _approved_write_summary(value: Any) -> str:
+    result = value if isinstance(value, dict) else {}
+    tool_name = str(result.get("tool_name") or "").strip()
+    if tool_name == CREATE_MEDICATION_SIDE_EFFECT_RECORD:
+        return "부작용 평가 기록을 완료했습니다."
+    if tool_name == UPDATE_MEDICATION_DOSE_EVENT_STATUS:
+        return "복약 기록을 완료했습니다."
+    if tool_name == CREATE_NUTRITION_MEAL_RECORD:
+        return "식사 기록을 완료했습니다."
+    return "승인한 기록 작업을 완료했습니다."
+
+
 def _missed_slots(payload: dict[str, Any]) -> list[str]:
     if _observed_day_count(payload) < 2:
         return []
@@ -201,7 +229,7 @@ def _deterministic_side_effect_tool_call(payload: dict[str, Any]) -> dict[str, A
     return {
         "name": GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
         "arguments": {
-            "symptom_text": message,
+            "symptom_mentions": [{"text": message}],
         },
     }
 
@@ -406,6 +434,97 @@ class DeterministicTestChatModel(BaseChatModel):
         if tool_calls:
             return _chat_result(ai_message_from_tool_calls(tool_calls, content=natural_chat_summary(output), model_output=output))
         return _chat_result(AIMessage(content=natural_chat_summary(output), response_metadata={"model_output": output}))
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager=None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        payload = human_payload_from_messages(messages)
+        marker = os.getenv(
+            "DETERMINISTIC_TEST_STREAM_FAILURE_MARKER",
+            "",
+        ).strip()
+        message = str(payload.get("message") or "")
+        burst_marker = os.getenv(
+            "DETERMINISTIC_TEST_BURST_STREAM_MARKER",
+            "",
+        ).strip()
+        if burst_marker and burst_marker in message:
+            chunk_count = max(
+                1,
+                int(
+                    os.getenv(
+                        "DETERMINISTIC_TEST_BURST_CHUNK_COUNT",
+                        "300",
+                    )
+                ),
+            )
+            chunk_size = max(
+                16,
+                int(
+                    os.getenv(
+                        "DETERMINISTIC_TEST_BURST_CHUNK_SIZE",
+                        "1024",
+                    )
+                ),
+            )
+            for index in range(chunk_count):
+                prefix = f"{index:04d}|"
+                yield ChatGenerationChunk(
+                    message=AIMessageChunk(
+                        content=(
+                            prefix
+                            + "가" * (chunk_size - len(prefix))
+                        ),
+                    )
+                )
+            return
+
+        fail_once = os.getenv(
+            "DETERMINISTIC_TEST_STREAM_FAILURE_ONCE",
+            "",
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        should_fail = bool(marker and marker in message) and (
+            not fail_once
+            or message not in _STREAM_FAILURE_INJECTED_MESSAGES
+        )
+        if should_fail:
+            _STREAM_FAILURE_INJECTED_MESSAGES.add(message)
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="테스트 부분 응답",
+                )
+            )
+            failure_delay_ms = max(
+                0,
+                int(
+                    os.getenv(
+                        "DETERMINISTIC_TEST_STREAM_FAILURE_DELAY_MS",
+                        "0",
+                    )
+                ),
+            )
+            if failure_delay_ms:
+                await asyncio.sleep(failure_delay_ms / 1000)
+            raise RuntimeError(
+                "deterministic_test_stream_failure_after_token"
+            )
+
+        result = await self._agenerate(
+            messages,
+            stop=stop,
+            run_manager=run_manager,
+            **kwargs,
+        )
+        message = result.generations[0].message
+        yield ChatGenerationChunk(
+            message=AIMessageChunk.model_validate(
+                message.model_dump(exclude={"type"})
+            )
+        )
 
 
 def _chat_result(message: AIMessage) -> ChatResult:

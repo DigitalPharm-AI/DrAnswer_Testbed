@@ -11,7 +11,6 @@ from urllib.parse import urlsplit
 
 from probe_generation import MAX_RESPONSE_BYTES, read_required_token
 
-
 TOKEN_KEY = "INTERNAL_API_TOKEN"
 
 

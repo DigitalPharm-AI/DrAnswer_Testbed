@@ -1,0 +1,815 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>닥터앤서 AI 실시간 응답 타이머 시안</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --page: #eef1f4;
+        --panel: #f8f9fa;
+        --white: #ffffff;
+        --ink: #20262d;
+        --muted: #6b7580;
+        --line: #d6dce3;
+        --navy: #263f62;
+        --navy-strong: #193452;
+        --navy-soft: #eaf1f8;
+        --ai-soft: #f3f7fb;
+        --ai-line: #cfdae7;
+        --user-soft: #e8edf2;
+        --danger: #a6313b;
+        --danger-soft: #fff1f2;
+        --danger-line: #efc4c8;
+        --shadow: 0 18px 48px rgba(32, 43, 54, 0.12);
+        --shadow-soft: 0 8px 24px rgba(32, 43, 54, 0.08);
+        font-family:
+          Pretendard,
+          "Noto Sans KR",
+          "Apple SD Gothic Neo",
+          "Malgun Gothic",
+          sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-width: 320px;
+        min-height: 100vh;
+        margin: 0;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 12% 0%, rgba(38, 63, 98, 0.08), transparent 34%),
+          var(--page);
+      }
+
+      button {
+        font: inherit;
+      }
+
+      button:focus-visible {
+        outline: 3px solid rgba(38, 63, 98, 0.22);
+        outline-offset: 2px;
+      }
+
+      .prototype-shell {
+        width: min(100% - 34px, 1120px);
+        margin: 24px auto 48px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        min-height: 72px;
+        margin-bottom: 18px;
+        padding: 14px 18px;
+        border: 1px solid rgba(214, 220, 227, 0.9);
+        border-radius: 20px;
+        background: rgba(255, 255, 255, 0.92);
+        box-shadow: var(--shadow-soft);
+      }
+
+      .simulation-clock {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .simulation-clock strong {
+        font-size: 1.1rem;
+        letter-spacing: -0.025em;
+      }
+
+      .simulation-clock span {
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
+
+      .service-states {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .service-state {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-height: 31px;
+        padding: 5px 10px;
+        border: 1px solid #bcd0e5;
+        border-radius: 999px;
+        color: var(--navy-strong);
+        background: var(--navy-soft);
+        font-size: 0.74rem;
+        font-weight: 800;
+      }
+
+      .service-state::before {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: #416f9e;
+        box-shadow: 0 0 0 4px rgba(65, 111, 158, 0.12);
+        content: "";
+      }
+
+      .panel {
+        overflow: hidden;
+        border: 1px solid rgba(214, 220, 227, 0.9);
+        border-radius: 24px;
+        background: rgba(248, 249, 250, 0.96);
+        box-shadow: var(--shadow);
+      }
+
+      .panel-heading {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 22px 24px 18px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .panel-kicker {
+        margin: 0 0 7px;
+        color: var(--navy);
+        font-size: 0.72rem;
+        font-weight: 900;
+        letter-spacing: 0.12em;
+      }
+
+      .panel-heading h1 {
+        margin: 0;
+        font-size: 1.55rem;
+        letter-spacing: -0.035em;
+      }
+
+      .demo-controls {
+        display: flex;
+        justify-content: flex-end;
+        gap: 7px;
+        flex-wrap: wrap;
+      }
+
+      .demo-controls button {
+        min-height: 36px;
+        padding: 7px 11px;
+        border: 1px solid #b9c4d0;
+        border-radius: 9px;
+        color: var(--navy-strong);
+        background: var(--white);
+        cursor: pointer;
+        font-size: 0.74rem;
+        font-weight: 800;
+      }
+
+      .demo-controls button.primary {
+        border-color: var(--navy);
+        color: #fff;
+        background: var(--navy);
+      }
+
+      .demo-controls button.danger {
+        border-color: var(--danger-line);
+        color: var(--danger);
+      }
+
+      .chat-log {
+        min-height: 650px;
+        padding: 28px 30px 32px;
+        background: rgba(255, 255, 255, 0.76);
+      }
+
+      .date-divider {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin: 0 0 26px;
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 800;
+      }
+
+      .date-divider::before,
+      .date-divider::after {
+        height: 1px;
+        flex: 1;
+        background: var(--line);
+        content: "";
+      }
+
+      .date-divider span {
+        padding: 5px 10px;
+        border-radius: 999px;
+        background: #edf1f5;
+      }
+
+      .chat-message {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        margin-bottom: 28px;
+      }
+
+      .chat-message.user {
+        justify-content: flex-end;
+      }
+
+      .avatar {
+        display: grid;
+        width: 40px;
+        height: 40px;
+        flex: 0 0 auto;
+        place-items: center;
+        border: 1px solid #bfd0e2;
+        border-radius: 13px;
+        color: var(--navy-strong);
+        background: var(--navy-soft);
+        font-size: 0.7rem;
+        font-weight: 900;
+      }
+
+      .message-column {
+        width: min(100%, 660px);
+      }
+
+      .user .message-column {
+        width: auto;
+        max-width: min(76%, 620px);
+      }
+
+      .message-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 25px;
+        margin-bottom: 6px;
+        color: var(--muted);
+        font-size: 0.72rem;
+      }
+
+      .user .message-meta {
+        justify-content: flex-end;
+      }
+
+      .message-meta strong {
+        color: var(--navy-strong);
+        font-size: 0.78rem;
+      }
+
+      .message-meta .latency-wrap {
+        position: relative;
+        margin-left: auto;
+      }
+
+      .latency-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-height: 26px;
+        padding: 4px 8px;
+        border: 1px solid #b9cce0;
+        border-radius: 999px;
+        color: var(--navy-strong);
+        background: var(--navy-soft);
+        cursor: default;
+        font-size: 0.68rem;
+        font-variant-numeric: tabular-nums;
+        font-weight: 800;
+        white-space: nowrap;
+        transition: color 180ms ease, background-color 180ms ease, border-color 180ms ease;
+      }
+
+      .latency-segment {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .latency-plus {
+        color: #8b949e;
+        font-weight: 700;
+      }
+
+      .latency-equals {
+        color: #8b949e;
+        font-weight: 800;
+      }
+
+      .latency-total {
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        color: inherit;
+        background: transparent;
+        font-weight: 900;
+      }
+
+      .latency-equals[hidden],
+      .latency-total[hidden] {
+        display: none;
+      }
+
+      .latency-pill.running {
+        border-color: #b9cce0;
+        color: var(--navy-strong);
+        background: var(--navy-soft);
+      }
+
+      .latency-pill.failed {
+        border-color: var(--danger-line);
+        color: var(--danger);
+        background: var(--danger-soft);
+      }
+
+      .latency-pill.failed .latency-total {
+        color: var(--danger);
+        background: transparent;
+      }
+
+      .timer-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: currentColor;
+      }
+
+      .running .timer-dot {
+        animation: timer-pulse 1s ease-in-out infinite;
+      }
+
+      @keyframes timer-pulse {
+        0%,
+        100% {
+          opacity: 0.35;
+          transform: scale(0.78);
+        }
+        50% {
+          opacity: 1;
+          transform: scale(1);
+        }
+      }
+
+      .latency-tooltip {
+        position: absolute;
+        z-index: 10;
+        top: calc(100% + 7px);
+        right: 0;
+        display: none;
+        width: 180px;
+        padding: 10px 11px;
+        border: 1px solid #c9d0d8;
+        border-radius: 10px;
+        color: var(--ink);
+        background: var(--white);
+        box-shadow: var(--shadow-soft);
+        font-size: 0.68rem;
+        line-height: 1.6;
+      }
+
+      .latency-tooltip strong {
+        display: block;
+        margin-bottom: 3px;
+        color: var(--navy-strong);
+        font-size: 0.7rem;
+      }
+
+      .latency-wrap:hover .latency-tooltip,
+      .latency-wrap:focus-within .latency-tooltip {
+        display: block;
+      }
+
+      .message-bubble {
+        padding: 14px 15px;
+        border: 1px solid var(--ai-line);
+        border-radius: 5px 17px 17px;
+        background: var(--ai-soft);
+        box-shadow: 0 5px 14px rgba(31, 35, 40, 0.04);
+        font-size: 0.84rem;
+        line-height: 1.75;
+      }
+
+      .user .message-bubble {
+        border-color: #c7cdd4;
+        border-radius: 17px 5px 17px 17px;
+        background: var(--user-soft);
+      }
+
+      .message-bubble p {
+        margin: 0;
+      }
+
+      .processing-copy {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        color: var(--muted);
+      }
+
+      .spinner {
+        width: 15px;
+        height: 15px;
+        border: 2px solid #cbd6e1;
+        border-top-color: var(--navy);
+        border-radius: 999px;
+        animation: spin 0.8s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .failure-copy {
+        color: var(--danger);
+        font-weight: 750;
+      }
+
+      .message-actions {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        min-height: 35px;
+        margin-top: 5px;
+        opacity: 0;
+        transition: opacity 140ms ease;
+      }
+
+      .chat-message:hover .message-actions,
+      .chat-message:focus-within .message-actions {
+        opacity: 1;
+      }
+
+      .message-actions button {
+        width: 29px;
+        height: 29px;
+        border: 0;
+        border-radius: 8px;
+        color: #596571;
+        background: transparent;
+        cursor: pointer;
+      }
+
+      .message-actions button:hover {
+        background: #e8edf2;
+      }
+
+      .design-note {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 16px;
+      }
+
+      .design-note div {
+        padding: 13px 14px;
+        border: 1px solid var(--line);
+        border-radius: 13px;
+        background: rgba(255, 255, 255, 0.75);
+      }
+
+      .design-note strong {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--navy-strong);
+        font-size: 0.75rem;
+      }
+
+      .design-note span {
+        color: var(--muted);
+        font-size: 0.7rem;
+        line-height: 1.55;
+      }
+
+      @media (max-width: 720px) {
+        .prototype-shell {
+          width: min(100% - 20px, 1120px);
+          margin-top: 10px;
+        }
+
+        .topbar,
+        .panel-heading {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .chat-log {
+          min-height: 600px;
+          padding: 22px 14px;
+        }
+
+        .message-column {
+          width: calc(100% - 52px);
+        }
+
+        .user .message-column {
+          max-width: 88%;
+        }
+
+        .message-meta {
+          flex-wrap: wrap;
+        }
+
+        .message-meta .latency-wrap {
+          width: 100%;
+          margin-left: 0;
+        }
+
+        .latency-tooltip {
+          right: auto;
+          left: 0;
+        }
+
+        .design-note {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="prototype-shell">
+      <header class="topbar">
+        <div class="simulation-clock">
+          <strong>2026-04-20 09:30</strong>
+          <span>시뮬레이션 시간 · 배속 60분/초</span>
+        </div>
+        <div class="service-states" aria-label="서버 상태">
+          <span class="service-state">Backend 정상</span>
+          <span class="service-state">AI Server 정상</span>
+        </div>
+      </header>
+
+      <section class="panel" aria-labelledby="page-title">
+        <header class="panel-heading">
+          <div>
+            <p class="panel-kicker">AI CHAT</p>
+            <h1 id="page-title">에이전트와의 대화</h1>
+          </div>
+          <div class="demo-controls" aria-label="타이머 예시 전환">
+            <button type="button" class="primary" id="play-button">응답 재생</button>
+            <button type="button" id="complete-button">완료 예시</button>
+            <button type="button" class="danger" id="failure-button">실패 예시</button>
+          </div>
+        </header>
+
+        <div class="chat-log">
+          <div class="date-divider"><span>2026년 4월 20일 월요일</span></div>
+
+          <article class="chat-message user">
+            <div class="message-column">
+              <div class="message-meta"><span>오전 9:30</span><strong>나</strong></div>
+              <div class="message-bubble">
+                <p>오늘 먹을 약과 복용 상태를 알려줘</p>
+              </div>
+            </div>
+          </article>
+
+          <article class="chat-message assistant" id="assistant-message">
+            <div class="avatar" aria-hidden="true">AI</div>
+            <div class="message-column">
+              <div class="message-meta">
+                <strong>닥터앤서 AI</strong>
+                <span>오전 9:30</span>
+                <div class="latency-wrap">
+                  <button
+                    type="button"
+                    class="latency-pill"
+                    id="latency-pill"
+                    aria-describedby="latency-tooltip"
+                  >
+                    <span class="timer-dot" aria-hidden="true"></span>
+                    <span class="latency-segment" id="first-response-label">첫 응답 2.1초</span>
+                    <span class="latency-plus" aria-hidden="true">+</span>
+                    <span class="latency-segment" id="generation-label">응답 생성 4.7초</span>
+                    <span class="latency-equals" id="latency-equals" aria-hidden="true">=</span>
+                    <span class="latency-segment latency-total" id="total-label">전체 6.8초</span>
+                  </button>
+                  <div class="latency-tooltip" id="latency-tooltip" role="tooltip">
+                    <strong>실제 응답 시간</strong>
+                    <div id="first-response-detail">첫 응답 2.1초</div>
+                    <div id="generation-detail">응답 생성 4.7초</div>
+                    <div id="total-response-detail">전체 완료 6.8초</div>
+                    <div>시뮬레이션 시간과 별도 측정</div>
+                  </div>
+                </div>
+              </div>
+              <div class="message-bubble" aria-live="polite" aria-busy="false" id="response-bubble">
+                <p id="response-text">오늘 복약 상태를 확인했습니다. 아침 복약은 완료되었고, 저녁 복약은 예정 상태입니다.</p>
+              </div>
+              <div class="message-actions" id="message-actions" aria-label="응답 작업">
+                <button type="button" aria-label="좋아요">👍</button>
+                <button type="button" aria-label="싫어요">👎</button>
+                <button type="button" aria-label="복사">⧉</button>
+              </div>
+            </div>
+          </article>
+
+          <div class="design-note" aria-label="타이머 동작 설명">
+            <div>
+              <strong>첫 응답 대기</strong>
+              <span>요청 직후부터 첫 토큰이 도착할 때까지의 시간이 증가합니다.</span>
+            </div>
+            <div>
+              <strong>응답 생성</strong>
+              <span>첫 토큰 도착 시간을 고정한 직후 두 번째 타이머가 0부터 시작합니다.</span>
+            </div>
+            <div>
+              <strong>완료·실패</strong>
+              <span>두 구간과 전체 시간을 함께 남겨 대기와 생성 지연을 구분합니다.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const playButton = document.querySelector("#play-button");
+      const completeButton = document.querySelector("#complete-button");
+      const failureButton = document.querySelector("#failure-button");
+      const latencyPill = document.querySelector("#latency-pill");
+      const firstResponseLabel = document.querySelector("#first-response-label");
+      const generationLabel = document.querySelector("#generation-label");
+      const latencyEquals = document.querySelector("#latency-equals");
+      const totalLabel = document.querySelector("#total-label");
+      const firstResponseDetail = document.querySelector("#first-response-detail");
+      const generationDetail = document.querySelector("#generation-detail");
+      const totalResponseDetail = document.querySelector("#total-response-detail");
+      const responseBubble = document.querySelector("#response-bubble");
+      const responseText = document.querySelector("#response-text");
+      const messageActions = document.querySelector("#message-actions");
+
+      const finalAnswer =
+        "오늘 복약 상태를 확인했습니다. 아침 복약은 완료되었고, 저녁 복약은 예정 상태입니다.";
+
+      let timerId = null;
+      let finishId = null;
+      let firstTokenId = null;
+      let startedAt = 0;
+      let firstResponseStartedAt = null;
+      let firstResponseSeconds = null;
+
+      function clearTimers() {
+        if (timerId) window.clearInterval(timerId);
+        if (finishId) window.clearTimeout(finishId);
+        if (firstTokenId) window.clearTimeout(firstTokenId);
+        timerId = null;
+        finishId = null;
+        firstTokenId = null;
+      }
+
+      function secondsSinceStart() {
+        return (performance.now() - startedAt) / 1000;
+      }
+
+      function stopwatch(seconds) {
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = seconds % 60;
+        return `${String(minutes).padStart(2, "0")}:${remainingSeconds
+          .toFixed(1)
+          .padStart(4, "0")}`;
+      }
+
+      function updateRunningLabel() {
+        if (firstResponseStartedAt === null) {
+          firstResponseLabel.textContent = `첫 응답 대기 ${stopwatch(secondsSinceStart())}`;
+          generationLabel.textContent = "응답 생성 대기";
+          return;
+        }
+        const generationSeconds =
+          (performance.now() - firstResponseStartedAt) / 1000;
+        firstResponseLabel.textContent = `첫 응답 ${firstResponseSeconds.toFixed(1)}초`;
+        generationLabel.textContent = `응답 생성 ${stopwatch(generationSeconds)}`;
+      }
+
+      function hideTotalLabel() {
+        latencyEquals.hidden = true;
+        totalLabel.hidden = true;
+      }
+
+      function showTotalLabel(label) {
+        latencyEquals.hidden = false;
+        totalLabel.hidden = false;
+        totalLabel.textContent = label;
+      }
+
+      function showCompleted() {
+        clearTimers();
+        latencyPill.className = "latency-pill";
+        firstResponseLabel.textContent = "첫 응답 2.1초";
+        generationLabel.textContent = "응답 생성 4.7초";
+        showTotalLabel("전체 6.8초");
+        firstResponseDetail.textContent = "첫 응답 2.1초";
+        generationDetail.textContent = "응답 생성 4.7초";
+        totalResponseDetail.textContent = "전체 완료 6.8초";
+        responseBubble.setAttribute("aria-busy", "false");
+        responseText.className = "";
+        responseText.textContent = finalAnswer;
+        messageActions.hidden = false;
+      }
+
+      function showFailure() {
+        clearTimers();
+        startedAt = performance.now();
+        firstResponseStartedAt = null;
+        firstResponseSeconds = null;
+        latencyPill.className = "latency-pill running";
+        hideTotalLabel();
+        firstResponseLabel.textContent = "첫 응답 대기 00:00.0";
+        generationLabel.textContent = "응답 생성 대기";
+        firstResponseDetail.textContent = "첫 응답 대기 중";
+        generationDetail.textContent = "응답 생성 시작 전";
+        totalResponseDetail.textContent = "실패 전까지 측정 중";
+        responseBubble.setAttribute("aria-busy", "true");
+        responseText.className = "processing-copy";
+        responseText.innerHTML = '<span class="spinner" aria-hidden="true"></span>처리중입니다';
+        messageActions.hidden = true;
+        timerId = window.setInterval(updateRunningLabel, 100);
+
+        finishId = window.setTimeout(() => {
+          const failedAt = secondsSinceStart();
+          clearTimers();
+          latencyPill.className = "latency-pill failed";
+          firstResponseLabel.textContent = "첫 응답 없음";
+          generationLabel.textContent = `실패 ${failedAt.toFixed(1)}초`;
+          showTotalLabel(`전체 실패 ${failedAt.toFixed(1)}초`);
+          firstResponseDetail.textContent = "첫 응답 없음";
+          generationDetail.textContent = "응답 생성 시작 전 실패";
+          totalResponseDetail.textContent = `요청 실패 ${failedAt.toFixed(1)}초`;
+          responseBubble.setAttribute("aria-busy", "false");
+          responseText.className = "failure-copy";
+          responseText.textContent = "AI Server 연결 또는 답변 생성에 실패했습니다.";
+        }, 5000);
+      }
+
+      function playResponse() {
+        clearTimers();
+        startedAt = performance.now();
+        firstResponseStartedAt = null;
+        firstResponseSeconds = null;
+        latencyPill.className = "latency-pill running";
+        hideTotalLabel();
+        firstResponseLabel.textContent = "첫 응답 대기 00:00.0";
+        generationLabel.textContent = "응답 생성 대기";
+        firstResponseDetail.textContent = "첫 응답 대기 중";
+        generationDetail.textContent = "응답 생성 시작 전";
+        totalResponseDetail.textContent = "전체 완료 대기 중";
+        responseBubble.setAttribute("aria-busy", "true");
+        responseText.className = "processing-copy";
+        responseText.innerHTML = '<span class="spinner" aria-hidden="true"></span>처리중입니다';
+        messageActions.hidden = true;
+        timerId = window.setInterval(updateRunningLabel, 100);
+
+        firstTokenId = window.setTimeout(() => {
+          firstResponseStartedAt = performance.now();
+          firstResponseSeconds = secondsSinceStart();
+          firstResponseLabel.textContent = `첫 응답 ${firstResponseSeconds.toFixed(1)}초`;
+          generationLabel.textContent = "응답 생성 00:00.0";
+          firstResponseDetail.textContent = `첫 응답 ${firstResponseSeconds.toFixed(1)}초`;
+          generationDetail.textContent = "응답 생성 중";
+          responseText.className = "";
+          responseText.textContent = "오늘 복약 상태를 확인했습니다.";
+        }, 2100);
+
+        finishId = window.setTimeout(() => {
+          const totalSeconds = secondsSinceStart();
+          const generationSeconds = firstResponseStartedAt
+            ? (performance.now() - firstResponseStartedAt) / 1000
+            : 0;
+          clearTimers();
+          latencyPill.className = "latency-pill";
+          firstResponseLabel.textContent = `첫 응답 ${firstResponseSeconds.toFixed(1)}초`;
+          generationLabel.textContent = `응답 생성 ${generationSeconds.toFixed(1)}초`;
+          showTotalLabel(`전체 ${totalSeconds.toFixed(1)}초`);
+          generationDetail.textContent = `응답 생성 ${generationSeconds.toFixed(1)}초`;
+          totalResponseDetail.textContent = `전체 완료 ${totalSeconds.toFixed(1)}초`;
+          responseBubble.setAttribute("aria-busy", "false");
+          responseText.textContent = finalAnswer;
+          messageActions.hidden = false;
+        }, 6800);
+      }
+
+      playButton.addEventListener("click", playResponse);
+      completeButton.addEventListener("click", showCompleted);
+      failureButton.addEventListener("click", showFailure);
+    </script>
+  </body>
+</html>

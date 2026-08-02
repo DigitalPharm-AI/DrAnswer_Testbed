@@ -5,12 +5,13 @@ import time
 from datetime import date, datetime
 
 import pytest
+
 import system_app.main as system_main
+from shared.async_v13_contracts import AsyncEventAccepted
 from shared.schemas import (
     MissedDoseEventPayload,
     SlotAdherenceSummary,
 )
-from shared.async_v13_contracts import AsyncEventAccepted
 from shared.settings import get_settings
 from system_app.models import (
     AgentJob,
@@ -25,7 +26,6 @@ from system_app.services.clock_service import ensure_clock
 from system_app.services.notification_service import create_notification
 from system_app.services.patient_profile_service import ensure_base_data
 from tests.helpers import build_session, build_threadsafe_session_factory
-
 
 TEST_PATIENT_ID = get_settings().patient_id
 

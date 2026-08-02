@@ -90,7 +90,7 @@ class BackendV13Client:
             base_url=settings.system_base_url,
             record_change_path=settings.backend_record_change_path,
             notification_policy_change_path=settings.backend_notification_policy_change_path,
-            bearer_token=settings.backend_api_token or "",
+            bearer_token=settings.require_service_api_token(),
             timeout_seconds=settings.backend_api_timeout_seconds,
             max_retries=settings.backend_api_max_retries,
         )
@@ -122,7 +122,7 @@ class BackendV13Client:
         if not path:
             raise BackendV13ConfigurationError("backend_api_path_required")
         if not self.bearer_token:
-            raise BackendV13ConfigurationError("backend_api_token_required")
+            raise BackendV13ConfigurationError("service_api_token_required")
 
         headers = {"Authorization": self._authorization_value()}
         attempts = self.max_retries + 1

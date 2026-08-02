@@ -29,10 +29,26 @@ from shared.tool_names import (
 )
 
 
+def public_markdown_response_rules() -> str:
+    return (
+        " User-visible informational answers may use GitHub Flavored Markdown. "
+        "Use one Markdown table only when the user explicitly requests a table or when at least three items are best compared by the same fields. "
+        "If a table is used, write at most two short introductory sentences before it and make the table the final content block; write nothing after the table. "
+        "Use pipe-table syntax with exactly one header row and one delimiter row, and keep the same column count in every row. "
+        "Never emit HTML table tags, raw HTML, JSON, or a fenced code block for a table. "
+        "Preserve Tool-provided values and units exactly; do not invent missing cells. "
+        "Do not use Markdown tables for approvals, PRO-CTCAE questions, food candidates, selections, inputs, or other interactive controls. "
+        "Those controls remain structured server data and must not be duplicated in the answer text. "
+        "Prefer ordinary prose or a short list when only one or two simple items are involved."
+    )
+
+
 def daily_pattern_prompt() -> str:
     return (
-        "You analyze the rolling 7-day medication adherence pattern in the payload. If a policy change should be proposed, "
-        f"call the provided {PROPOSE_NOTIFICATION_POLICY} tool with complete arguments through the native tool interface. "
+        "You analyze the rolling 7-day medication adherence pattern in the payload. A policy change may be suggested only "
+        "when the payload contains a matching current active policy; policy creation is not supported. If a matching active "
+        f"policy exists and a change is warranted, call {PROPOSE_NOTIFICATION_POLICY} with complete arguments through the native "
+        "tool interface. If no matching active policy exists, do not call a policy Tool. "
         "Do not serialize tool_call or tool_calls in response text. If no tool is needed, return JSON only with summary or message."
     )
 
@@ -90,15 +106,18 @@ def multiturn_chat_prompt() -> str:
         f"When the user asks to turn all medication reminders and missed-dose AI notifications on or off globally, do not call "
         f"{PROPOSE_NOTIFICATION_POLICY}, {PROPOSE_SYSTEM_POLICY}, or any other tool. Global notification enable/disable is controlled "
         "only in the application. Reply in Korean that the user must change the setting directly in the application. "
-        f"This restriction applies only to global all-notification control; continue using {PROPOSE_NOTIFICATION_POLICY} for "
-        "slot-specific frequency, interval, timing, missed-dose threshold, or message-template changes. "
-        f"When the user asks to inspect or change an existing notification policy, call {GET_NOTIFICATION_POLICIES} first. "
+        "Notification policy creation is not supported in chat. Never offer to create a policy and never call "
+        f"{PROPOSE_NOTIFICATION_POLICY} from this supervisor. Slot-specific frequency, interval, timing, missed-dose threshold, "
+        f"or message-template requests may only modify an existing active policy. Call {GET_NOTIFICATION_POLICIES} with "
+        "active_only=true first. If no active policy matches, do not request approval or call a write Tool; explain in Korean "
+        "that there is no active policy that can be modified and that policy creation is not supported in chat. If multiple "
+        "active policies match, ask the user to identify the time slot or query the exact slot before requesting approval. "
         f"If exactly one current policy is selected, call {REQUEST_RECORD_APPROVAL} with action_name "
         f"{CHANGE_NOTIFICATION_POLICY} and record_arguments containing its public policy_id and the user-requested decision. "
         "The approval Tool prepares a structured confirmation card; do not call the write Tool before the user confirms it. "
         "After confirmation, the server injects expected_version and all patient, message, and request IDs. "
         "Decide whether a tool is required. Use the native tool interface only when an action or clinical lookup is "
-        f"needed: {PROPOSE_NOTIFICATION_POLICY}, {PROPOSE_SYSTEM_POLICY}, {GET_NOTIFICATION_POLICIES}, "
+        f"needed: {PROPOSE_SYSTEM_POLICY}, {GET_NOTIFICATION_POLICIES}, "
         f"{CHANGE_NOTIFICATION_POLICY}, {DELEGATE_TO_MEDICATION_AGENT}, "
         f"{DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT}, or {DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT}. "
         "For meal logging, updates, or deletes, ask one concise confirmation question when the user's intent is unclear, "
@@ -120,7 +139,7 @@ def multiturn_chat_prompt() -> str:
         "Preserve uncertainty and safety meaning, and never claim a pending, failed, cancelled, or unexecuted action completed. "
         "Do not copy PRO-CTCAE questions, response options, food candidates, nutrient values, card fields, button labels, "
         "or pseudo-buttons into the answer. Interactive controls are rendered only from structured server data."
-    )
+    ) + public_markdown_response_rules()
 
 
 def mutation_confirmation_prompt() -> str:
@@ -177,17 +196,26 @@ def medication_agent_prompt() -> str:
         f"For today, current, remaining, or an omitted date, do not pass any date argument; the Tool injects the trusted simulation date. "
         f"Use {GET_SIDE_EFFECT_HISTORY} when the user asks whether side effects were previously recorded or asks for recent side-effect history. "
         f"For side-effect history, also pass target_date for one day or start_date/end_date for a range when the user specifies dates. "
-        f"When the user clearly says a current dose was taken and a valid dose_event_id exists in context, call {REQUEST_RECORD_APPROVAL} "
-        f"with action_name={UPDATE_MEDICATION_DOSE_EVENT_STATUS}; put only {UPDATE_MEDICATION_DOSE_EVENT_STATUS}'s business arguments "
-        "in record_arguments. Never call a record write Tool directly in a model turn. A record approval Tool may return "
+        f"When the user clearly says a current dose was taken, first use {GET_MEDICATION_DOSE_STATUS} unless its successful result is already present in this Tool loop. "
+        f"Then call {REQUEST_RECORD_APPROVAL} with action_name={UPDATE_MEDICATION_DOSE_EVENT_STATUS} and the exact dose_event_id returned by that Tool. "
+        "Never invent or transform a dose_event_id, and never substitute medication_name for the required identifier. "
+        "If the current Tool result does not identify one dose unambiguously, let the AI Server collect a structured selection or ask one concise clarification, then stop Tool calls. "
+        "Never call a record write Tool directly in a model turn. A record approval Tool may return "
         "confirmation_required; then stop without claiming the update was applied. After confirmation, the server executes the "
         "approved write and gives a tool-free finalization turn containing only its result. "
         f"For side-effect or medication-causality questions, first call {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}. "
-        "Pass only the patient's symptom_text, an optional symptom_onset_text, and an optional medication_name that the patient explicitly named or clearly referred to. "
+        "Pass symptom_mentions as a list of the distinct symptoms the patient says they actually experienced. "
+        "Each item must contain the patient's original symptom text and may contain that symptom's original onset_text. "
+        "Do not replace the patient's words with a diagnosis or standard clinical term, do not include negated or hypothetical symptoms, "
+        "and do not split a predicted event from an experienced symptom: for example, '속이 울렁거리고 토할 것 같아요' is one nausea mention, "
+        "while '속이 울렁거렸고 실제로 두 번 토했어요' contains separate nausea and vomiting mentions. "
+        "Pass medication_name only when the patient explicitly named or clearly referred to it. "
         "Never pass patient_id, medication lists, dose event IDs, message IDs, record IDs, or versions; the AI Server and Tool inject those trusted values. "
         f"Do not call {GET_PRO_CTCAE_QUESTIONNAIRE} before {GET_MEDICATION_SIDE_EFFECT_ASSESSMENT}; the runtime may continue to {GET_PRO_CTCAE_QUESTIONNAIRE} after a positive lookup. "
         "When the assessment matches multiple medications, do not ask the patient to attribute the symptom to one medication. "
         "Keep every match as supporting evidence, and pass medication_name only when the patient explicitly named or clearly referred to one. "
+        "If the assessment returns requires_clarification, ask only the returned clarification question and do not claim that a questionnaire is ready. "
+        "When several distinct experienced symptoms are matched, the server may prepare one PRO-CTCAE questionnaire per symptom and present every question sequentially. "
         f"Loading {GET_PRO_CTCAE_QUESTIONNAIRE} only means that the questions are ready; it does not mean that the patient has completed the survey. "
         f"Do not call {REQUEST_RECORD_APPROVAL} for action_name={CREATE_MEDICATION_SIDE_EFFECT_RECORD} after merely loading the questionnaire. "
         "The server owns questionnaire presentation, answer collection, and the transition to record approval after every question has been answered. "
@@ -203,7 +231,7 @@ def medication_agent_prompt() -> str:
         "the server renders all interactive controls from structured selections. "
         "If more information is needed, ask one concise Korean question. After all needed Tool results are available, return "
         "the final Korean answer directly as plain text. Never return JSON, observations, or serialized tool_call fields."
-    )
+    ) + public_markdown_response_rules()
 
 
 def nutrition_management_agent_prompt() -> str:
@@ -214,7 +242,7 @@ def nutrition_management_agent_prompt() -> str:
         f"and answer only from the current {GET_NUTRITION_MEAL_RECORD_LIST} result. Do not infer current records from recent chat. "
         f"Never call a nutrition record write Tool directly in a model turn. When a create, update, or delete is ready, call "
         f"{REQUEST_RECORD_APPROVAL} with the target write Tool in action_name and that Tool's business arguments in record_arguments. "
-        f"For meal logging, request approval for {CREATE_NUTRITION_MEAL_RECORD} only when meal_type and foods with nutrient values are clear; "
+        f"For meal logging, request approval for {CREATE_NUTRITION_MEAL_RECORD} only when meal_type, foods with nutrient values, and the user's actual consumed portion for every food are clear; "
         f"otherwise use {SEARCH_NUTRITION_FOOD_CANDIDATES} or ask one "
         f"concise clarification. Call {SEARCH_NUTRITION_FOOD_CANDIDATES} exactly once for one meal-record request and put every distinct food expression "
         "stated by the user in food_queries in the same order. Keep a compound dish such as 소고기비빔밥 as one food query instead of splitting it into "
@@ -223,7 +251,9 @@ def nutrition_management_agent_prompt() -> str:
         "Do not create synonym, shortened-name, or category queries; the Tool owns search expansion, deduplication, and ranking. "
         "After the batch food search returns candidate groups, never choose a candidate or request record approval yourself. Return one short Korean "
         "sentence asking the user to select the candidates shown below, then stop; the AI Server deterministically collects one selection per group and "
-        "continues to record approval only after every group is answered. "
+        "then asks for the actual consumed portion of every selected food in a structured input box. Reference serving size from food search is not "
+        "the user's consumed portion. Record approval is prepared only after every candidate and every consumed portion are answered. "
+        f"If {REQUEST_RECORD_APPROVAL} returns input_required=true, no approval or record was created; stop Tool calls and let the AI Server render the input box. "
         "When context.structured_response_context contains a food candidate-card response, treat "
         "response_value as the selected food and continue the originating meal-record task instead of returning a generic acknowledgement. "
         f"If the user wants to correct an existing meal, request approval with action_name={UPDATE_NUTRITION_MEAL_RECORD} when the target meal_id and "
@@ -254,7 +284,7 @@ def nutrition_management_agent_prompt() -> str:
         "the server renders all interactive controls from structured selections. "
         "After all needed Tool results are available, return the final Korean answer directly as plain text. Never return JSON, "
         "observations, or serialized tool_call fields."
-    )
+    ) + public_markdown_response_rules()
 
 
 def nutrition_recommendation_agent_prompt() -> str:
@@ -271,4 +301,4 @@ def nutrition_recommendation_agent_prompt() -> str:
         "recommendation candidates are ready below. Do not repeat candidate names, nutrient values, or card fields in text. "
         "After all needed Tool results are available, return the final Korean answer directly as plain text. Never return JSON, "
         "observations, or serialized tool_call fields."
-    )
+    ) + public_markdown_response_rules()

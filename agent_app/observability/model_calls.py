@@ -250,7 +250,78 @@ def aggregate_token_usage(
 def _record_observation(observation: ModelCallObservation) -> None:
     collector = _MODEL_CALL_COLLECTOR.get()
     if collector is not None:
+        if (
+            observation.get("observation_type") == "generation"
+            and not observation.get("model_call_index")
+        ):
+            observation["model_call_index"] = 1 + sum(
+                1
+                for item in collector
+                if item.get("observation_type") == "generation"
+            )
         collector.append(observation)
+
+
+def record_embedding_observation(
+    *,
+    name: str,
+    provider: str,
+    model_id: str,
+    region: str,
+    input_type: str,
+    texts: list[str],
+    dimensions: int,
+    embeddings: list[list[float]] | None,
+    started_at: datetime,
+    completed_at: datetime,
+    latency_ms: int,
+    status: str,
+    error_code: str = "",
+    status_message: str = "",
+) -> None:
+    """Record a secret-free embedding call in the current Agent trace."""
+
+    output_shape = {
+        "vector_count": len(embeddings or []),
+        "dimensions": dimensions,
+    }
+    _record_observation(
+        {
+            "observation_id": uuid.uuid4().hex,
+            "observation_type": "embedding",
+            "name": name,
+            "status": status,
+            "level": "ERROR" if status == "ERROR" else "DEFAULT",
+            "status_message": status_message,
+            "error_code": error_code,
+            "prompt_version_id": "",
+            "provider": provider,
+            "model_id": model_id,
+            "model_parameters": {
+                "region": region,
+                "input_type": input_type,
+                "text_count": len(texts),
+                "input_characters": sum(len(value) for value in texts),
+                "dimensions": dimensions,
+            },
+            "input_hash": sha256_json(texts),
+            "output_hash": sha256_json(output_shape),
+            "decision_evidence": {},
+            "route_decision": {},
+            "input_composition": {
+                "text_count": len(texts),
+                "utf8_bytes": sum(
+                    len(value.encode("utf-8")) for value in texts
+                ),
+            },
+            "usage_details": {"input": 0, "output": 0},
+            "started_at": started_at.isoformat(),
+            "completion_start_time": None,
+            "completed_at": completed_at.isoformat(),
+            "latency_ms": max(0, int(latency_ms)),
+            "time_to_first_token_ms": 0,
+        }
+    )
 
 
 def _has_tool_call_signal(chunk: Any) -> bool:
@@ -324,6 +395,7 @@ def _model_observation(
 ) -> ModelCallObservation:
     usage_details = _usage_details(result)
     identity = _model_identity(model)
+    decision_evidence = _decision_evidence(messages, result)
     return {
         "observation_id": uuid.uuid4().hex,
         "observation_type": "generation",
@@ -338,9 +410,12 @@ def _model_observation(
         "model_parameters": identity["model_parameters"],
         "input_hash": sha256_json(_message_projection(messages)),
         "output_hash": sha256_json(_result_projection(result)),
-        "decision_evidence": _decision_evidence(
+        "decision_evidence": decision_evidence,
+        "route_decision": _route_decision(decision_evidence),
+        "input_composition": _input_composition(
+            model,
             messages,
-            result,
+            provider_input_tokens=usage_details["input"],
         ),
         "usage_details": usage_details,
         "started_at": started_at.isoformat(),
@@ -552,6 +627,38 @@ def _system_decision_reason_code(
     return "MODEL_EMPTY_RESPONSE"
 
 
+def _route_decision(
+    decision_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    reason_code = str(
+        decision_evidence.get("system_reason_code") or ""
+    )
+    raw_tool_calls = decision_evidence.get("tool_calls")
+    tool_calls = (
+        raw_tool_calls if isinstance(raw_tool_calls, list) else []
+    )
+    selected_tool_names = sorted(
+        {
+            str(call.get("tool_name") or "")
+            for call in tool_calls
+            if isinstance(call, dict) and call.get("tool_name")
+        }
+    )
+    if selected_tool_names:
+        outcome = "tool_call"
+    elif reason_code == "MODEL_FINAL_RESPONSE":
+        outcome = "final_response"
+    elif reason_code == "MODEL_EMPTY_RESPONSE":
+        outcome = "empty_response"
+    else:
+        outcome = "other"
+    return {
+        "reason_code": reason_code,
+        "outcome": outcome,
+        "selected_tool_names": selected_tool_names,
+    }
+
+
 def _contains_key(value: Any, target: str) -> bool:
     if isinstance(value, dict):
         return target in value or any(
@@ -613,6 +720,20 @@ def _safe_model_parameters(model: Any) -> dict[str, Any]:
         if isinstance(value, (str, int, float, bool)) or value is None:
             if value is not None:
                 parameters[key] = value
+    additional = getattr(
+        model,
+        "additional_model_request_fields",
+        None,
+    )
+    if isinstance(additional, dict):
+        thinking = additional.get("thinking")
+        if isinstance(thinking, dict) and thinking.get("type"):
+            parameters["thinking_type"] = str(thinking["type"])
+        output_config = additional.get("output_config")
+        if isinstance(output_config, dict) and output_config.get("effort"):
+            parameters["reasoning_effort"] = str(
+                output_config["effort"]
+            )
     return parameters
 
 
@@ -735,6 +856,176 @@ def _message_projection(messages: list[Any]) -> list[dict[str, Any]]:
         }
         for message in messages
     ]
+
+
+def _input_composition(
+    model: Any,
+    messages: list[Any],
+    *,
+    provider_input_tokens: int,
+) -> dict[str, Any]:
+    """Return redaction-safe input size diagnostics for one model call.
+
+    Providers expose only the aggregate input token count. Component token
+    values are therefore explicitly marked as estimates, while character and
+    UTF-8 byte counts are exact. No prompt, context, or Tool schema content is
+    retained here.
+    """
+
+    grouped_content: dict[str, list[Any]] = {
+        "system_prompt": [],
+        "human_messages": [],
+        "assistant_messages": [],
+        "tool_messages": [],
+        "other_messages": [],
+    }
+    for message in messages:
+        message_type = type(message).__name__
+        if message_type == "SystemMessage":
+            group = "system_prompt"
+        elif message_type == "HumanMessage":
+            group = "human_messages"
+        elif message_type in {"AIMessage", "AIMessageChunk"}:
+            group = "assistant_messages"
+        elif message_type in {"ToolMessage", "ToolMessageChunk"}:
+            group = "tool_messages"
+        else:
+            group = "other_messages"
+        grouped_content[group].append(
+            getattr(message, "content", "")
+        )
+
+    components = {
+        name: _aggregate_component_metrics(values)
+        for name, values in grouped_content.items()
+    }
+    payload = _first_human_json_payload(messages)
+    context = (
+        payload.get("context")
+        if isinstance(payload.get("context"), dict)
+        else {}
+    )
+    other_payload = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"message", "context"}
+    }
+    payload_components = {
+        "user_message": _component_metrics(
+            str(payload.get("message") or "")
+        ),
+        "context": _component_metrics(context),
+        "other": _component_metrics(other_payload),
+    }
+    tool_schemas = _bound_tool_schemas(model)
+    tool_schema_metrics = {
+        "count": len(tool_schemas),
+        **_component_metrics(tool_schemas),
+    }
+    message_estimate = sum(
+        int(metrics["estimated_tokens"])
+        for metrics in components.values()
+    )
+    known_estimate = (
+        message_estimate
+        + int(tool_schema_metrics["estimated_tokens"])
+    )
+    return {
+        "measurement_version": "input_composition_v1",
+        "provider_input_tokens": max(0, provider_input_tokens),
+        "component_token_kind": "estimated_utf8_bytes_div_4",
+        "message_count": len(messages),
+        "components": components,
+        "payload_components": payload_components,
+        "tool_schema": tool_schema_metrics,
+        "known_component_estimated_tokens": known_estimate,
+        "provider_minus_estimate_tokens": (
+            max(0, provider_input_tokens) - known_estimate
+        ),
+    }
+
+
+def _first_human_json_payload(
+    messages: list[Any],
+) -> dict[str, Any]:
+    for message in messages:
+        if type(message).__name__ != "HumanMessage":
+            continue
+        content = getattr(message, "content", "")
+        if not isinstance(content, str):
+            return {}
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            return {"message": content}
+        return payload if isinstance(payload, dict) else {}
+    return {}
+
+
+def _bound_tool_schemas(model: Any) -> list[Any]:
+    current = model
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        for attribute in ("bound_tools", "tools"):
+            tools = getattr(current, attribute, None)
+            if isinstance(tools, (list, tuple)):
+                return list(tools)
+        for attribute in ("kwargs", "model_kwargs"):
+            values = getattr(current, attribute, None)
+            if not isinstance(values, dict):
+                continue
+            tools = values.get("tools")
+            if isinstance(tools, (list, tuple)):
+                return list(tools)
+        current = getattr(current, "bound", None)
+    return []
+
+
+def _component_metrics(value: Any) -> dict[str, int]:
+    if value in (None, "") or value == {} or value == [] or value == ():
+        return {
+            "characters": 0,
+            "utf8_bytes": 0,
+            "estimated_tokens": 0,
+        }
+    serialized = _size_projection(value)
+    utf8_bytes = len(serialized.encode("utf-8"))
+    return {
+        "characters": len(serialized),
+        "utf8_bytes": utf8_bytes,
+        "estimated_tokens": (
+            (utf8_bytes + 3) // 4 if utf8_bytes else 0
+        ),
+    }
+
+
+def _aggregate_component_metrics(
+    values: list[Any],
+) -> dict[str, int]:
+    metrics = [_component_metrics(value) for value in values]
+    return {
+        "characters": sum(item["characters"] for item in metrics),
+        "utf8_bytes": sum(item["utf8_bytes"] for item in metrics),
+        "estimated_tokens": sum(
+            item["estimated_tokens"] for item in metrics
+        ),
+    }
+
+
+def _size_projection(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=lambda item: type(item).__name__,
+        )
+    except (TypeError, ValueError):
+        return type(value).__name__
 
 
 def _result_projection(result: Any) -> Any:

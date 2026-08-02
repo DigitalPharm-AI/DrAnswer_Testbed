@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 DATASET_PATH = Path("data/evals/agent_production_readiness_cases.json")
 REQUIRED_FIELDS = {
     "id",

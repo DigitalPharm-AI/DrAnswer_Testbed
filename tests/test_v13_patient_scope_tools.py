@@ -30,6 +30,7 @@ from shared.tool_names import (
     UPDATE_MEDICATION_DOSE_EVENT_STATUS,
 )
 from shared.tool_permissions import TOOL_ALLOWLIST, validate_tool_permission
+from tests.support.adverse_reactions import TestbedAdverseReactionLookup
 
 PATIENT_A = "patient_0000000000000001"
 PATIENT_B = "patient_0000000000000002"
@@ -515,6 +516,7 @@ async def test_side_effect_assessment_uses_trusted_snapshot_without_phr_key() ->
     server = AgentMcpToolServer(
         backend_client=FakeBackendClient(),
         backend_queries=CapturingBackendQueries(),
+        adverse_reactions=TestbedAdverseReactionLookup(),
     )
     payload = _v13_payload()
     payload["context"]["trusted_patient_context"] = {
@@ -543,8 +545,12 @@ async def test_side_effect_assessment_uses_trusted_snapshot_without_phr_key() ->
         server,
         tool_name=GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
         arguments={
-            "symptom_text": "속이 메스꺼웠어",
-            "symptom_onset_text": "어제 복용 후",
+            "symptom_mentions": [
+                {
+                    "text": "속이 메스꺼웠어",
+                    "onset_text": "어제 복용 후",
+                }
+            ],
         },
         source_event_type="medication_agent",
         payload=payload,
@@ -566,6 +572,7 @@ async def test_side_effect_assessment_keeps_all_matches_without_forced_choice() 
     server = AgentMcpToolServer(
         backend_client=FakeBackendClient(),
         backend_queries=CapturingBackendQueries(),
+        adverse_reactions=TestbedAdverseReactionLookup(),
     )
     payload = _v13_payload()
     payload["context"]["trusted_patient_context"] = {
@@ -588,7 +595,9 @@ async def test_side_effect_assessment_keeps_all_matches_without_forced_choice() 
     result = await _execute(
         server,
         tool_name=GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
-        arguments={"symptom_text": "속이 메스꺼웠어"},
+        arguments={
+            "symptom_mentions": [{"text": "속이 메스꺼웠어"}]
+        },
         source_event_type="medication_agent",
         payload=payload,
     )
@@ -610,11 +619,66 @@ async def test_side_effect_assessment_keeps_all_matches_without_forced_choice() 
 
 
 @pytest.mark.asyncio
+async def test_side_effect_assessment_accepts_multiple_raw_symptom_mentions() -> None:
+    server = AgentMcpToolServer(
+        backend_client=FakeBackendClient(),
+        backend_queries=CapturingBackendQueries(),
+        adverse_reactions=TestbedAdverseReactionLookup(),
+    )
+    payload = _v13_payload()
+    payload["context"]["trusted_patient_context"] = {
+        "patient_id": PATIENT_A,
+        "as_of": "2026-07-25T10:30:00+09:00",
+        "availability": {"today_medication": "available"},
+        "active_medication_schedules": [
+            {"medication_name": "메트포르민 500mg"},
+            {"medication_name": "암로디핀 5mg"},
+        ],
+        "today_medication": {"dose_events": []},
+    }
+
+    result = await _execute(
+        server,
+        tool_name=GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+        arguments={
+            "symptom_mentions": [
+                {
+                    "text": "속이 울렁거렸어",
+                    "onset_text": "어제 복용 후",
+                },
+                {
+                    "text": "어지러웠어",
+                    "onset_text": "오늘 아침",
+                },
+            ]
+        },
+        source_event_type="medication_agent",
+        payload=payload,
+    )
+
+    assert result.status == "success"
+    assert [
+        item["symptom_text"] for item in result.response["assessments"]
+    ] == ["속이 울렁거렸어", "어지러웠어"]
+    assert [
+        item["symptom_onset_text"]
+        for item in result.response["assessments"]
+    ] == ["어제 복용 후", "오늘 아침"]
+    assert result.response["matched_items"] == [
+        "메트포르민 500mg",
+        "암로디핀 5mg",
+    ]
+    assert len(result.response["side_effect_record_drafts"]) == 2
+    assert "side_effect_record_draft" not in result.response
+
+
+@pytest.mark.asyncio
 async def test_confirmed_side_effect_write_uses_backend_sync_contract_once() -> None:
     client = CapturingSideEffectWriteClient()
     server = AgentMcpToolServer(
         backend_client=client,
         backend_queries=CapturingBackendQueries(),
+        adverse_reactions=TestbedAdverseReactionLookup(),
     )
     source_chat_request_id = "req_0000000000000002"
     confirmation_message_id = "user_msg_0000000000000002"

@@ -1,0 +1,97 @@
+{
+  "dataset_id": "symptom-concept-canary-v1",
+  "owner": "AI Server",
+  "review_cadence": "on symptom reference, embedding model, verifier model, or prompt change",
+  "cases": [
+    {
+      "case_id": "SC-001",
+      "input": "메스꺼움",
+      "expected_concept": "Nausea",
+      "expected_match_type": "EXACT",
+      "require_mfds_link": true,
+      "require_pro_ctcae": true,
+      "tags": ["deterministic", "canonical", "nausea"]
+    },
+    {
+      "case_id": "SC-002",
+      "input": "현기증",
+      "expected_concept": "Dizziness",
+      "expected_match_type": "EXACT",
+      "require_mfds_link": true,
+      "require_pro_ctcae": true,
+      "tags": ["deterministic", "alias", "dizziness"]
+    },
+    {
+      "case_id": "SC-003",
+      "input": "설사",
+      "expected_concept": "Diarrhea",
+      "expected_match_type": "EXACT",
+      "require_mfds_link": true,
+      "require_pro_ctcae": true,
+      "tags": ["deterministic", "canonical", "diarrhea"]
+    },
+    {
+      "case_id": "SC-004",
+      "input": "근육통",
+      "expected_concept": "Muscle pain",
+      "expected_match_type": "EXACT",
+      "require_mfds_link": true,
+      "require_pro_ctcae": true,
+      "tags": ["deterministic", "canonical", "muscle-pain"]
+    },
+    {
+      "case_id": "SC-005",
+      "input": "변비",
+      "expected_concept": "Constipation",
+      "expected_match_type": "EXACT",
+      "require_mfds_link": true,
+      "require_pro_ctcae": true,
+      "tags": ["deterministic", "canonical", "constipation"]
+    },
+    {
+      "case_id": "SC-006",
+      "input": "속이 울렁거리고 토할 것 같아요",
+      "expected_concept": "Nausea",
+      "expected_match_type": "VECTOR_LLM_VERIFIED",
+      "require_mfds_link": true,
+      "require_pro_ctcae": true,
+      "tags": ["semantic", "colloquial", "nausea"]
+    },
+    {
+      "case_id": "SC-007",
+      "input": "방이 빙글빙글 도는 것처럼 어지러워요",
+      "expected_concept": "Dizziness",
+      "expected_match_type": "VECTOR_LLM_VERIFIED",
+      "require_mfds_link": true,
+      "require_pro_ctcae": true,
+      "tags": ["semantic", "colloquial", "dizziness"]
+    },
+    {
+      "case_id": "SC-008",
+      "input": "물 같은 변을 오늘 여러 번 봤어요",
+      "expected_concept": "Diarrhea",
+      "expected_match_type": "VECTOR_LLM_VERIFIED",
+      "require_mfds_link": true,
+      "require_pro_ctcae": true,
+      "tags": ["semantic", "colloquial", "diarrhea"]
+    },
+    {
+      "case_id": "SC-009",
+      "input": "온몸에 붉은 반점이 올라왔어요",
+      "expected_concept": "Rash",
+      "expected_match_type": "VECTOR_LLM_VERIFIED",
+      "require_mfds_link": true,
+      "require_pro_ctcae": true,
+      "tags": ["semantic", "coverage-probe", "rash"]
+    },
+    {
+      "case_id": "SC-010",
+      "input": "오늘은 아무 증상 없이 기분이 좋아요",
+      "expected_concept": null,
+      "expected_match_type": "NONE",
+      "require_mfds_link": false,
+      "require_pro_ctcae": false,
+      "tags": ["semantic", "negative", "false-positive-guard"]
+    }
+  ]
+}

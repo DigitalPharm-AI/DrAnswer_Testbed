@@ -1,26 +1,42 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 import hmac
 import json
-import os
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Literal
 from uuid import uuid4
 
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
+from agent_app.integration.food_selection_payloads import (
+    NUTRITION_FOOD,
+    build_food_selection_snapshot,
+    food_group_candidates,
+    food_portion_definitions,
+    food_state_candidates,
+    food_state_groups,
+    format_food_quantity,
+    public_food_candidate,
+    scale_food_nutrients,
+    selected_food_candidates,
+)
+from agent_app.integration.selection_errors import (
+    SelectionStateEncryptionError,
+    SelectionStateError,
+)
+from agent_app.integration.state_crypto import (
+    AgentStateCipher,
+    AgentStateCipherError,
+)
 from agent_app.persistence.models import AgentPendingSelection
 from shared.backend_v13_contracts import (
     NutritionMealMutationPayload,
 )
 from shared.json_utils import canonical_json
+from shared.nutrition_domain import MEAL_TYPES
 from shared.schemas import AgentResponse
 from shared.settings import Settings
 from shared.time_utils import utc_now
@@ -31,27 +47,6 @@ CONSUMED = "CONSUMED"
 EXPIRED = "EXPIRED"
 SUPERSEDED = "SUPERSEDED"
 ACTIVE_STATUSES = (PENDING, RESOLVED)
-NUTRITION_FOOD = "nutrition_food"
-MEAL_TYPES = frozenset(
-    {"breakfast", "lunch", "dinner", "snack"}
-)
-
-
-class SelectionStateError(RuntimeError):
-    def __init__(
-        self,
-        code: str,
-        *,
-        retryable: bool = False,
-    ) -> None:
-        super().__init__(code)
-        self.code = code
-        self.retryable = retryable
-
-
-class SelectionStateEncryptionError(SelectionStateError):
-    pass
-
 
 @dataclass(frozen=True)
 class SelectionEncryptionContext:
@@ -77,8 +72,7 @@ class SelectionStateCipher:
                 "selection_state_encryption_key_id_required"
             )
         self.key_id = key_id.strip()
-        self._key = key
-        self._cipher = AESGCM(key)
+        self._state_cipher = AgentStateCipher(key)
 
     @classmethod
     def from_settings(
@@ -122,15 +116,10 @@ class SelectionStateCipher:
         *,
         context: SelectionEncryptionContext,
     ) -> str:
-        nonce = os.urandom(12)
-        ciphertext = self._cipher.encrypt(
-            nonce,
+        return self._state_cipher.encrypt(
             canonical_json(payload).encode("utf-8"),
-            context.associated_data(),
+            associated_data=context.associated_data(),
         )
-        return "v1." + base64.urlsafe_b64encode(
-            nonce + ciphertext
-        ).decode("ascii")
 
     def decrypt_payload(
         self,
@@ -139,22 +128,17 @@ class SelectionStateCipher:
         context: SelectionEncryptionContext,
         expected_hash: str,
     ) -> dict[str, Any]:
-        if not token.startswith("v1."):
-            raise SelectionStateEncryptionError(
-                "selection_state_ciphertext_version_invalid"
-            )
         try:
-            encoded = token.removeprefix("v1.")
-            raw = base64.urlsafe_b64decode(
-                encoded + ("=" * (-len(encoded) % 4))
-            )
-            if len(raw) < 29:
-                raise ValueError("ciphertext_too_short")
             value = json.loads(
-                self._cipher.decrypt(
-                    raw[:12],
-                    raw[12:],
-                    context.associated_data(),
+                self._state_cipher.decrypt(
+                    token,
+                    associated_data=context.associated_data(),
+                    version_error=(
+                        "selection_state_ciphertext_version_invalid"
+                    ),
+                    authentication_error=(
+                        "selection_state_ciphertext_authentication_failed"
+                    ),
                 ).decode("utf-8")
             )
             if not isinstance(value, dict):
@@ -167,23 +151,15 @@ class SelectionStateCipher:
                     "selection_payload_hash_mismatch"
                 )
             return value
-        except (
-            InvalidTag,
-            UnicodeDecodeError,
-            ValueError,
-            binascii.Error,
-            json.JSONDecodeError,
-        ) as exc:
+        except AgentStateCipherError as exc:
+            raise SelectionStateEncryptionError(str(exc)) from exc
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
             raise SelectionStateEncryptionError(
                 "selection_state_ciphertext_authentication_failed"
             ) from exc
 
     def _digest(self, value: bytes) -> str:
-        return hmac.new(
-            self._key,
-            value,
-            hashlib.sha256,
-        ).hexdigest()
+        return self._state_cipher.digest(value)
 
 
 @dataclass(frozen=True)
@@ -208,6 +184,7 @@ class ResolvedFoodSelection:
     next_candidates: list[dict[str, Any]] | None = None
     next_group_number: int = 0
     total_groups: int = 0
+    portions_confirmed: bool = False
 
     def record_arguments(self) -> dict[str, Any]:
         if self.kind != "completed":
@@ -357,7 +334,7 @@ class FoodSelectionStateStore:
         message_at: datetime,
         response: AgentResponse,
     ) -> PreparedFoodSelection | None:
-        snapshot = _food_selection_snapshot(
+        snapshot = build_food_selection_snapshot(
             response,
             message_at=message_at,
         )
@@ -410,7 +387,7 @@ class FoodSelectionStateStore:
                     selection_id=existing.public_id,
                     origin_message_id=existing.origin_message_id,
                     candidate_count=len(
-                        _state_candidates(
+                        food_state_candidates(
                             self._state(existing)
                         )
                     ),
@@ -471,7 +448,7 @@ class FoodSelectionStateStore:
                 selection_id=selection_id,
                 origin_message_id=origin_message_id,
                 candidate_count=len(
-                    _state_candidates(snapshot)
+                    food_state_candidates(snapshot)
                 ),
             )
 
@@ -529,7 +506,7 @@ class FoodSelectionStateStore:
                 raise SelectionStateError(
                     "food_selection_stale_response"
                 )
-            groups = _state_groups(state)
+            groups = food_state_groups(state)
             current_index = int(
                 state.get("current_index") or 0
             )
@@ -538,7 +515,7 @@ class FoodSelectionStateStore:
                     "food_selection_current_group_invalid"
                 )
             current_group = groups[current_index]
-            candidates = _group_candidates(current_group)
+            candidates = food_group_candidates(current_group)
             matches = [
                 candidate
                 for candidate in candidates
@@ -569,7 +546,7 @@ class FoodSelectionStateStore:
             ] = current_user_message_id
 
             selected_candidates = (
-                _selected_candidates(groups)
+                selected_food_candidates(groups)
             )
             has_next = current_index + 1 < len(groups)
             row.selected_value_hash = selected_hash
@@ -584,6 +561,7 @@ class FoodSelectionStateStore:
             else:
                 row.status = RESOLVED
                 row.resolved_at = now
+                state["phase"] = "awaiting_portions"
             self._replace_state(row, state)
             session.commit()
 
@@ -608,7 +586,7 @@ class FoodSelectionStateStore:
                 selected_value=normalized_value,
                 candidate=public_candidate,
                 selected_candidates=[
-                    _public_candidate(selected)
+                    public_food_candidate(selected)
                     for selected in selected_candidates
                 ],
                 meal_type=str(
@@ -623,7 +601,7 @@ class FoodSelectionStateStore:
                     else ""
                 ),
                 next_candidates=(
-                    _group_candidates(next_group)
+                    food_group_candidates(next_group)
                     if next_group is not None
                     else None
                 ),
@@ -633,6 +611,155 @@ class FoodSelectionStateStore:
                     else 0
                 ),
                 total_groups=len(groups),
+                portions_confirmed=False,
+            )
+
+    def resolve_portions(
+        self,
+        *,
+        patient_id: str,
+        current_user_message_id: str,
+        originating_user_message_id: str,
+        submitted_values: dict[
+            str,
+            str | int | float | bool | None,
+        ],
+    ) -> ResolvedFoodSelection | None:
+        patient_hash = self.cipher.patient_digest(patient_id)
+        now = utc_now()
+        with self.session_factory() as session:
+            row = session.scalar(
+                select(AgentPendingSelection)
+                .where(
+                    AgentPendingSelection.patient_id_hash
+                    == patient_hash,
+                    AgentPendingSelection.selection_type
+                    == NUTRITION_FOOD,
+                    AgentPendingSelection.status == RESOLVED,
+                )
+                .with_for_update()
+            )
+            if row is None:
+                return None
+            if row.selection_expires_at <= now:
+                row.status = EXPIRED
+                row.resolved_at = now
+                row.updated_at = now
+                row.version += 1
+                session.commit()
+                raise SelectionStateError(
+                    "food_selection_state_expired"
+                )
+
+            state = self._state(row)
+            if state.get("phase") != "awaiting_portions":
+                return None
+            expected_origin = str(
+                state.get(
+                    "expected_originating_user_message_id"
+                )
+                or ""
+            ).strip()
+            if expected_origin != originating_user_message_id:
+                raise SelectionStateError(
+                    "food_portion_input_stale_response"
+                )
+
+            groups = food_state_groups(state)
+            selected_candidates = selected_food_candidates(groups)
+            definitions = food_portion_definitions(
+                selected_candidates
+            )
+            expected_labels = {
+                definition["label"] for definition in definitions
+            }
+            if set(submitted_values) != expected_labels:
+                raise SelectionStateError(
+                    "food_portion_input_fields_mismatch"
+                )
+
+            updated_candidates: list[dict[str, Any]] = []
+            for definition, candidate in zip(
+                definitions,
+                selected_candidates,
+                strict=True,
+            ):
+                value = submitted_values[definition["label"]]
+                if isinstance(value, bool) or value is None:
+                    raise SelectionStateError(
+                        "food_portion_input_value_invalid"
+                    )
+                try:
+                    quantity = float(value)
+                except (TypeError, ValueError) as exc:
+                    raise SelectionStateError(
+                        "food_portion_input_value_invalid"
+                    ) from exc
+                lower = float(definition["lower"])
+                upper = float(definition["upper"])
+                if not lower <= quantity <= upper:
+                    raise SelectionStateError(
+                        "food_portion_input_value_out_of_range"
+                    )
+                updated = dict(candidate)
+                updated["portion"] = (
+                    f"{format_food_quantity(quantity)}"
+                    f"{definition['unit']}"
+                )
+                reference_quantity = float(
+                    definition["reference_quantity"]
+                )
+                if reference_quantity > 0:
+                    updated["nutrients"] = scale_food_nutrients(
+                        candidate.get("nutrients"),
+                        quantity / reference_quantity,
+                    )
+                updated_candidates.append(updated)
+
+            candidate_index = 0
+            for group in groups:
+                if not isinstance(
+                    group.get("selected_candidate"),
+                    dict,
+                ):
+                    continue
+                group["selected_candidate"] = (
+                    updated_candidates[candidate_index]
+                )
+                candidate_index += 1
+            state["groups"] = groups
+            state["phase"] = "portions_confirmed"
+            state[
+                "expected_originating_user_message_id"
+            ] = current_user_message_id
+            row.resolved_by_message_id = current_user_message_id
+            row.resolved_at = now
+            row.updated_at = now
+            row.version += 1
+            self._replace_state(row, state)
+            session.commit()
+
+            first_candidate = dict(updated_candidates[0])
+            first_candidate.pop("selection_value", None)
+            return ResolvedFoodSelection(
+                kind="completed",
+                selection_id=row.public_id,
+                origin_message_id=row.origin_message_id,
+                source_chat_request_id=(
+                    row.source_chat_request_id
+                ),
+                selected_value=str(
+                    groups[-1].get("selected_value") or ""
+                ),
+                candidate=first_candidate,
+                selected_candidates=[
+                    public_food_candidate(candidate)
+                    for candidate in updated_candidates
+                ],
+                meal_type=str(state.get("meal_type") or ""),
+                meal_date=str(state.get("meal_date") or ""),
+                total_groups=len(groups),
+                portions_confirmed=True,
             )
 
     def consume(
@@ -715,158 +842,3 @@ class FoodSelectionStateStore:
             context=context,
         )
         row.encryption_key_id = self.cipher.key_id
-
-
-def _food_selection_snapshot(
-    response: AgentResponse,
-    *,
-    message_at: datetime,
-) -> dict[str, Any] | None:
-    structured = response.structured_payload
-    if isinstance(
-        structured.get("mutation_confirmation"),
-        dict,
-    ):
-        return None
-
-    groups: list[dict[str, Any]] = []
-    meal_type = ""
-    searches = structured.get("food_searches")
-    if isinstance(searches, list):
-        for search in searches:
-            if not isinstance(search, dict):
-                continue
-            candidates = _normalized_candidates(
-                search.get("candidates")
-            )
-            if not candidates:
-                # A batch must not silently drop an unmatched food.
-                # Let the LLM ask a clarification instead of opening
-                # an incomplete selection workflow.
-                return None
-            group_meal_type = str(
-                search.get("meal_type") or ""
-            ).strip()
-            if group_meal_type in MEAL_TYPES:
-                if meal_type and meal_type != group_meal_type:
-                    raise SelectionStateError(
-                        "food_selection_meal_type_conflict"
-                    )
-                meal_type = group_meal_type
-            groups.append(
-                {
-                    "query": str(
-                        search.get("query") or ""
-                    ).strip(),
-                    "candidates": candidates,
-                    "selected_value": "",
-                    "selected_candidate": None,
-                    "resolved_by_message_id": "",
-                }
-            )
-    if not groups:
-        candidates = _normalized_candidates(
-            structured.get("food_candidates")
-        )
-        if candidates:
-            groups.append(
-                {
-                    "query": "",
-                    "candidates": candidates,
-                    "selected_value": "",
-                    "selected_candidate": None,
-                    "resolved_by_message_id": "",
-                }
-            )
-    if not groups:
-        return None
-    if meal_type not in MEAL_TYPES:
-        meal_type = ""
-    return {
-        "selection_type": NUTRITION_FOOD,
-        "meal_type": meal_type,
-        "meal_date": message_at.date().isoformat(),
-        "current_index": 0,
-        "groups": groups,
-    }
-
-
-def _state_candidates(
-    state: dict[str, Any],
-) -> list[dict[str, Any]]:
-    groups = _state_groups(state)
-    if not groups:
-        raise SelectionStateError(
-            "food_selection_candidates_missing"
-        )
-    return _group_candidates(groups[0])
-
-
-def _state_groups(
-    state: dict[str, Any],
-) -> list[dict[str, Any]]:
-    raw = state.get("groups")
-    if not isinstance(raw, list):
-        raise SelectionStateError(
-            "food_selection_groups_missing"
-        )
-    return [
-        dict(group)
-        for group in raw
-        if isinstance(group, dict)
-    ]
-
-
-def _group_candidates(
-    group: dict[str, Any],
-) -> list[dict[str, Any]]:
-    raw = group.get("candidates")
-    if not isinstance(raw, list):
-        raise SelectionStateError(
-            "food_selection_candidates_missing"
-        )
-    return [
-        dict(candidate)
-        for candidate in raw
-        if isinstance(candidate, dict)
-    ]
-
-
-def _normalized_candidates(
-    raw_candidates: Any,
-) -> list[dict[str, Any]]:
-    if not isinstance(raw_candidates, list):
-        return []
-    candidates: list[dict[str, Any]] = []
-    seen_labels: set[str] = set()
-    for raw in raw_candidates:
-        if not isinstance(raw, dict):
-            continue
-        label = str(raw.get("food_name") or "").strip()
-        if not label or label in seen_labels:
-            continue
-        candidate = dict(raw)
-        candidate["food_name"] = label
-        candidate["selection_value"] = label
-        candidates.append(candidate)
-        seen_labels.add(label)
-    return candidates
-
-
-def _selected_candidates(
-    groups: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    selected: list[dict[str, Any]] = []
-    for group in groups:
-        candidate = group.get("selected_candidate")
-        if isinstance(candidate, dict):
-            selected.append(dict(candidate))
-    return selected
-
-
-def _public_candidate(
-    candidate: dict[str, Any],
-) -> dict[str, Any]:
-    public = dict(candidate)
-    public.pop("selection_value", None)
-    return public

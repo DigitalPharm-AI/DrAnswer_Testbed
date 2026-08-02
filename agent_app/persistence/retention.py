@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, inspect, or_, select, text, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from agent_app.integration.idempotency import (
@@ -12,16 +12,22 @@ from agent_app.integration.idempotency import (
 )
 from agent_app.observability.outbox import (
     COMPLETED as EXPORT_COMPLETED,
+)
+from agent_app.observability.outbox import (
     DEAD as EXPORT_DEAD,
+)
+from agent_app.observability.outbox import (
     SKIPPED as EXPORT_SKIPPED,
+)
+from agent_app.observability.outbox import (
     enqueue_trace_delete,
 )
 from agent_app.persistence.models import (
     AgentAsyncTask,
     AgentBackendWriteRequest,
-    AgentPatientLock,
     AgentFeedbackLink,
     AgentObservabilityExport,
+    AgentPatientLock,
     AgentPendingAction,
     AgentPendingSelection,
     AgentProCtcaeSurvey,
@@ -196,6 +202,19 @@ def purge_expired_agent_state(
                 ),
             )
         ).rowcount
+        bind = session.get_bind()
+        if inspect(bind).has_table("agent_symptom_resolution_states"):
+            deleted_symptom_resolutions = session.execute(
+                text(
+                    """
+                    DELETE FROM agent_symptom_resolution_states
+                    WHERE expires_at <= :current
+                    """
+                ),
+                {"current": current},
+            ).rowcount
+        else:
+            deleted_symptom_resolutions = 0
         session.commit()
 
     return {
@@ -225,5 +244,8 @@ def purge_expired_agent_state(
         "deleted_conversation_locks": int(deleted_conversation_locks or 0),
         "deleted_observability_exports": int(
             deleted_observability_exports or 0
+        ),
+        "deleted_symptom_resolutions": int(
+            deleted_symptom_resolutions or 0
         ),
     }

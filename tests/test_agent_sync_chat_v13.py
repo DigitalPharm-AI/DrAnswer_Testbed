@@ -48,6 +48,7 @@ from agent_app.persistence.models import (
 from agent_app.persistence.retention import purge_expired_agent_state
 from agent_app.persistence.trace_store import AgentTraceStore
 from agent_app.routes import chat as chat_routes
+from shared.backend_read_contract import BACKEND_READ_CONTRACT_VERSION
 from shared.chat_contracts import (
     ChatStreamEvent,
     ChatSyncRequest,
@@ -82,7 +83,7 @@ class StubBackendQueryTools:
             "patient_id": patient_id,
             "as_of": as_of.isoformat(),
             "date": as_of.date().isoformat(),
-            "read_contract_version": "1.3",
+            "read_contract_version": BACKEND_READ_CONTRACT_VERSION,
             "context_mode": "complete",
             "availability": {
                 "profile": "not_found",
@@ -2493,16 +2494,15 @@ def test_sync_chat_http_exposes_request_and_patient_thread_lock_errors(monkeypat
         cleanup_request(competing)
 
 
-def test_sync_chat_http_accepts_only_dedicated_agent_sync_token(monkeypatch) -> None:
+def test_sync_chat_http_accepts_shared_service_token(monkeypatch) -> None:
     request = chat_request()
 
     class TokenSettings:
         agent_sync_api_token = "sync-secret"
-        backend_api_token = "backend-secret"
         internal_api_token = "internal-secret"
 
         @staticmethod
-        def require_agent_sync_api_token() -> str:
+        def require_service_api_token() -> str:
             return "sync-secret"
 
     class StubOrchestrator:
@@ -2528,7 +2528,7 @@ def test_sync_chat_http_accepts_only_dedicated_agent_sync_token(monkeypatch) -> 
                 json=request.model_dump(mode="json"),
                 headers={"Authorization": "Bearer wrong-secret"},
             )
-            backend_direction = client.post(
+            unrelated_service_token = client.post(
                 "/agent/sync/chat",
                 json=request.model_dump(mode="json"),
                 headers={"Authorization": "Bearer backend-secret"},
@@ -2560,8 +2560,8 @@ def test_sync_chat_http_accepts_only_dedicated_agent_sync_token(monkeypatch) -> 
         assert missing.json() == expected_error
         assert wrong.status_code == 401
         assert wrong.json() == expected_error
-        assert backend_direction.status_code == 401
-        assert backend_direction.json() == expected_error
+        assert unrelated_service_token.status_code == 401
+        assert unrelated_service_token.json() == expected_error
         assert internal_fallback.status_code == 401
         assert internal_fallback.json() == expected_error
         assert accepted.status_code == 200

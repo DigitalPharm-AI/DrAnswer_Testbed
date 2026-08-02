@@ -28,18 +28,20 @@ from system_app.models import (
     DoseEvent,
     DoseSchedule,
     MedicationPlan,
+    MissedDoseFlag,
     NutritionMeal,
     ReminderPolicy,
     SideEffectRecord,
 )
 from system_app.openapi_v13 import build_backend_v13_write_openapi
+from system_app.services.missed_dose_flag_service import activate_missed_dose_flag
 from tests.helpers import (
     build_backend_reader_url,
     build_system_engine,
 )
 
 NOW = datetime(2026, 7, 25, 13, 0, tzinfo=UTC)
-BACKEND_HEADERS = {"Authorization": "Bearer pytest-backend-api-token"}
+BACKEND_HEADERS = {"Authorization": "Bearer pytest-agent-sync-token"}
 
 
 def attach_backend_reply_edge(
@@ -163,13 +165,12 @@ def test_backend_v13_invalid_request_and_unauthorized_use_contract_error_shape(m
     assert invalid.json()["error"]["details"]["violations"]
 
     class AuthenticatedSettings:
-        backend_api_token = "backend-secret"
         agent_sync_api_token = "agent-sync-secret"
         internal_api_token = "internal-secret"
 
         @staticmethod
-        def require_backend_api_token() -> str:
-            return "backend-secret"
+        def require_service_api_token() -> str:
+            return "agent-sync-secret"
 
     monkeypatch.setattr(system_security, "get_settings", lambda: AuthenticatedSettings())
     unauthorized_request_id = new_public_id("request")
@@ -209,11 +210,12 @@ def test_backend_v13_invalid_request_and_unauthorized_use_contract_error_shape(m
     )
     auth_client.close()
 
-    for unauthorized in (missing, wrong, agent_direction, internal_fallback):
+    for unauthorized in (missing, wrong, internal_fallback):
         assert unauthorized.status_code == 401
         assert set(unauthorized.json()) == {"request_id", "error"}
         assert unauthorized.json()["request_id"] == unauthorized_request_id
         assert unauthorized.json()["error"]["code"] == "UNAUTHORIZED"
+    assert agent_direction.status_code != 401
 
 
 def test_backend_record_change_enforces_confirmation_version_and_idempotency() -> None:
@@ -276,8 +278,35 @@ def test_backend_record_change_enforces_confirmation_version_and_idempotency() -
             created_at=NOW.replace(tzinfo=None),
             updated_at=NOW.replace(tzinfo=None),
         )
-        session.add(event)
+        missed_event = DoseEvent(
+            patient_id=patient_id,
+            plan_id=plan.id,
+            schedule_id=schedule.id,
+            medication_name=plan.medication_name,
+            slot_label=schedule.slot_label,
+            scheduled_for=NOW.replace(
+                hour=8,
+                minute=0,
+                tzinfo=None,
+            ),
+            status="missed",
+            missed_handled=True,
+            missed_detected_at=NOW.replace(
+                hour=9,
+                minute=30,
+                tzinfo=None,
+            ),
+            version=1,
+            created_at=NOW.replace(tzinfo=None),
+            updated_at=NOW.replace(tzinfo=None),
+        )
+        session.add_all([event, missed_event])
         session.flush()
+        flag = activate_missed_dose_flag(
+            session,
+            missed_event,
+            activated_at=missed_event.missed_detected_at,
+        )
         attach_backend_reply_edge(
             session,
             message=source,
@@ -296,6 +325,7 @@ def test_backend_record_change_enforces_confirmation_version_and_idempotency() -
         mismatched_confirmation_id = mismatched_confirmation.public_id
         event_id = event.id
         event_public_id = event.public_id
+        flag_id = flag.id
 
     body = {
         "request_id": write_request_id,
@@ -355,6 +385,12 @@ def test_backend_record_change_enforces_confirmation_version_and_idempotency() -
         assert event is not None
         assert event.status == "taken"
         assert event.version == 2
+        assert event.taken_at == datetime(2026, 7, 25, 22, 0)
+        assert event.taken_at.tzinfo is None
+        flag = session.get(MissedDoseFlag, flag_id)
+        assert flag is not None
+        assert flag.active is False
+        assert flag.clear_reason == "subsequent_same_day_taken"
 
 
 def test_backend_nutrition_write_uses_v13_record_change_only() -> None:

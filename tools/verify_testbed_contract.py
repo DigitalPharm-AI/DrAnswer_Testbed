@@ -159,7 +159,6 @@ def verify_openapi(
     contract_env = read_env_file(env_path)
     for key in (
         "AGENT_SYNC_API_TOKEN",
-        "BACKEND_API_TOKEN",
         "BACKEND_READ_DATABASE_URL",
         "INTERNAL_API_TOKEN",
     ):
@@ -636,13 +635,8 @@ def _env_boundary_violations(
     violations.extend(_postgresql_env_violations(env))
 
     agent_sync_token = env.get("AGENT_SYNC_API_TOKEN", "").strip()
-    backend_api_token = env.get("BACKEND_API_TOKEN", "").strip()
     if not agent_sync_token:
         violations.append("AGENT_SYNC_API_TOKEN must be non-empty in the 9000 contract profile")
-    if not backend_api_token:
-        violations.append("BACKEND_API_TOKEN must be non-empty in the 9000 contract profile")
-    if agent_sync_token and agent_sync_token == backend_api_token:
-        violations.append("AGENT_SYNC_API_TOKEN and BACKEND_API_TOKEN must be different")
 
     if env.get("AGENT_EMBEDDED_WORKER_ENABLED", "").strip().lower() != "false":
         violations.append("AGENT_EMBEDDED_WORKER_ENABLED must be false")

@@ -16,11 +16,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from shared.time_utils import utc_now
-
-
-def utcnow() -> datetime:
-    return utc_now()
+from shared.time_utils import utc_now as utcnow
 
 
 class Base(DeclarativeBase):

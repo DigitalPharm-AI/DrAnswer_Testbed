@@ -10,6 +10,7 @@ import {
 import type {
   ClientChatHistoryDay,
   ClientChatHistoryMessage,
+  ClientResponseTiming,
   ChatInput,
   FeedbackReaction,
   RequestedReturnType,
@@ -27,6 +28,8 @@ interface ChatPageProps {
   chatSending: boolean;
   chatError: string | null;
   chatErrorRetryable: boolean;
+  activeResponseTiming: ClientResponseTiming | null;
+  failedResponseTiming: ClientResponseTiming | null;
   draft: string;
   onDraftChange: (value: string) => void;
   onLoadPrevious: () => Promise<void>;
@@ -47,17 +50,120 @@ interface ChatPageProps {
   ) => void;
 }
 
+function formatStopwatch(milliseconds: number): string {
+  const safeMilliseconds = Math.max(0, milliseconds);
+  const minutes = Math.floor(safeMilliseconds / 60_000);
+  const seconds = (safeMilliseconds % 60_000) / 1_000;
+  return `${String(minutes).padStart(2, "0")}:${seconds
+    .toFixed(1)
+    .padStart(4, "0")}`;
+}
+
+function formatResponseSeconds(milliseconds: number): string {
+  return `${(Math.max(0, milliseconds) / 1_000).toFixed(1)}초`;
+}
+
+function ResponseLatency({
+  timing,
+}: {
+  timing: ClientResponseTiming;
+}) {
+  const [elapsedMs, setElapsedMs] = useState(() =>
+    timing.totalResponseMs ??
+    Math.max(0, performance.now() - timing.startedAtMonotonicMs),
+  );
+
+  useEffect(() => {
+    if (timing.status !== "running") {
+      setElapsedMs(timing.totalResponseMs ?? 0);
+      return;
+    }
+    const updateElapsed = () => {
+      setElapsedMs(
+        Math.max(0, performance.now() - timing.startedAtMonotonicMs),
+      );
+    };
+    updateElapsed();
+    const intervalId = window.setInterval(updateElapsed, 100);
+    return () => window.clearInterval(intervalId);
+  }, [timing.startedAtMonotonicMs, timing.status, timing.totalResponseMs]);
+
+  const shownMs = timing.totalResponseMs ?? elapsedMs;
+  const hasFirstResponse = timing.firstResponseMs !== null;
+  const generationMs = hasFirstResponse
+    ? Math.max(0, shownMs - timing.firstResponseMs!)
+    : null;
+  const firstResponseLabel = hasFirstResponse
+    ? `첫 응답 ${formatResponseSeconds(timing.firstResponseMs!)}`
+    : timing.status === "failed"
+      ? "첫 응답 없음"
+      : `첫 응답 대기 ${formatStopwatch(shownMs)}`;
+  const generationLabel = !hasFirstResponse
+    ? timing.status === "failed"
+      ? `실패 ${formatResponseSeconds(shownMs)}`
+      : "응답 생성 대기"
+    : timing.status === "failed"
+      ? `응답 생성 실패 ${formatResponseSeconds(generationMs!)}`
+      : timing.status === "running"
+        ? `응답 생성 ${formatStopwatch(generationMs!)}`
+        : `응답 생성 ${formatResponseSeconds(generationMs!)}`;
+  const isSettled = timing.status !== "running";
+  const totalResponseLabel = timing.status === "failed"
+    ? `전체 실패 ${formatResponseSeconds(shownMs)}`
+    : `전체 ${formatResponseSeconds(shownMs)}`;
+
+  return (
+    <span className="response-latency-wrap">
+      <span
+        className={`response-latency-pill is-${timing.status}`}
+        tabIndex={0}
+        aria-label={`${firstResponseLabel}. ${generationLabel}.${
+          isSettled ? ` ${totalResponseLabel}.` : ""
+        } 시뮬레이션 시간과 별도 측정`}
+      >
+        <span className="response-timer-dot" aria-hidden="true" />
+        <span className="response-latency-segment">{firstResponseLabel}</span>
+        <span className="response-latency-separator" aria-hidden="true">+</span>
+        <span className="response-latency-segment">{generationLabel}</span>
+        {isSettled ? (
+          <>
+            <span className="response-latency-separator" aria-hidden="true">=</span>
+            <span className="response-latency-segment response-latency-total">
+              {totalResponseLabel}
+            </span>
+          </>
+        ) : null}
+      </span>
+      <span className="response-latency-tooltip" role="tooltip">
+        <strong>실제 응답 시간</strong>
+        <span>{firstResponseLabel}</span>
+        <span>{generationLabel}</span>
+        <span>{isSettled ? totalResponseLabel : "전체 완료 대기 중"}</span>
+        <span>시뮬레이션 시간과 별도 측정</span>
+      </span>
+    </span>
+  );
+}
+
+interface TestScenarioTurn {
+  user: string;
+  expected: string;
+}
+
 interface TestScenario {
   category: string;
   title: string;
   modes: string[];
   description: string;
-  example: string;
+  example?: string;
+  conversation?: TestScenarioTurn[];
   flow: string[];
   expected: string;
 }
 
-const TEST_SCENARIOS: TestScenario[] = [
+type TestScenarioLevel = "basic" | "advanced" | "conversation";
+
+const BASIC_TEST_SCENARIOS: TestScenario[] = [
   {
     category: "READ",
     title: "복약 현황 조회",
@@ -139,6 +245,234 @@ const TEST_SCENARIOS: TestScenario[] = [
   },
 ];
 
+const ADVANCED_TEST_SCENARIOS: TestScenario[] = [
+  {
+    category: "MULTI SURVEY + WRITE",
+    title: "부작용 다건 평가",
+    modes: ["MULTI", "SURVEY", "APPROVAL", "WRITE"],
+    description:
+      "여러 약과 여러 증상을 한 번에 말했을 때 위험 신호를 우선 분류하고, 증상별 평가와 저장을 이어가는지 확인합니다.",
+    example:
+      "혈압약 뒤 어지럽고 메스꺼웠고, 항생제 뒤 발진이 생겼으며 숨도 조금 찼어요",
+    flow: [
+      "발화 분해",
+      "위험 신호 선별",
+      "증상별 평가",
+      "건별 저장 승인",
+      "Backend 동기 저장",
+    ],
+    expected:
+      "호흡곤란 같은 위험 신호를 먼저 안내하고, 증상·의심 약물 조합별로 사용자가 승인한 항목만 저장해야 합니다.",
+  },
+  {
+    category: "BATCH MEDICATION WRITE",
+    title: "한 채팅 다중 복약 기록",
+    modes: ["MULTI", "APPROVAL", "WRITE"],
+    description:
+      "복용·미복용·예정 상태가 섞인 여러 복약 항목을 한 발화에서 정확히 분리해 처리하는지 확인합니다.",
+    example:
+      "아침 혈압약과 당뇨약은 8시에 먹었고 점심 위장약은 못 먹었고 저녁약은 아직이에요",
+    flow: [
+      "복약 항목 분해",
+      "일정 매칭",
+      "상태별 승인",
+      "일괄 기록",
+      "결과 요약",
+    ],
+    expected:
+      "각 약이 올바른 일정과 연결되고 복용·미복용·미기록 상태가 뒤섞이거나 중복 저장되지 않아야 합니다.",
+  },
+  {
+    category: "RANGE READ + SUMMARY",
+    title: "기간별 복약 이행 요약",
+    modes: ["RANGE READ", "SUMMARY"],
+    description:
+      "기간 조건을 해석해 복약 기록을 집계하고, 누락·지연 패턴을 근거와 함께 요약하는지 확인합니다.",
+    example: "지난 4주간 복약률과 자주 놓친 요일·시간대를 요약해줘",
+    flow: ["기간 확정", "기록 범위 조회", "지표 집계", "패턴 요약"],
+    expected:
+      "조회 기간과 전체 예정·복용·미복용·지연 건수가 Backend 원본과 일치하고, 근거 없는 원인을 추정하지 않아야 합니다.",
+  },
+  {
+    category: "READ + REPLACE",
+    title: "기존 식사 전체 교체",
+    modes: ["READ", "HIGH RISK", "APPROVAL", "MULTI WRITE"],
+    description:
+      "기존 식사 내역을 먼저 보여준 뒤 여러 끼를 새 내용으로 교체하는 고위험 일괄 변경 흐름을 확인합니다.",
+    example:
+      "오늘 식사를 전부 보여주고 아침은 죽, 점심은 비빔밥, 저녁은 샐러드로 모두 바꿔줘",
+    flow: [
+      "기존 식사 조회",
+      "교체안 구성",
+      "전체 변경 승인",
+      "일괄 반영",
+      "영양 합계 조회",
+    ],
+    expected:
+      "기존 기록과 변경안을 비교해 보여주고 승인 전에는 삭제·교체하지 않으며, 승인 후 세 끼와 영양 합계가 함께 갱신되어야 합니다.",
+  },
+  {
+    category: "MULTI POLICY WRITE",
+    title: "알림 정책 동시 변경",
+    modes: ["HIGH RISK", "MULTI", "APPROVAL", "WRITE"],
+    description:
+      "서로 다른 두 알림 정책의 변경 값을 한 요청에서 독립적으로 해석하고 반영하는지 확인합니다.",
+    example:
+      "복약 예정 알림은 45분 전, 미복용 확인 대화는 2시간 후로 바꿔줘",
+    flow: [
+      "두 정책 조회",
+      "변경값 분리",
+      "변경안 승인",
+      "정책별 반영",
+      "결과 재조회",
+    ],
+    expected:
+      "예정 알림과 미복용 확인 정책이 서로 덮어쓰지 않고 각각 요청한 값으로 변경되며, 변경 전·후가 모두 표시되어야 합니다.",
+  },
+  {
+    category: "CROSS DOMAIN",
+    title: "복합 요청 부분 승인",
+    modes: ["READ", "SUMMARY", "PARTIAL APPROVAL", "WRITE"],
+    description:
+      "복약 조회, 식사 요약, 복약 정정이 섞인 요청에서 조회와 쓰기를 분리하고 일부 변경만 승인받는지 확인합니다.",
+    example:
+      "지난 7일 복약 누락과 식사를 같이 요약하고, 어제 저녁약만 복용으로 정정해줘",
+    flow: [
+      "요청 분해",
+      "복약·식사 조회",
+      "정정안 별도 제시",
+      "부분 승인",
+      "승인 항목만 저장",
+    ],
+    expected:
+      "조회 결과는 즉시 제공하되 쓰기 작업은 별도 승인을 거치고, 승인한 복약 정정 외의 데이터는 변경하지 않아야 합니다.",
+  },
+  {
+    category: "CORRECTION + IDEMPOTENCY",
+    title: "기록 정정·중복 방지",
+    modes: ["CORRECTION", "APPROVAL", "IDEMPOTENCY"],
+    description:
+      "직전 기록의 시간 정정과 동일 요청 재전송 상황에서 기존 레코드를 정확히 수정하고 중복 생성을 막는지 확인합니다.",
+    example:
+      "방금 기록한 아침약은 8시가 아니라 8시 30분이야. 같은 요청이 두 번 가도 한 번만 반영해줘",
+    flow: [
+      "기존 기록 식별",
+      "정정 내용 승인",
+      "멱등 처리",
+      "최종 상태 조회",
+    ],
+    expected:
+      "원래 기록이 정정된 한 건으로 남고, 요청이 재전송되어도 추가 레코드나 중복 이벤트가 생성되지 않아야 합니다.",
+  },
+];
+
+const CONVERSATION_TEST_SCENARIOS: TestScenario[] = [
+  {
+    category: "REFERENCE + ELLIPSIS",
+    title: "지시 대상·생략 이해",
+    modes: ["MULTI TURN", "CONTEXT", "APPROVAL"],
+    description:
+      "직전 응답에 나온 복약 목록을 기준으로 ‘그중’, ‘나머지’처럼 생략된 대상을 올바르게 이어서 해석하는지 확인합니다.",
+    conversation: [
+      {
+        user: "오늘 먹을 약과 복용 상태를 알려줘",
+        expected:
+          "오늘 복약 일정을 약 이름·시간·상태별로 조회해 보여줍니다.",
+      },
+      {
+        user: "그중 아침 약은 8시에 먹었어",
+        expected:
+          "직전 목록의 아침 복약 항목을 대상으로 복약 기록 승인 단계를 제시합니다.",
+      },
+    ],
+    flow: ["복약 목록 조회", "지시 대상 연결", "생략 대상 복원", "기록 승인"],
+    expected:
+      "직전 응답에 실제로 포함된 약만 참조하고, ‘그중 아침 약’이 가리키는 복약 항목 외의 약을 기록 대상으로 포함하지 않아야 합니다.",
+  },
+  {
+    category: "CORRECTION",
+    title: "사용자 정정 우선 반영",
+    modes: ["MULTI TURN", "CORRECTION", "APPROVAL"],
+    description:
+      "사용자가 후속 발화에서 시간이나 대상을 바로잡으면 이전 해석을 폐기하고 최신 정정을 기준으로 처리하는지 확인합니다.",
+    conversation: [
+      {
+        user: "아침 암로디핀은 8시에 먹었어",
+        expected:
+          "대상 복약과 08:00 복용 기록 내용을 확인하는 승인 단계를 제시합니다.",
+      },
+      {
+        user: "아니, 8시 30분이야",
+        expected:
+          "기존 08:00 변경안을 폐기하고 복용 시간을 08:30으로 교체해 다시 확인합니다.",
+      },
+    ],
+    flow: ["초기 기록안", "사용자 정정", "이전안 폐기", "최신안 재확인"],
+    expected:
+      "08:00 변경안은 더 이상 승인할 수 없어야 하며, 최신 정정값인 08:30을 반영한 새 승인 내용만 제시해야 합니다.",
+  },
+  {
+    category: "TOPIC SWITCH",
+    title: "주제 전환 후 복귀",
+    modes: ["MULTI TURN", "CONTEXT", "CROSS DOMAIN"],
+    description:
+      "복약 대화 중 식사로 주제를 바꿨다가 다시 복약으로 돌아왔을 때 각 도메인의 맥락을 섞지 않는지 확인합니다.",
+    conversation: [
+      {
+        user: "지난 3일 복약 상태를 요약해줘",
+        expected:
+          "지난 3일의 복약 기록을 조회해 누락과 시간대 패턴을 요약합니다.",
+      },
+      {
+        user: "오늘 점심은 김밥이었어. 기록은 하지 마",
+        expected:
+          "식사 내용을 이해하되 사용자의 지시에 따라 식사 기록 쓰기를 실행하지 않습니다.",
+      },
+      {
+        user: "아까 복약에서 가장 자주 놓친 시간대가 언제였지?",
+        expected:
+          "첫 번째 복약 요약의 범위와 결과로 돌아가 해당 시간대를 답합니다.",
+      },
+    ],
+    flow: ["복약 요약", "식사로 전환", "쓰기 금지 유지", "복약 맥락 복귀"],
+    expected:
+      "식사 정보를 복약 데이터로 섞지 않고, ‘아까 복약’이 첫 번째 조회 결과를 가리킨다는 점을 유지해야 합니다.",
+  },
+  {
+    category: "CLARIFICATION",
+    title: "모호성 단계적 해소",
+    modes: ["MULTI TURN", "CLARIFICATION", "APPROVAL"],
+    description:
+      "대상 약이 불명확한 요청을 추측해 기록하지 않고, 후속 답변을 누적해 정확한 복약 항목을 찾는지 확인합니다.",
+    conversation: [
+      {
+        user: "오늘 그 약 먹었어",
+        expected:
+          "‘그 약’의 후보가 하나로 정해지지 않으면 기록하지 않고 약 이름을 질문합니다.",
+      },
+      {
+        user: "혈압약이야",
+        expected:
+          "혈압약 일정이 여러 개라면 복용 시간 또는 구체적인 약 이름을 추가로 질문합니다.",
+      },
+      {
+        user: "저녁에 먹는 암로디핀이야",
+        expected:
+          "저녁 암로디핀 일정 하나로 대상을 확정하고 복약 기록 승인 단계를 제시합니다.",
+      },
+    ],
+    flow: ["모호한 요청", "약 종류 확인", "시간·약 이름 확인", "대상 확정", "기록 승인"],
+    expected:
+      "정보가 충분해지기 전에는 쓰기나 승인을 진행하지 않고, 세 발화의 정보를 합쳐 정확히 한 복약 항목만 선택해야 합니다.",
+  },
+];
+
+const TEST_SCENARIOS: Record<TestScenarioLevel, TestScenario[]> = {
+  basic: BASIC_TEST_SCENARIOS,
+  advanced: ADVANCED_TEST_SCENARIOS,
+  conversation: CONVERSATION_TEST_SCENARIOS,
+};
+
 function TestScenarioGuide({
   disabled,
   onFillExample,
@@ -147,24 +481,58 @@ function TestScenarioGuide({
   onFillExample: (example: string) => void;
 }) {
   const [open, setOpen] = useState(true);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const [completed, setCompleted] = useState<Set<number>>(
-    () => new Set(),
-  );
-  const current = TEST_SCENARIOS[activeIndex];
+  const [level, setLevel] = useState<TestScenarioLevel>("basic");
+  const [activeIndexes, setActiveIndexes] = useState<
+    Record<TestScenarioLevel, number>
+  >({ basic: 0, advanced: 0, conversation: 0 });
+  const [completedByLevel, setCompletedByLevel] = useState<
+    Record<TestScenarioLevel, Set<number>>
+  >(() => ({
+    basic: new Set(),
+    advanced: new Set(),
+    conversation: new Set(),
+  }));
+  const [nextConversationTurns, setNextConversationTurns] = useState<
+    Record<number, number>
+  >({});
+  const scenarios = TEST_SCENARIOS[level];
+  const activeIndex = activeIndexes[level];
+  const completed = completedByLevel[level];
+  const current = scenarios[activeIndex];
   const currentCompleted = completed.has(activeIndex);
-  const progress = (completed.size / TEST_SCENARIOS.length) * 100;
+  const progress = (completed.size / scenarios.length) * 100;
+  const levelLabel =
+    level === "basic" ? "기본" : level === "advanced" ? "심화" : "대화";
+  const conversationTurns = current.conversation ?? [];
+  const nextConversationTurn = nextConversationTurns[activeIndex] ?? 0;
+  const exampleButtonLabel = conversationTurns.length
+    ? `${nextConversationTurn + 1}번 발화 입력`
+    : "예시 문장 입력";
 
   function toggleComplete() {
-    setCompleted((previous) => {
-      const next = new Set(previous);
+    setCompletedByLevel((previous) => {
+      const next = new Set(previous[level]);
       if (next.has(activeIndex)) {
         next.delete(activeIndex);
       } else {
         next.add(activeIndex);
       }
-      return next;
+      return { ...previous, [level]: next };
     });
+  }
+
+  function fillCurrentExample() {
+    if (conversationTurns.length) {
+      onFillExample(conversationTurns[nextConversationTurn].user);
+      setNextConversationTurns((previous) => ({
+        ...previous,
+        [activeIndex]: (nextConversationTurn + 1) % conversationTurns.length,
+      }));
+      return;
+    }
+    if (current.example) {
+      onFillExample(current.example);
+    }
   }
 
   return (
@@ -178,11 +546,37 @@ function TestScenarioGuide({
           <strong>테스트 시나리오</strong>
         </span>
         <span
+          className="test-scenario-level-toggle"
+          role="group"
+          aria-label="시나리오 난이도"
+        >
+          {(
+            [
+              ["basic", "기본"],
+              ["advanced", "심화"],
+              ["conversation", "대화"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              type="button"
+              key={value}
+              aria-pressed={level === value}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setLevel(value);
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </span>
+        <span
           className="test-scenario-progress"
-          aria-label={`${TEST_SCENARIOS.length}개 중 ${completed.size}개 완료`}
+          aria-label={`${levelLabel} 시나리오 ${scenarios.length}개 중 ${completed.size}개 완료`}
         >
           <span>
-            <b>{completed.size}</b>/{TEST_SCENARIOS.length} 완료
+            <b>{completed.size}</b>/{scenarios.length} 완료
           </span>
           <span className="test-scenario-progress-track" aria-hidden="true">
             <span style={{ width: `${progress}%` }} />
@@ -194,9 +588,9 @@ function TestScenarioGuide({
       <div className="test-scenario-body">
         <nav
           className="test-scenario-tabs"
-          aria-label="테스트 시나리오 항목"
+          aria-label={`${levelLabel} 테스트 시나리오 항목`}
         >
-          {TEST_SCENARIOS.map((scenario, index) => (
+          {scenarios.map((scenario, index) => (
             <button
               className={`test-scenario-tab${
                 index === activeIndex ? " is-active" : ""
@@ -204,7 +598,12 @@ function TestScenarioGuide({
               type="button"
               key={scenario.title}
               aria-current={index === activeIndex ? "true" : undefined}
-              onClick={() => setActiveIndex(index)}
+              onClick={() =>
+                setActiveIndexes((previous) => ({
+                  ...previous,
+                  [level]: index,
+                }))
+              }
             >
               <small>{scenario.category}</small>
               <strong>{scenario.title}</strong>
@@ -228,10 +627,41 @@ function TestScenarioGuide({
             <p className="test-scenario-description">
               {current.description}
             </p>
-            <div className="test-scenario-example">
-              <span>예시 발화</span>
-              <b>{current.example}</b>
-            </div>
+            {conversationTurns.length ? (
+              <div
+                className="test-scenario-conversation"
+                aria-label="멀티턴 예시 대화"
+              >
+                <div className="test-scenario-conversation-head">
+                  <span>멀티턴 예시</span>
+                  <small>AI 응답을 확인한 뒤 다음 발화를 입력하세요.</small>
+                </div>
+                <ol>
+                  {conversationTurns.map((turn, index) => (
+                    <li
+                      className={
+                        index === nextConversationTurn ? "is-next" : undefined
+                      }
+                      key={`${index}-${turn.user}`}
+                    >
+                      <div className="test-scenario-turn-user">
+                        <span>사용자 {index + 1}</span>
+                        <b>{turn.user}</b>
+                      </div>
+                      <div className="test-scenario-turn-expected">
+                        <span>기대 응답</span>
+                        <p>{turn.expected}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            ) : (
+              <div className="test-scenario-example">
+                <span>예시 발화</span>
+                <b>{current.example}</b>
+              </div>
+            )}
             <div
               className="test-scenario-flow"
               aria-label="예상 처리 순서"
@@ -264,10 +694,12 @@ function TestScenarioGuide({
           <button
             className="compact-button ghost"
             type="button"
-            disabled={disabled}
-            onClick={() => onFillExample(current.example)}
+            disabled={
+              disabled || (!current.example && conversationTurns.length === 0)
+            }
+            onClick={fillCurrentExample}
           >
-            예시 문장 입력
+            {exampleButtonLabel}
           </button>
           <button
             className={`compact-button${
@@ -660,6 +1092,60 @@ function initialInputValue(input: ChatInput): string {
   return "";
 }
 
+function numericInputAdjustmentStep(input: ChatInput): number | "any" {
+  if (
+    input.type !== "number" ||
+    input.value === null ||
+    input.value === undefined
+  ) {
+    return "any";
+  }
+  const defaultValue = Number(input.value);
+  if (!Number.isFinite(defaultValue) || defaultValue === 0) {
+    return "any";
+  }
+  return 10 ** (Math.floor(Math.log10(Math.abs(defaultValue))) - 1);
+}
+
+function formatAdjustmentNumber(value: number): string {
+  return new Intl.NumberFormat("ko-KR", {
+    maximumFractionDigits: 10,
+  }).format(value);
+}
+
+function numericInputAdjustmentHint(input: ChatInput): string {
+  const unit = input.options.unit ?? "";
+  const step = numericInputAdjustmentStep(input);
+  if (input.value === null || input.value === undefined || step === "any") {
+    return unit ? `입력 단위 ${unit}` : "";
+  }
+  const defaultValue = Number(input.value);
+  return (
+    `기준 제공량 ${formatAdjustmentNumber(defaultValue)}${unit}` +
+    ` · ${formatAdjustmentNumber(step)}${unit} 단위 조정`
+  );
+}
+
+function updateNumericInputRangeValidity(
+  element: HTMLInputElement,
+  input: ChatInput,
+): void {
+  const value = element.valueAsNumber;
+  const unit = input.options.unit ?? "";
+  if (
+    element.value &&
+    Number.isFinite(value) &&
+    input.options.lower !== null &&
+    value < input.options.lower
+  ) {
+    element.setCustomValidity(
+      `${formatAdjustmentNumber(input.options.lower)}${unit} 이상 입력해 주세요.`,
+    );
+    return;
+  }
+  element.setCustomValidity("");
+}
+
 function parseInputResponse(
   value: string,
   inputs: ChatInput[],
@@ -789,34 +1275,16 @@ function StructuredInputs({
       onSubmit={(event) => void submit(event)}
     >
       <div className="result-input-grid">
-        {inputs.map((input) => (
-          <label key={input.label}>
-            <span>{input.label}</span>
-            {input.type === "dropdown" ? (
-              <select
-                name={input.label}
-                required
-                disabled={disabled || answered || Boolean(submittedText)}
-                value={values[input.label] ?? ""}
-                onChange={(event) =>
-                  setValues((current) => ({
-                    ...current,
-                    [input.label]: event.target.value,
-                  }))
-                }
-              >
-                {input.options.selections?.map((selection) => (
-                  <option key={selection}>{selection}</option>
-                ))}
-              </select>
-            ) : (
-              <span className="input-with-unit">
-                <input
+        {inputs.map((input, inputIndex) => {
+          const inputId = `${message.message_id}-input-${inputIndex}`;
+          const hintId = `${inputId}-hint`;
+          return (
+            <div className="result-input-field" key={input.label}>
+              <label htmlFor={inputId}>{input.label}</label>
+              {input.type === "dropdown" ? (
+                <select
+                  id={inputId}
                   name={input.label}
-                  type="number"
-                  step="any"
-                  min={input.options.lower ?? undefined}
-                  max={input.options.upper ?? undefined}
                   required
                   disabled={disabled || answered || Boolean(submittedText)}
                   value={values[input.label] ?? ""}
@@ -826,12 +1294,49 @@ function StructuredInputs({
                       [input.label]: event.target.value,
                     }))
                   }
-                />
-                <span>{input.options.unit}</span>
-              </span>
-            )}
-          </label>
-        ))}
+                >
+                  {input.options.selections?.map((selection) => (
+                    <option key={selection}>{selection}</option>
+                  ))}
+                </select>
+              ) : (
+                <>
+                  <input
+                    id={inputId}
+                    name={input.label}
+                    type="number"
+                    step={numericInputAdjustmentStep(input)}
+                    min={
+                      numericInputAdjustmentStep(input) === "any"
+                        ? (input.options.lower ?? undefined)
+                        : undefined
+                    }
+                    max={input.options.upper ?? undefined}
+                    required
+                    aria-valuemin={input.options.lower ?? undefined}
+                    aria-valuemax={input.options.upper ?? undefined}
+                    aria-describedby={hintId}
+                    disabled={disabled || answered || Boolean(submittedText)}
+                    value={values[input.label] ?? ""}
+                    onChange={(event) => {
+                      updateNumericInputRangeValidity(
+                        event.currentTarget,
+                        input,
+                      );
+                      setValues((current) => ({
+                        ...current,
+                        [input.label]: event.target.value,
+                      }));
+                    }}
+                  />
+                  <small className="input-adjustment-hint" id={hintId}>
+                    {numericInputAdjustmentHint(input)}
+                  </small>
+                </>
+              )}
+            </div>
+          );
+        })}
       </div>
       <div className="result-submit-row">
         <button
@@ -965,6 +1470,9 @@ function ChatMessage({
         <div className="message-meta">
           <strong>닥터앤서 AI</strong>
           <span>{formatKoreanMessageTime(message.created_at)}</span>
+          {message.response_timing ? (
+            <ResponseLatency timing={message.response_timing} />
+          ) : null}
         </div>
         <div className="message-bubble">
           <div className="contract-message">
@@ -1024,6 +1532,8 @@ export default function ChatPage({
   chatSending,
   chatError,
   chatErrorRetryable,
+  activeResponseTiming,
+  failedResponseTiming,
   draft,
   onDraftChange,
   onLoadPrevious,
@@ -1327,6 +1837,9 @@ export default function ChatPage({
                   <div className="message-meta">
                     <strong>닥터앤서 AI</strong>
                     <span>응답 생성 중</span>
+                    {activeResponseTiming ? (
+                      <ResponseLatency timing={activeResponseTiming} />
+                    ) : null}
                   </div>
                   <div className="message-bubble">
                     <span className="typing-dots" aria-hidden="true">
@@ -1343,7 +1856,12 @@ export default function ChatPage({
 
           {chatError ? (
             <div className="chat-runtime-error" role="alert">
-              <strong>AI 응답을 받지 못했습니다.</strong>
+              <div className="chat-runtime-error-heading">
+                <strong>AI 응답을 받지 못했습니다.</strong>
+                {failedResponseTiming ? (
+                  <ResponseLatency timing={failedResponseTiming} />
+                ) : null}
+              </div>
               <p>{chatError}</p>
               <span>
                 {chatErrorRetryable

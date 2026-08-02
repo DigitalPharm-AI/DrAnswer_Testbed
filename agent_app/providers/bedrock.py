@@ -11,7 +11,11 @@ from shared.settings import get_settings
 
 NO_TEMPERATURE_MODEL_MARKERS = ("claude-sonnet-5",)
 HAIKU_EXTENDED_THINKING_MODEL_MARKERS = ("claude-haiku-4-5",)
-SONNET_ADAPTIVE_THINKING_MODEL_MARKERS = ("claude-sonnet-4-6",)
+SONNET_ADAPTIVE_THINKING_MODEL_MARKERS = (
+    "claude-sonnet-4-6",
+    "claude-sonnet-5",
+)
+SONNET_ALWAYS_ADAPTIVE_THINKING_MODEL_MARKERS = ("claude-sonnet-5",)
 MIN_EXTENDED_THINKING_BUDGET_TOKENS = 1024
 GENERATION_READINESS_TTL_SECONDS = 300.0
 GENERATION_READINESS_TIMEOUT_SECONDS = 3.0
@@ -28,6 +32,39 @@ class BedrockAnthropicProvider(BaseLLMProvider):
         )
 
     def chat_model(self):
+        return self._chat_model(
+            model_id=self.settings.model_id_for_tier(
+                get_runtime_model_tier()
+            ),
+            max_tokens=self.settings.llm_max_tokens,
+            reasoning_enabled=self.settings.llm_reasoning_enabled,
+            temperature=self.settings.llm_temperature,
+        )
+
+    def semantic_verification_model(self):
+        return self._chat_model(
+            model_id=self.settings.model_id_for_tier("fast"),
+            max_tokens=256,
+            reasoning_enabled=False,
+            temperature=0.0,
+        )
+
+    def reference_linking_model(self):
+        return self._chat_model(
+            model_id=self.settings.model_id_for_tier("sonnet"),
+            max_tokens=512,
+            reasoning_enabled=True,
+            temperature=0.0,
+        )
+
+    def _chat_model(
+        self,
+        *,
+        model_id: str,
+        max_tokens: int,
+        reasoning_enabled: bool,
+        temperature: float,
+    ):
         try:
             import boto3
             from botocore.config import Config
@@ -39,7 +76,6 @@ class BedrockAnthropicProvider(BaseLLMProvider):
         if bearer_token:
             os.environ["AWS_BEARER_TOKEN_BEDROCK"] = bearer_token
 
-        model_id = self.settings.model_id_for_tier(get_runtime_model_tier())
         session = boto3.Session(**self._session_kwargs())
         timeout_seconds = max(
             0.1,
@@ -55,17 +91,17 @@ class BedrockAnthropicProvider(BaseLLMProvider):
         )
         reasoning_fields = reasoning_request_fields(
             model_id,
-            enabled=self.settings.llm_reasoning_enabled,
+            enabled=reasoning_enabled,
             effort=self.settings.llm_reasoning_effort,
             extended_thinking_budget_tokens=(
                 self.settings.llm_extended_thinking_budget_tokens
             ),
-            max_tokens=self.settings.llm_max_tokens,
+            max_tokens=max_tokens,
         )
         kwargs = {
             "client": client,
             "model": model_id,
-            "max_tokens": self.settings.llm_max_tokens,
+            "max_tokens": max_tokens,
         }
         if reasoning_fields:
             kwargs["additional_model_request_fields"] = reasoning_fields
@@ -73,7 +109,7 @@ class BedrockAnthropicProvider(BaseLLMProvider):
             model_id,
             reasoning_enabled=bool(reasoning_fields),
         ):
-            kwargs["temperature"] = self.settings.llm_temperature
+            kwargs["temperature"] = temperature
         return ChatBedrockConverse(**kwargs)
 
     def _session_kwargs(self) -> dict[str, Any]:
@@ -168,18 +204,29 @@ class BedrockAnthropicProvider(BaseLLMProvider):
                     retries={"max_attempts": 0},
                 ),
             )
-            response = client.converse(
-                modelId=self.settings.model_id_for_tier(
-                    get_runtime_model_tier()
-                ),
-                messages=[
+            model_id = self.settings.model_id_for_tier(
+                get_runtime_model_tier()
+            )
+            probe_kwargs: dict[str, Any] = {
+                "modelId": model_id,
+                "messages": [
                     {
                         "role": "user",
                         "content": [{"text": "Reply with OK."}],
                     }
                 ],
-                inferenceConfig={"maxTokens": 1},
-            )
+                "inferenceConfig": {"maxTokens": 1},
+            }
+            if any(
+                marker in model_id.strip().lower()
+                for marker in SONNET_ALWAYS_ADAPTIVE_THINKING_MODEL_MARKERS
+            ):
+                probe_kwargs["inferenceConfig"] = {"maxTokens": 32}
+                probe_kwargs["additionalModelRequestFields"] = {
+                    "thinking": {"type": "adaptive"},
+                    "output_config": {"effort": "low"},
+                }
+            response = client.converse(**probe_kwargs)
         except (NoCredentialsError, PartialCredentialsError):
             return GenerationReadiness(
                 ok=False,
@@ -221,7 +268,11 @@ def reasoning_request_fields(
     """Build model-specific Bedrock thinking fields for supported Claude models."""
 
     normalized = model_id.strip().lower()
-    if not enabled:
+    always_adaptive = any(
+        marker in normalized
+        for marker in SONNET_ALWAYS_ADAPTIVE_THINKING_MODEL_MARKERS
+    )
+    if not enabled and not always_adaptive:
         return {}
     if any(
         marker in normalized

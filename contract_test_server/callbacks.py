@@ -74,7 +74,9 @@ class CallbackDispatcher:
             + job.callback_path
         )
         headers = {
-            "Authorization": f"Bearer {self.settings.backend_api_token}",
+            "Authorization": (
+                f"Bearer {self.settings.agent_sync_api_token}"
+            ),
             "Content-Type": "application/json",
             "Accept": "application/json",
         }

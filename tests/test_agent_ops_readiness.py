@@ -9,11 +9,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import agent_app.main as agent_main
-from agent_app.persistence import db as agent_db
-from agent_app.jobs.tasks import DEAD, enqueue_async_task
-from agent_app.persistence.models import AgentAsyncTask
 from agent_app.jobs.readiness import agent_ops_readiness_payload
 from agent_app.jobs.status import mark_worker_started
+from agent_app.jobs.tasks import DEAD, enqueue_async_task
+from agent_app.persistence import db as agent_db
+from agent_app.persistence.models import AgentAsyncTask
+from shared.backend_read_contract import BACKEND_READ_CONTRACT_VERSION
 from shared.settings import get_settings
 from shared.time_utils import utc_now
 from tests.helpers import build_agent_engine
@@ -127,7 +128,7 @@ def test_agent_readiness_returns_connections_before_worker_reuse(tmp_path, monke
         def verify_contract(self):
             return {
                 "ok": True,
-                "contract_version": "1.3",
+                "contract_version": BACKEND_READ_CONTRACT_VERSION,
                 "dialect": "postgresql",
                 "read_only": True,
                 "views": [],

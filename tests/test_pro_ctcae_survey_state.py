@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -7,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
 from agent_app.integration.pro_ctcae_survey import (
+    APPLIED,
     APPROVAL_PENDING,
     COMPLETED,
     ProCtcaeSurveyService,
@@ -102,8 +104,12 @@ def _assessment_response() -> AgentResponse:
                     "id": "call-assessment",
                     "name": GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
                     "arguments": {
-                        "symptom_text": "어제 약을 먹고 속이 메스꺼웠어",
-                        "symptom_onset_text": "어제 복용 후",
+                        "symptom_mentions": [
+                            {
+                                "text": "어제 약을 먹고 속이 메스꺼웠어",
+                                "onset_text": "어제 복용 후",
+                            }
+                        ],
                     },
                 },
                 {
@@ -129,12 +135,99 @@ def _assessment_response() -> AgentResponse:
                         "수니티닙 50mg: 메스꺼움",
                         "레트로졸 2.5mg: 메스꺼움",
                     ],
+                    "assessments": [
+                        {
+                            "symptom_text": (
+                                "어제 약을 먹고 속이 메스꺼웠어"
+                            ),
+                            "symptom_onset_text": "어제 복용 후",
+                            "match_status": "MATCHED",
+                            "suspected": True,
+                            "matched_items": [
+                                "메트포르민 500mg",
+                                "수니티닙 50mg",
+                                "레트로졸 2.5mg",
+                            ],
+                            "matched_effects": [
+                                "메트포르민 500mg: 메스꺼움",
+                                "수니티닙 50mg: 메스꺼움",
+                                "레트로졸 2.5mg: 메스꺼움",
+                            ],
+                        }
+                    ],
                 },
             },
             "ae_pro_ctcae": questionnaire,
         },
         human_summary="메스꺼움 관련 질문이 준비되었습니다.",
     )
+
+
+def _multi_assessment_response() -> AgentResponse:
+    response = _assessment_response()
+    structured = deepcopy(response.structured_payload)
+    vomiting = {
+        "input_symptom": "실제로 두 번 토했어",
+        "matched": True,
+        "match_type": "exact",
+        "matched_symptom_term": "Vomiting",
+        "matched_korean_symptom_name": "구토",
+        "similarity": 1.0,
+        "threshold": 0.7,
+        "scoring_method": "local_similarity",
+        "embedding_provider": "",
+        "sheet_name": "Vomiting",
+        "questions": [
+            {
+                "symptom_term": "Vomiting",
+                "korean_symptom_name": "구토",
+                "item_code": "PROCTCAE_VOMITING_FREQ",
+                "question": "지난 일주일 동안 구토를 얼마나 자주 했습니까?",
+                "response_type": "single_choice",
+                "response_options": ["전혀 없다", "하루 한 번", "하루 두 번"],
+                "pdf_page": 1,
+                "sheet_name": "Vomiting",
+            },
+            {
+                "symptom_term": "Vomiting",
+                "korean_symptom_name": "구토",
+                "item_code": "PROCTCAE_VOMITING_SEV",
+                "question": "구토가 가장 심할 때 어느 정도였습니까?",
+                "response_type": "single_choice",
+                "response_options": ["경미했다", "심했다"],
+                "pdf_page": 1,
+                "sheet_name": "Vomiting",
+            },
+        ],
+        "candidates": [],
+    }
+    structured["ae_pro_ctcae_items"] = [
+        structured["ae_pro_ctcae"],
+        vomiting,
+    ]
+    structured["tool_calls"][0]["arguments"] = {
+        "symptom_mentions": [
+            {
+                "text": "어제 약을 먹고 속이 메스꺼웠어",
+                "onset_text": "어제 복용 후",
+            },
+            {
+                "text": "실제로 두 번 토했어",
+                "onset_text": "어제 복용 후",
+            },
+        ]
+    }
+    structured["side_effect_lookup"]["response"]["assessments"].append(
+        {
+            "symptom_text": "실제로 두 번 토했어",
+            "symptom_onset_text": "어제 복용 후",
+            "match_status": "MATCHED",
+            "suspected": True,
+            "matched_items": ["수니티닙 50mg"],
+            "matched_effects": ["수니티닙 50mg: 구토"],
+        }
+    )
+    return response.model_copy(update={"structured_payload": structured})
 
 
 def test_pro_ctcae_questions_advance_by_item_code_and_complete_once() -> None:
@@ -170,6 +263,8 @@ def test_pro_ctcae_questions_advance_by_item_code_and_complete_once() -> None:
         assert first_card.structured_payload["survey_progress"] == {
             "current": 1,
             "total": 2,
+            "symptom_current": 1,
+            "symptom_total": 1,
         }
 
         second = service.submit_response(
@@ -235,6 +330,99 @@ def test_pro_ctcae_questions_advance_by_item_code_and_complete_once() -> None:
             assert session.scalar(
                 select(func.count(AgentProCtcaeResponse.id))
             ) == 2
+    finally:
+        cleanup()
+
+
+def test_multiple_symptoms_advance_sequentially_then_approve_each_record() -> None:
+    engine, cleanup = build_agent_engine("pro_ctcae_multi_symptom")
+    sessions = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False,
+        future=True,
+    )
+    service = ProCtcaeSurveyService(
+        sessions,
+        settings=get_settings(),
+    )
+    patient_id = "patient_0000000000000042"
+    try:
+        transition = service.start_from_agent_response(
+            patient_id=patient_id,
+            origin_message_id="user_msg_0000000000000040",
+            trace_id="trace-pro-ctcae-multi",
+            user_message="속이 메스꺼웠고 실제로 두 번 토했어",
+            response=_multi_assessment_response(),
+        )
+        assert transition is not None
+        assert (
+            transition.symptom_name,
+            transition.symptom_number,
+            transition.symptom_count,
+            transition.question_number,
+        ) == ("메스꺼움", 1, 2, 1)
+
+        answers = [
+            ("자주 있다", "user_msg_0000000000000041"),
+            ("심했다", "user_msg_0000000000000042"),
+            ("하루 두 번", "user_msg_0000000000000043"),
+            ("심했다", "user_msg_0000000000000044"),
+        ]
+        origin_message_id = "user_msg_0000000000000040"
+        transitions: list[ProCtcaeSurveyTransition] = []
+        for answer, message_id in answers:
+            next_transition = service.submit_response(
+                patient_id=patient_id,
+                current_user_message_id=message_id,
+                originating_user_message_id=origin_message_id,
+                submitted_value=answer,
+            )
+            assert next_transition is not None
+            transitions.append(next_transition)
+            origin_message_id = message_id
+
+        assert transitions[1].kind == "next_question"
+        assert (
+            transitions[1].symptom_name,
+            transitions[1].symptom_number,
+            transitions[1].question_number,
+        ) == ("구토", 2, 1)
+        completed = transitions[-1]
+        assert completed.kind == "completed"
+        assert completed.completed_context is not None
+        assert completed.completed_context["symptom_name"] == "메스꺼움"
+        assert completed.symptom_count == 2
+
+        service.mark_approval_pending(
+            patient_id=patient_id,
+            survey_id=completed.survey_id,
+        )
+        second_approval = service.resolve_approval(
+            patient_id=patient_id,
+            applied=True,
+        )
+        assert second_approval is not None
+        assert second_approval.kind == "completed"
+        assert second_approval.completed_context is not None
+        assert second_approval.completed_context["symptom_name"] == "구토"
+        assert second_approval.symptom_number == 2
+
+        service.mark_approval_pending(
+            patient_id=patient_id,
+            survey_id=completed.survey_id,
+        )
+        assert service.resolve_approval(
+            patient_id=patient_id,
+            applied=False,
+        ) is None
+        with sessions() as session:
+            row = session.scalar(select(AgentProCtcaeSurvey))
+            assert row is not None
+            assert row.status == APPLIED
+            assert session.scalar(
+                select(func.count(AgentProCtcaeResponse.id))
+            ) == 4
     finally:
         cleanup()
 

@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from sqlalchemy.orm import sessionmaker
 
 from shared.chat_contracts import ChatMessageContent, ChatSyncResponse
 from shared.settings import get_settings
@@ -24,6 +23,7 @@ from system_app.models import (
     NutritionProfile,
 )
 from system_app.routes.ui_api import create_ui_api_router
+from system_app.services import ui_status_service
 from system_app.services.agent_client import AgentServiceError
 from system_app.services.clock_service import ensure_clock
 from system_app.services.dose_event_service import (
@@ -52,8 +52,7 @@ from system_app.services.ui_policy_service import (
     MISSED_DOSE_CONVERSATION,
     set_ui_policy,
 )
-from system_app.services import ui_status_service
-from system_app.services.ui_view_service import _display_message_at
+from system_app.services.ui_view_service import display_message_at
 from system_app.ui_contracts import (
     UiChatHistoryResponse,
     UiChatSyncResponse,
@@ -70,7 +69,7 @@ from system_app.ui_contracts import (
     UiSystemStatusResponse,
     UiTestbedResetResponse,
 )
-from tests.helpers import build_system_engine
+from tests.support.ui import build_ui_app
 
 
 class StubChatAgent:
@@ -104,29 +103,7 @@ class FailingChatAgent:
 
 
 def _ui_app(tmp_path, *, agent_client=None):
-    ui_status_service._reset_agent_readiness_cache()
-    engine, _cleanup = build_system_engine(
-        "ui_api"
-    )
-    sessions = sessionmaker(
-        bind=engine,
-        autoflush=False,
-        autocommit=False,
-        future=True,
-    )
-    runtime = SimpleNamespace(
-        write_lock=threading.RLock(),
-        agent_client=agent_client,
-    )
-    app = FastAPI()
-    app.include_router(create_ui_api_router(lambda: runtime))
-
-    def session_override():
-        with sessions() as session:
-            yield session
-
-    app.dependency_overrides[get_session] = session_override
-    return TestClient(app), sessions
+    return build_ui_app(tmp_path, agent_client=agent_client)
 
 
 def _seed_baseline(sessions) -> None:
@@ -145,7 +122,7 @@ def test_ui_status_reports_backend_and_ai_server_separately(
             status="ready",
             evidence=(
                 "AGENT_READINESS_HTTP_OK",
-                "AGENT_READINESS_CONTRACT_1_3",
+                "AGENT_READINESS_CONTRACT_1_4",
                 "GENERATION_PROVIDER_OK",
             ),
         )
@@ -1620,7 +1597,15 @@ def test_chat_wrapper_injects_server_identity_and_simulation_display_time(
             )
         )
         metadata = json.loads(assistant.metadata_json)
+        expected_conversation_at = (
+            datetime.fromisoformat(expected_display_at)
+            .astimezone(UTC)
+            .replace(tzinfo=None)
+        )
         assert assistant.id == data["assistant_sort_sequence"]
+        assert assistant.conversation_at == expected_conversation_at
+        assert assistant.display_at == expected_conversation_at
+        assert assistant.recorded_at is not None
         assert metadata["message_at"] == "2026-07-26T12:00:00+00:00"
         assert metadata["display_message_at"] == expected_display_at
 
@@ -1669,7 +1654,7 @@ def test_chat_history_uses_required_display_at_as_utc() -> None:
         created_at=datetime(2026, 7, 26, 12, 0),
     )
 
-    displayed_at = _display_message_at(message)
+    displayed_at = display_message_at(message)
 
     assert displayed_at.isoformat() == "2026-07-26T21:00:00+09:00"
 

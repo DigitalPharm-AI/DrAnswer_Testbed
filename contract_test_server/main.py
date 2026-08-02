@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
 import logging
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -67,7 +69,11 @@ from shared.chat_contracts import (
     ChatStreamEvent,
     ChatSyncRequest,
 )
-from shared.public_ids import is_public_id
+from shared.public_ids import (
+    is_public_id,
+    request_id_from_body,
+    request_id_from_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -139,22 +145,6 @@ def _raise_contract_error(
     )
 
 
-def _request_id_from_body(body: Any) -> str | None:
-    if not isinstance(body, dict):
-        return None
-    value = body.get("request_id")
-    if not isinstance(value, str) or not is_public_id(value, "request"):
-        return None
-    return value
-
-
-async def _request_id_from_request(request: Request) -> str | None:
-    try:
-        return _request_id_from_body(await request.json())
-    except Exception:
-        return None
-
-
 def _accepts_ndjson(value: str | None) -> bool:
     if not value:
         return False
@@ -175,6 +165,35 @@ def _json_line(value: dict[str, Any]) -> bytes:
         ).encode("utf-8")
         + b"\n"
     )
+
+
+async def _stream_ndjson_lines(
+    lines: Sequence[bytes],
+    *,
+    chunk_delay_seconds: float,
+) -> AsyncIterator[bytes]:
+    for index, line in enumerate(lines):
+        yield line
+        if index < len(lines) - 1:
+            await asyncio.sleep(chunk_delay_seconds)
+
+
+def _split_stream_text(
+    text: str,
+    *,
+    chunk_count: int,
+) -> tuple[str, ...]:
+    if not text:
+        return ()
+    resolved_count = max(1, min(int(chunk_count), len(text)))
+    base_width, remainder = divmod(len(text), resolved_count)
+    chunks: list[str] = []
+    offset = 0
+    for index in range(resolved_count):
+        width = base_width + (1 if index < remainder else 0)
+        chunks.append(text[offset : offset + width])
+        offset += width
+    return tuple(chunks)
 
 
 def _chat_content(
@@ -329,7 +348,7 @@ def create_app(
         if request.url.path not in PUBLIC_CONTRACT_PATHS:
             return await request_validation_exception_handler(request, exc)
         body = _error_response(
-            request_id=_request_id_from_body(exc.body),
+            request_id=request_id_from_body(exc.body),
             code="INVALID_REQUEST",
             message="Request schema or required field is invalid.",
             retryable=False,
@@ -374,7 +393,7 @@ def create_app(
         )
         details = detail.get("details")
         body = _error_response(
-            request_id=await _request_id_from_request(request),
+            request_id=await request_id_from_request(request),
             code=code,
             message=message,
             retryable=bool(detail.get("retryable", False)),
@@ -404,7 +423,7 @@ def create_app(
         return JSONResponse(
             status_code=500,
             content=_error_response(
-                request_id=await _request_id_from_request(request),
+                request_id=await request_id_from_request(request),
                 code="AI_PROCESSING_ERROR",
                 message=(
                     "The AI contract test server could not process the request."
@@ -463,11 +482,16 @@ def create_app(
             )
 
         message_type, message = _chat_content(payload.requested_return_type)
+        delta_text = message.text or "v1.3 계약 테스트 응답입니다."
+        deltas = _split_stream_text(
+            delta_text,
+            chunk_count=runtime_settings.contract_stream_delta_chunks,
+        )
         event_at = _now()
         terminal = ChatStreamEvent(
             request_id=payload.request_id,
             message_id=payload.message_id,
-            sequence=1,
+            sequence=len(deltas),
             status="completed",
             message_type=message_type,
             delta=None,
@@ -495,26 +519,39 @@ def create_app(
             replay = ChatStreamEvent.model_validate(
                 registration.response_json
             ).model_copy(update={"sequence": 0})
-            body = _json_line(replay.model_dump(mode="json"))
-        else:
-            delta = message.text or "v1.3 계약 테스트 응답입니다."
-            streaming = ChatStreamEvent(
-                request_id=payload.request_id,
-                message_id=payload.message_id,
-                sequence=0,
-                status="streaming",
-                message_type="text",
-                delta=delta,
-                message=None,
-                error=None,
-                event_at=event_at,
+            lines = (
+                _json_line(replay.model_dump(mode="json")),
             )
-            body = _json_line(
-                streaming.model_dump(mode="json")
-            ) + _json_line(terminal.model_dump(mode="json"))
+        else:
+            streaming_events = tuple(
+                ChatStreamEvent(
+                    request_id=payload.request_id,
+                    message_id=payload.message_id,
+                    sequence=sequence,
+                    status="streaming",
+                    message_type="text",
+                    delta=delta,
+                    message=None,
+                    error=None,
+                    event_at=event_at,
+                )
+                for sequence, delta in enumerate(deltas)
+            )
+            lines = tuple(
+                _json_line(event.model_dump(mode="json"))
+                for event in streaming_events
+            ) + (
+                _json_line(terminal.model_dump(mode="json")),
+            )
 
-        return Response(
-            content=body,
+        return StreamingResponse(
+            content=_stream_ndjson_lines(
+                lines,
+                chunk_delay_seconds=(
+                    runtime_settings.contract_stream_chunk_delay_ms
+                    / 1_000
+                ),
+            ),
             status_code=200,
             headers={
                 "Content-Type": "application/x-ndjson; charset=utf-8",

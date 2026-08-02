@@ -6,8 +6,9 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from agent_app.providers.parsing import parse_json_object
 from agent_app.llm.responses import natural_chat_summary
+from agent_app.providers.parsing import parse_json_object
+from shared.schemas import ToolCallResult
 from shared.tool_names import (
     GET_MEDICATION_DOSE_STATUS,
     GET_NOTIFICATION_POLICIES,
@@ -15,7 +16,6 @@ from shared.tool_names import (
     GET_NUTRITION_RECOMMENDATION_CANDIDATES,
     SEARCH_NUTRITION_FOOD_CANDIDATES,
 )
-from shared.schemas import ToolCallResult
 
 _LLM_HIDDEN_CONTEXT_KEYS = frozenset(
     {

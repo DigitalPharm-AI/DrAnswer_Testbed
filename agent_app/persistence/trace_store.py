@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
-import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -14,9 +11,50 @@ from agent_app.observability.evidence import (
     TraceEvidenceContext,
 )
 from agent_app.observability.outbox import enqueue_trace_attempt
-from shared.chat_contracts import ChatSyncRequest
 from agent_app.persistence.models import AgentRunStep, AgentRunTrace, AgentToolExecution
-from shared.tool_names import MODEL_VISIBLE_TOOL_METADATA
+from agent_app.persistence.trace_values import (
+    attempt_root_observation_id as _attempt_root_observation_id,
+)
+from agent_app.persistence.trace_values import (
+    attempt_started_at as _attempt_started_at,
+)
+from agent_app.persistence.trace_values import (
+    dict_list as _dict_list,
+)
+from agent_app.persistence.trace_values import (
+    duration_ms as _duration_ms,
+)
+from agent_app.persistence.trace_values import (
+    json_object as _json_object,
+)
+from agent_app.persistence.trace_values import (
+    json_value as _json_value,
+)
+from agent_app.persistence.trace_values import (
+    next_sequence as _next_sequence,
+)
+from agent_app.persistence.trace_values import (
+    nonnegative_int as _nonnegative_int,
+)
+from agent_app.persistence.trace_values import (
+    observation_id as _observation_id,
+)
+from agent_app.persistence.trace_values import (
+    parse_datetime as _parse_datetime,
+)
+from agent_app.persistence.trace_values import (
+    safe_error_code as _safe_error_code,
+)
+from agent_app.persistence.trace_values import (
+    sha256_text as _sha256_text,
+)
+from agent_app.persistence.trace_values import (
+    side_effect_level as _side_effect_level,
+)
+from agent_app.persistence.trace_values import (
+    token_usage as _token_usage,
+)
+from shared.chat_contracts import ChatSyncRequest
 from shared.json_utils import dump_json, sha256_json
 from shared.readiness_budget import estimate_model_cost_usd
 from shared.redaction import redacted_clinical_text_label
@@ -24,6 +62,7 @@ from shared.retention_policy import agent_observability_expires_at
 from shared.schemas import AgentResponse
 from shared.settings import Settings, get_settings
 from shared.time_utils import utc_now
+from shared.tool_names import MODEL_VISIBLE_TOOL_METADATA
 
 
 class AgentTraceStore:
@@ -282,12 +321,14 @@ class AgentTraceStore:
         response: AgentResponse,
         *,
         model_call_observations: list[dict[str, Any]] | None = None,
+        tool_call_observations: list[dict[str, Any]] | None = None,
     ) -> None:
         self._complete_trace(
             request_id=request.request_id,
             patient_id_hash=_sha256_text(request.patient_id),
             response=response,
             model_call_observations=model_call_observations,
+            tool_call_observations=tool_call_observations,
         )
 
     def complete_async_task(
@@ -297,12 +338,14 @@ class AgentTraceStore:
         patient_id: str,
         response: AgentResponse,
         model_call_observations: list[dict[str, Any]] | None = None,
+        tool_call_observations: list[dict[str, Any]] | None = None,
     ) -> None:
         self._complete_trace(
             request_id=request_id,
             patient_id_hash=_sha256_text(patient_id),
             response=response,
             model_call_observations=model_call_observations,
+            tool_call_observations=tool_call_observations,
         )
 
     def _complete_trace(
@@ -312,14 +355,26 @@ class AgentTraceStore:
         patient_id_hash: str,
         response: AgentResponse,
         model_call_observations: list[dict[str, Any]] | None = None,
+        tool_call_observations: list[dict[str, Any]] | None = None,
     ) -> None:
         now = utc_now()
         trace_expires_at = agent_observability_expires_at(now)
         tool_expires_at = trace_expires_at
         structured = response.structured_payload if isinstance(response.structured_payload, dict) else {}
         token_usage = _token_usage(structured)
-        tool_calls = _dict_list(structured.get("tool_calls"))
-        tool_results = _dict_list(structured.get("tool_results"))
+        tool_observations = _dict_list(tool_call_observations)
+        if tool_observations:
+            tool_calls = [
+                _json_object(observation.get("call"))
+                for observation in tool_observations
+            ]
+            tool_results = [
+                _json_object(observation.get("result"))
+                for observation in tool_observations
+            ]
+        else:
+            tool_calls = _dict_list(structured.get("tool_calls"))
+            tool_results = _dict_list(structured.get("tool_results"))
         model_calls = (
             [
                 dict(observation)
@@ -389,6 +444,11 @@ class AgentTraceStore:
                     "validation_error_count": len(response.validation_errors),
                     "structured_payload_keys": sorted(str(key) for key in structured),
                     "requires_conversation_alert": response.requires_conversation_alert,
+                    "tool_timing_source": (
+                        "runtime_observation"
+                        if tool_observations
+                        else "response_payload_fallback"
+                    ),
                     "langfuse_tags": [
                         trace.workflow_name,
                         response.agent_name,
@@ -409,11 +469,16 @@ class AgentTraceStore:
                 response.trace_id,
                 trace.attempt_count,
             )
-            for observation in model_calls:
+            for model_call_index, observation in enumerate(
+                model_calls,
+                start=1,
+            ):
                 self._add_model_trace(
                     session,
                     response.trace_id,
                     observation,
+                    model_call_index=model_call_index,
+                    workflow_route=trace.route,
                     sequence=sequence,
                     trace_attempt_number=trace.attempt_count,
                     parent_observation_id=parent_observation_id,
@@ -423,6 +488,11 @@ class AgentTraceStore:
 
             for index, call in enumerate(tool_calls):
                 result = tool_results[index] if index < len(tool_results) else {}
+                observation = (
+                    tool_observations[index]
+                    if index < len(tool_observations)
+                    else {}
+                )
                 self._add_tool_trace(
                     session,
                     request_id,
@@ -430,6 +500,7 @@ class AgentTraceStore:
                     response.trace_id,
                     call,
                     result,
+                    observation=observation,
                     sequence=sequence,
                     trace_attempt_number=trace.attempt_count,
                     parent_observation_id=parent_observation_id,
@@ -542,11 +613,16 @@ class AgentTraceStore:
                 trace_id,
                 trace.attempt_count,
             )
-            for observation in observations:
+            for model_call_index, observation in enumerate(
+                observations,
+                start=1,
+            ):
                 self._add_model_trace(
                     session,
                     trace_id,
                     observation,
+                    model_call_index=model_call_index,
+                    workflow_route=trace.route,
                     sequence=sequence,
                     trace_attempt_number=trace.attempt_count,
                     parent_observation_id=parent_observation_id,
@@ -562,9 +638,11 @@ class AgentTraceStore:
         error_code: str,
         error_message: str,
         retryable: bool,
+        tool_call_observations: list[dict[str, Any]] | None = None,
     ) -> None:
         now = utc_now()
         expires_at = agent_observability_expires_at(now)
+        tool_observations = _dict_list(tool_call_observations)
         with self.session_factory() as session:
             trace = session.scalar(
                 select(AgentRunTrace)
@@ -598,6 +676,34 @@ class AgentTraceStore:
                 trace.attempt_count,
             )
             trace.latency_ms = _duration_ms(attempt_started_at, now)
+            trace.tool_count = len(tool_observations)
+            trace.metadata_json = dump_json(
+                {
+                    **_json_object(trace.metadata_json),
+                    "tool_timing_source": (
+                        "runtime_observation"
+                        if tool_observations
+                        else "unavailable"
+                    ),
+                }
+            )
+            for observation in tool_observations:
+                self._add_tool_trace(
+                    session,
+                    trace.request_id,
+                    trace.patient_id_hash,
+                    trace_id,
+                    _json_object(observation.get("call")),
+                    _json_object(observation.get("result")),
+                    observation=observation,
+                    sequence=next_sequence,
+                    trace_attempt_number=trace.attempt_count,
+                    parent_observation_id=parent_observation_id,
+                    now=now,
+                    trace_expires_at=expires_at,
+                    tool_expires_at=expires_at,
+                )
+                next_sequence += 1
             final_observation_id = _observation_id()
             final_evidence = self._encrypted_evidence_fields(
                 trace_id=trace_id,
@@ -655,6 +761,8 @@ class AgentTraceStore:
         trace_id: str,
         observation: dict[str, Any],
         *,
+        model_call_index: int,
+        workflow_route: str,
         sequence: int,
         trace_attempt_number: int,
         parent_observation_id: str,
@@ -705,6 +813,12 @@ class AgentTraceStore:
             )
             else {}
         )
+        route_decision = _json_object(
+            observation.get("route_decision")
+        )
+        input_composition = _json_object(
+            observation.get("input_composition")
+        )
         evidence = self._encrypted_evidence_fields(
             trace_id=trace_id,
             observation_id=observation_id,
@@ -714,7 +828,19 @@ class AgentTraceStore:
             value=decision_evidence,
         )
         reason_code = str(
-            decision_evidence.get("system_reason_code") or ""
+            route_decision.get("reason_code")
+            or decision_evidence.get("system_reason_code")
+            or ""
+        )
+        observation_type = str(
+            observation.get("observation_type") or "generation"
+        )
+        if observation_type not in {"generation", "embedding"}:
+            observation_type = "generation"
+        step_type = (
+            "embedding"
+            if observation_type == "embedding"
+            else "model_call"
         )
         session.add(
             AgentRunStep(
@@ -722,9 +848,9 @@ class AgentTraceStore:
                 sequence=sequence,
                 observation_id=observation_id,
                 parent_observation_id=parent_observation_id,
-                observation_type="generation",
+                observation_type=observation_type,
                 trace_attempt_number=trace_attempt_number,
-                step_type="model_call",
+                step_type=step_type,
                 step_name=str(observation.get("name") or "model_call"),
                 status=str(
                     observation.get("status") or "COMPLETED"
@@ -780,6 +906,13 @@ class AgentTraceStore:
                         "content_storage": "encrypted_agent_db_only",
                         "decision_evidence_encrypted": True,
                         "decision_reason_code": reason_code,
+                        "model_call_index": _nonnegative_int(
+                            observation.get("model_call_index")
+                            or model_call_index
+                        ),
+                        "workflow_route": workflow_route,
+                        "route_decision": route_decision,
+                        "input_composition": input_composition,
                         "private_reasoning_retained": False,
                         "langfuse_observation_type": "generation",
                     }
@@ -797,6 +930,7 @@ class AgentTraceStore:
         call: dict[str, Any],
         result: dict[str, Any],
         *,
+        observation: dict[str, Any],
         sequence: int,
         trace_attempt_number: int,
         parent_observation_id: str,
@@ -820,11 +954,17 @@ class AgentTraceStore:
             _nonnegative_int(result.get("attempt_count")),
         )
         latency_ms = _nonnegative_int(
-            result.get("elapsed_ms")
+            observation.get("latency_ms")
+            or result.get("elapsed_ms")
             or response_payload.get("elapsed_ms")
         )
         retryable = bool(result.get("retryable"))
-        started_at = now - timedelta(milliseconds=latency_ms)
+        completed_at = _parse_datetime(
+            observation.get("completed_at")
+        ) or now
+        started_at = _parse_datetime(
+            observation.get("started_at")
+        ) or completed_at - timedelta(milliseconds=latency_ms)
 
         session.add(
             AgentToolExecution(
@@ -852,13 +992,16 @@ class AgentTraceStore:
                     }
                 ),
                 started_at=started_at,
-                completed_at=now,
+                completed_at=completed_at,
                 created_at=now,
                 updated_at=now,
                 expires_at=tool_expires_at,
             )
         )
-        tool_observation_id = _observation_id()
+        tool_observation_id = str(
+            observation.get("observation_id")
+            or _observation_id()
+        )
         tool_evidence = self._encrypted_evidence_fields(
             trace_id=trace_id,
             observation_id=tool_observation_id,
@@ -908,7 +1051,7 @@ class AgentTraceStore:
                 input_hash=sha256_json(arguments),
                 output_hash=sha256_json(response_payload),
                 started_at=started_at,
-                completed_at=now,
+                completed_at=completed_at,
                 created_at=now,
                 expires_at=trace_expires_at,
                 metadata_json=dump_json(
@@ -951,229 +1094,3 @@ class AgentTraceStore:
             "evidence_hash": evidence_hash,
             "encryption_key_id": self.evidence_cipher.key_id,
         }
-
-
-def _token_usage(structured: dict[str, Any]) -> dict[str, int]:
-    observations = _dict_list(
-        structured.get("model_call_observations")
-    )
-    if observations:
-        return {
-            "input_tokens": sum(
-                _nonnegative_int(
-                    (
-                        observation.get("usage_details")
-                        if isinstance(
-                            observation.get("usage_details"),
-                            dict,
-                        )
-                        else {}
-                    ).get("input")
-                )
-                for observation in observations
-            ),
-            "output_tokens": sum(
-                _nonnegative_int(
-                    (
-                        observation.get("usage_details")
-                        if isinstance(
-                            observation.get("usage_details"),
-                            dict,
-                        )
-                        else {}
-                    ).get("output")
-                )
-                for observation in observations
-            ),
-        }
-
-    root_usage = (
-        structured.get("token_usage")
-        if isinstance(structured.get("token_usage"), dict)
-        else {}
-    )
-    if root_usage:
-        return {
-            "input_tokens": _nonnegative_int(
-                root_usage.get("input_tokens")
-            ),
-            "output_tokens": _nonnegative_int(
-                root_usage.get("output_tokens")
-            ),
-        }
-
-    candidates: list[dict[str, Any]] = []
-    for key in (
-        "model_output",
-        "final_model_output",
-        "supervisor_model_output",
-        "supervisor_final_model_output",
-    ):
-        value = structured.get(key)
-        if isinstance(value, dict):
-            candidates.append(value)
-
-    input_tokens = 0
-    output_tokens = 0
-    seen: set[int] = set()
-    for candidate in candidates:
-        identity = id(candidate)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        raw = candidate.get("token_usage")
-        usage = raw if isinstance(raw, dict) else {}
-        input_tokens += _nonnegative_int(
-            usage.get("input_tokens")
-            or candidate.get("input_tokens")
-        )
-        output_tokens += _nonnegative_int(
-            usage.get("output_tokens")
-            or candidate.get("output_tokens")
-        )
-    return {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-    }
-
-
-def _next_sequence(session: Session, trace_id: str) -> int:
-    return (
-        session.scalar(
-            select(AgentRunStep.sequence)
-            .where(AgentRunStep.trace_id == trace_id)
-            .order_by(AgentRunStep.sequence.desc())
-            .limit(1)
-        )
-        or 0
-    ) + 1
-
-
-def _attempt_root_observation_id(
-    session: Session,
-    trace_id: str,
-    trace_attempt_number: int,
-) -> str:
-    return str(
-        session.scalar(
-            select(AgentRunStep.observation_id)
-            .where(
-                AgentRunStep.trace_id == trace_id,
-                AgentRunStep.trace_attempt_number
-                == trace_attempt_number,
-                AgentRunStep.step_type == "request_ingress",
-            )
-            .order_by(AgentRunStep.sequence.desc())
-            .limit(1)
-        )
-        or ""
-    )
-
-
-def _attempt_started_at(
-    session: Session,
-    trace_id: str,
-    trace_attempt_number: int,
-) -> datetime | None:
-    return session.scalar(
-        select(AgentRunStep.started_at)
-        .where(
-            AgentRunStep.trace_id == trace_id,
-            AgentRunStep.trace_attempt_number
-            == trace_attempt_number,
-            AgentRunStep.step_type == "request_ingress",
-        )
-        .order_by(AgentRunStep.sequence.desc())
-        .limit(1)
-    )
-
-
-def _duration_ms(
-    started_at: datetime | None,
-    completed_at: datetime,
-) -> int:
-    if started_at is None:
-        return 0
-    return max(
-        0,
-        round((completed_at - started_at).total_seconds() * 1000),
-    )
-
-
-def _parse_datetime(value: Any) -> datetime | None:
-    if isinstance(value, datetime):
-        return value.replace(tzinfo=None)
-    if not isinstance(value, str) or not value.strip():
-        return None
-    try:
-        return datetime.fromisoformat(
-            value.replace("Z", "+00:00")
-        ).replace(tzinfo=None)
-    except ValueError:
-        return None
-
-
-def _json_object(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return dict(value)
-    if not isinstance(value, str):
-        return {}
-    try:
-        parsed = json.loads(value)
-    except (TypeError, ValueError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _json_value(value: Any, *, default: Any) -> Any:
-    if isinstance(value, (dict, list, str, int, float, bool)):
-        return value
-    return default
-
-
-def _observation_id() -> str:
-    return uuid.uuid4().hex
-
-
-def _safe_error_code(value: Any) -> str:
-    text = str(value or "").strip()
-    if (
-        text
-        and len(text) <= 80
-        and all(
-            character.isascii()
-            and (
-                character.isalnum()
-                or character in "_:-."
-            )
-            for character in text
-        )
-    ):
-        return text
-    return "TOOL_EXECUTION_ERROR" if text else ""
-
-
-def _dict_list(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)]
-
-
-def _nonnegative_int(value: Any) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _sha256_text(value: Any) -> str:
-    return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
-
-
-def _side_effect_level(metadata: dict[str, str]) -> str:
-    mutability = metadata.get("mutability", "")
-    if mutability in {"write", "delete"}:
-        return "approval_required"
-    if mutability == "propose":
-        return "deferred"
-    return "read_only"

@@ -11,10 +11,7 @@ from shared.retention_policy import agent_observability_expires_at
 from shared.time_utils import utc_now
 
 PUBLIC_ID_ALLOCATION_ATTEMPTS = 8
-
-
-def utcnow() -> datetime:
-    return utc_now()
+utcnow = utc_now
 
 
 def observability_expires_at() -> datetime:
@@ -448,6 +445,17 @@ class ChatMessage(Base):
             "display_at",
             "id",
         ),
+        Index(
+            "ix_chat_messages_patient_conversation_at",
+            "patient_id",
+            "conversation_at",
+            "id",
+        ),
+        Index(
+            "ix_chat_messages_patient_sequence",
+            "patient_id",
+            "id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -472,6 +480,22 @@ class ChatMessage(Base):
     display_at: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,
+    )
+    # Trusted business time for conversation grouping and Agent context.
+    # Testbeds source this from SimulationClock; production sources it from
+    # the Backend's system clock. It must not be used for latency measurement.
+    conversation_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utcnow,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+    # Physical UTC insertion time retained independently from business time.
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utcnow,
+        server_default=text("CURRENT_TIMESTAMP"),
     )
 
 
@@ -500,9 +524,17 @@ def _set_chat_message_display_at(
             column_name="public_id",
             kind=kind,
         )
-    if target.display_at is not None:
-        return
-    target.display_at = target.created_at or utcnow()
+    fallback_conversation_at = (
+        target.display_at
+        or target.created_at
+        or utcnow()
+    )
+    if target.conversation_at is None:
+        target.conversation_at = fallback_conversation_at
+    if target.display_at is None:
+        target.display_at = target.conversation_at
+    if target.recorded_at is None:
+        target.recorded_at = utcnow()
 
 
 class BackendApiRequest(Base):

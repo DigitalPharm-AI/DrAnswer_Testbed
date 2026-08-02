@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from shared.tool_names import POLICY_TOOLS, PROPOSE_NOTIFICATION_POLICY
+from shared.policy_sources import normalize_notification_policy_source
 from shared.schemas import NotificationPolicyDelta, ToolCallResult
+from shared.tool_names import POLICY_TOOLS, PROPOSE_NOTIFICATION_POLICY
 
 DEFERRED_POLICY_TOOL_NAMES = set(POLICY_TOOLS)
 
@@ -52,7 +53,10 @@ def normalize_policy_tool_calls(tool_calls: list[dict[str, Any]], *, source_even
             normalized.append(tool_call)
             continue
         arguments = tool_call.get("arguments") if isinstance(tool_call.get("arguments"), dict) else {}
-        policies = _notification_policy_deltas(arguments, source_event_type=source_event_type)
+        policies = notification_policy_deltas(
+            arguments,
+            source_event_type=source_event_type,
+        )
         for policy in policies:
             normalized.append(
                 {
@@ -91,7 +95,11 @@ def _deduplicate_tool_calls(
     return deduplicated
 
 
-def _notification_policy_deltas(arguments: dict[str, Any], *, source_event_type: str = "") -> list[NotificationPolicyDelta]:
+def notification_policy_deltas(
+    arguments: dict[str, Any],
+    *,
+    source_event_type: str = "",
+) -> list[NotificationPolicyDelta]:
     raw_items = arguments.get("policies")
     if raw_items is None:
         raw_items = arguments.get("policy_deltas")
@@ -106,25 +114,9 @@ def _notification_policy_deltas(arguments: dict[str, Any], *, source_event_type:
         if not isinstance(item, dict):
             continue
         payload = dict(item)
-        payload["source"] = _normalize_notification_policy_source(payload.get("source"), source_event_type)
+        payload["source"] = normalize_notification_policy_source(
+            payload.get("source"),
+            source_event_type=source_event_type,
+        )
         normalized_items.append(NotificationPolicyDelta.model_validate(payload))
     return normalized_items
-
-
-def _normalize_notification_policy_source(value: Any, source_event_type: str) -> str:
-    if source_event_type in {"daily_pattern", "manual_daily_pattern"}:
-        return "pattern_analysis"
-    if source_event_type == "multiturn_chat":
-        return "patient_request"
-    allowed = {"pattern_analysis", "patient_request", "system_request"}
-    if isinstance(value, str) and value in allowed:
-        return value
-    return _default_notification_policy_source(source_event_type)
-
-
-def _default_notification_policy_source(source_event_type: str) -> str:
-    if source_event_type in {"daily_pattern", "manual_daily_pattern"}:
-        return "pattern_analysis"
-    if source_event_type == "multiturn_chat":
-        return "patient_request"
-    return "system_request"

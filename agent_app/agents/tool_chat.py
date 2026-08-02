@@ -6,6 +6,8 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 
 from agent_app import trace_logging
+from agent_app.errors import AgentExecutionError
+from agent_app.llm.generation import PROMPT_VERSION_ID
 from agent_app.llm.messages import (
     ai_message_from_tool_calls,
     build_chat_messages,
@@ -16,18 +18,18 @@ from agent_app.llm.messages import (
     tool_calls_from_ai_message,
     tool_messages_from_results,
 )
-from shared.tool_confirmations import ConfirmationActionRegistry
-from agent_app.orchestration.continuation import continuation_type
-from agent_app.errors import AgentExecutionError
-from agent_app.llm.generation import PROMPT_VERSION_ID
+from agent_app.llm.validation import validate_llm_output
 from agent_app.observability.model_calls import (
     traced_model_ainvoke,
     traced_model_astream_message,
 )
-from agent_app.llm.validation import validate_llm_output
+from agent_app.orchestration.continuation import continuation_type
 from agent_app.providers.base import BaseLLMProvider
-from shared.tool_catalog import ToolCatalog
-from shared.tool_names import REQUEST_RECORD_APPROVAL, UPDATE_MEDICATION_DOSE_EVENT_STATUS
+from agent_app.tools.budget import (
+    current_tool_execution_budget,
+    response_with_tool_execution_budget,
+    tool_execution_budget_scope,
+)
 from agent_app.tools.policy import has_deferred_policy_tool_call, normalize_policy_tool_calls
 from agent_app.tools.policy_gate import (
     ToolCallContext,
@@ -38,6 +40,9 @@ from agent_app.tools.results import public_tool_calls, tool_calls_payload
 from agent_app.tools.runtime import ToolRuntime
 from shared.redaction import safe_exception_summary
 from shared.schemas import AgentResponse
+from shared.tool_catalog import ToolCatalog
+from shared.tool_confirmations import ConfirmationActionRegistry
+from shared.tool_names import REQUEST_RECORD_APPROVAL, UPDATE_MEDICATION_DOSE_EVENT_STATUS
 
 AGENT_TOOL_LOOP_LIMIT = 6
 TOOL_LOOP_MODE = "langgraph_state_graph"
@@ -64,6 +69,8 @@ class ToolChatGraphState(TypedDict, total=False):
     iterations: int
     continuation_type: str
     confirmation_required: bool
+    input_required: bool
+    selection_required: bool
     seeded_tool_calls_consumed: bool
     response: AgentResponse
 
@@ -127,9 +134,7 @@ class ToolChatAgentGraph:
         origin: ToolCallOrigin = ToolCallOrigin.CLINICAL_CONTINUATION,
     ) -> AgentResponse:
         if origin is ToolCallOrigin.APPROVED_WRITE:
-            raise ValueError(
-                "approved_write must use execute_approved_write"
-            )
+            raise ValueError("approved_write must use execute_approved_write")
         return await self._invoke(
             trace_id,
             request_payload,
@@ -144,15 +149,28 @@ class ToolChatAgentGraph:
         *,
         tool_call: dict[str, Any],
     ) -> AgentResponse:
+        with tool_execution_budget_scope() as budget:
+            response = await self._execute_approved_write_without_budget(
+                trace_id,
+                request_payload,
+                tool_call=tool_call,
+            )
+            return response_with_tool_execution_budget(response, budget)
+
+    async def _execute_approved_write_without_budget(
+        self,
+        trace_id: str,
+        request_payload: dict[str, Any],
+        *,
+        tool_call: dict[str, Any],
+    ) -> AgentResponse:
         payload = dict(request_payload)
         executed_calls, results = await self.tool_runtime.execute(
             [tool_call],
             trace_id=trace_id,
             source_event_type=self.source_event_type,
             payload=payload,
-            call_context=ToolCallContext(
-                origin=ToolCallOrigin.APPROVED_WRITE
-            ),
+            call_context=ToolCallContext(origin=ToolCallOrigin.APPROVED_WRITE),
             routing_context={
                 "routing_mode": "approved_write",
                 "executed_by": self.agent_name,
@@ -173,10 +191,7 @@ class ToolChatAgentGraph:
         result = results[0]
         if result.status != "success":
             raise AgentExecutionError(
-                (
-                    "approved_write_not_applied:"
-                    f"{result.tool_name}:{result.status}"
-                ),
+                (f"approved_write_not_applied:{result.tool_name}:{result.status}"),
                 error_type="mutation_tool_not_applied",
                 trace_id=trace_id,
                 agent_name=self.agent_name,
@@ -231,13 +246,9 @@ class ToolChatAgentGraph:
                 "agent_graph_mode": TOOL_LOOP_MODE,
                 "executed_by": self.agent_name,
                 "specialist_agent": self.agent_name,
-                "specialist_tool_calls": public_tool_calls(
-                    executed_calls
-                ),
+                "specialist_tool_calls": public_tool_calls(executed_calls),
                 **tool_calls_payload(executed_calls, results),
-                "final_answer_source": (
-                    "approved_write_finalizer"
-                ),
+                "final_answer_source": ("approved_write_finalizer"),
                 "message_flow": [
                     "ApprovedToolCall",
                     "ToolResult",
@@ -249,6 +260,23 @@ class ToolChatAgentGraph:
         )
 
     async def _invoke(
+        self,
+        trace_id: str,
+        request_payload: dict[str, Any],
+        *,
+        seeded_tool_calls: list[dict[str, Any]] | None,
+        seeded_tool_origin: ToolCallOrigin,
+    ) -> AgentResponse:
+        with tool_execution_budget_scope() as budget:
+            response = await self._invoke_without_budget(
+                trace_id,
+                request_payload,
+                seeded_tool_calls=seeded_tool_calls,
+                seeded_tool_origin=seeded_tool_origin,
+            )
+            return response_with_tool_execution_budget(response, budget)
+
+    async def _invoke_without_budget(
         self,
         trace_id: str,
         request_payload: dict[str, Any],
@@ -271,11 +299,7 @@ class ToolChatAgentGraph:
             {
                 "trace_id": trace_id,
                 "request_payload": payload,
-                "seeded_tool_calls": (
-                    list(seeded_tool_calls)
-                    if seeded_tool_calls is not None
-                    else None
-                ),
+                "seeded_tool_calls": (list(seeded_tool_calls) if seeded_tool_calls is not None else None),
                 "seeded_tool_origin": seeded_tool_origin,
                 "pending_tool_call_origin": ToolCallOrigin.MODEL,
                 "messages": initial_messages,
@@ -299,6 +323,14 @@ class ToolChatAgentGraph:
             self._continuation_required_response,
         )
         graph.add_node("confirmation_response", self._confirmation_response)
+        graph.add_node(
+            "input_required_response",
+            self._input_required_response,
+        )
+        graph.add_node(
+            "selection_required_response",
+            self._selection_required_response,
+        )
         graph.add_node("max_iterations_response", self._max_iterations_response)
         graph.set_entry_point("prepare_model")
         graph.add_edge("prepare_model", "llm_call")
@@ -318,11 +350,17 @@ class ToolChatAgentGraph:
             {
                 "llm_call": "llm_call",
                 "confirmation_response": "confirmation_response",
+                "input_required_response": "input_required_response",
+                "selection_required_response": (
+                    "selection_required_response"
+                ),
             },
         )
         graph.add_edge("final_response", END)
         graph.add_edge("continuation_required_response", END)
         graph.add_edge("confirmation_response", END)
+        graph.add_edge("input_required_response", END)
+        graph.add_edge("selection_required_response", END)
         graph.add_edge("max_iterations_response", END)
         return graph.compile()
 
@@ -331,9 +369,7 @@ class ToolChatAgentGraph:
         # Bedrock. Approved writes use a dedicated seeded entry and the policy
         # guard below rejects any model-requested follow-up Tool call.
         catalog_tools = ToolCatalog.model_tools_for(*self.tool_names)
-        bound_model = self.provider.chat_model().bind_tools(
-            langchain_tools_from_catalog(catalog_tools)
-        )
+        bound_model = self.provider.chat_model().bind_tools(langchain_tools_from_catalog(catalog_tools))
         return {"bound_model": bound_model}
 
     async def _llm_call(self, state: ToolChatGraphState) -> dict[str, Any]:
@@ -343,10 +379,7 @@ class ToolChatAgentGraph:
             "seeded_tool_origin",
             ToolCallOrigin.MODEL,
         )
-        if (
-            seeded_tool_calls
-            and not state.get("seeded_tool_calls_consumed", False)
-        ):
+        if seeded_tool_calls and not state.get("seeded_tool_calls_consumed", False):
             tool_calls = normalize_policy_tool_calls(
                 seeded_tool_calls,
                 source_event_type=self.source_event_type,
@@ -395,11 +428,7 @@ class ToolChatAgentGraph:
                 False,
             )
             pending_tool_call_origin = ToolCallOrigin.MODEL
-            if (
-                seeded_tool_origin is ToolCallOrigin.APPROVED_WRITE
-                and seeded_tool_calls_consumed
-                and tool_calls
-            ):
+            if seeded_tool_origin is ToolCallOrigin.APPROVED_WRITE and seeded_tool_calls_consumed and tool_calls:
                 raise AgentExecutionError(
                     "approved_write_followup_tool_forbidden",
                     error_type="approved_write_followup_tool_forbidden",
@@ -408,6 +437,12 @@ class ToolChatAgentGraph:
                     decision_type=self.decision_type,
                 )
 
+        current_tool_execution_budget().validate_turn_plan(
+            tool_calls,
+            trace_id=state["trace_id"],
+            agent_name=self.agent_name,
+            decision_type=self.decision_type,
+        )
         if tool_calls:
             ai_message = ai_message_from_tool_calls(
                 tool_calls,
@@ -468,10 +503,7 @@ class ToolChatAgentGraph:
                     "pending_tool_call_origin",
                     ToolCallOrigin.MODEL,
                 ),
-                prior_call_fingerprints=frozenset(
-                    tool_call_fingerprint(call)
-                    for call in state.get("all_executed_calls", [])
-                ),
+                prior_call_fingerprints=frozenset(tool_call_fingerprint(call) for call in state.get("all_executed_calls", [])),
             ),
             routing_context={
                 "routing_mode": "specialist_tool",
@@ -494,15 +526,14 @@ class ToolChatAgentGraph:
         )
         tool_messages = tool_messages_from_results(executed_ai_message, executed_calls, results)
         confirmation_required = any(result.status == "confirmation_required" for result in results)
+        input_required = any(result.status == "success" and isinstance(result.response, dict) and result.response.get("input_required") is True for result in results)
+        selection_required = any(result.status == "success" and isinstance(result.response, dict) and result.response.get("selection_required") is True for result in results)
         if not confirmation_required:
             failed_mutation = next(
                 (
                     result
                     for result in results
-                    if (
-                        result.tool_name == REQUEST_RECORD_APPROVAL
-                        or ConfirmationActionRegistry.requires_confirmation(result.tool_name)
-                    )
+                    if (result.tool_name == REQUEST_RECORD_APPROVAL or ConfirmationActionRegistry.requires_confirmation(result.tool_name))
                     and result.status not in {"success", "confirmation_required"}
                 ),
                 None,
@@ -523,26 +554,155 @@ class ToolChatAgentGraph:
             "iterations": state.get("iterations", 0) + 1,
             "pending_tool_calls": [],
             "confirmation_required": confirmation_required,
+            "input_required": input_required,
+            "selection_required": selection_required,
         }
 
     @staticmethod
     def _route_after_tool(state: ToolChatGraphState) -> str:
-        return "confirmation_response" if state.get("confirmation_required") else "llm_call"
+        if state.get("confirmation_required"):
+            return "confirmation_response"
+        if state.get("input_required"):
+            return "input_required_response"
+        if state.get("selection_required"):
+            return "selection_required_response"
+        return "llm_call"
+
+    def _selection_required_response(
+        self,
+        state: ToolChatGraphState,
+    ) -> dict[str, AgentResponse]:
+        all_executed_calls = state.get("all_executed_calls", [])
+        all_results = state.get("all_results", [])
+        all_tool_messages = state.get("all_tool_messages", [])
+        selection_request, dose_selection = (
+            _first_selection_request(all_results)
+        )
+        if not selection_request or not dose_selection:
+            raise AgentExecutionError(
+                "selection_request_missing",
+                error_type="selection_request_missing",
+                trace_id=state["trace_id"],
+                agent_name=self.agent_name,
+                decision_type="selection_required",
+            )
+        text = str(
+            selection_request.get("text")
+            or "항목을 선택해 주세요."
+        ).strip()
+        return {
+            "response": AgentResponse(
+                trace_id=state["trace_id"],
+                agent_name=self.agent_name,
+                prompt_version_id=PROMPT_VERSION_ID,
+                decision_type="selection_required",
+                structured_payload={
+                    "routing_mode": "specialist_selection_required",
+                    "tool_loop_mode": TOOL_LOOP_MODE,
+                    "agent_graph_mode": TOOL_LOOP_MODE,
+                    "executed_by": self.agent_name,
+                    "specialist_agent": self.agent_name,
+                    "specialist_tool_calls": all_executed_calls,
+                    "model_output": state.get(
+                        "initial_model_output",
+                        {},
+                    ),
+                    **tool_calls_payload(
+                        all_executed_calls,
+                        all_results,
+                    ),
+                    "tool_messages": [
+                        {
+                            "name": message.name,
+                            "tool_call_id": message.tool_call_id,
+                            "content": message.content,
+                        }
+                        for message in all_tool_messages
+                    ],
+                    "selection_required": True,
+                    "selection_request": selection_request,
+                    "dose_selection": dose_selection,
+                    "chat_response": {
+                        "message_type": "selection_box",
+                        "message": selection_request,
+                    },
+                    "message_flow": tool_chat_message_flow(
+                        len(all_results)
+                    ),
+                    "iterations": state.get("iterations", 0),
+                },
+                human_summary=text,
+                requires_conversation_alert=False,
+            )
+        }
+
+    def _input_required_response(
+        self,
+        state: ToolChatGraphState,
+    ) -> dict[str, AgentResponse]:
+        all_executed_calls = state.get("all_executed_calls", [])
+        all_results = state.get("all_results", [])
+        all_tool_messages = state.get("all_tool_messages", [])
+        input_request = _first_input_request(all_results)
+        if not input_request:
+            raise AgentExecutionError(
+                "input_request_missing",
+                error_type="input_request_missing",
+                trace_id=state["trace_id"],
+                agent_name=self.agent_name,
+                decision_type="input_required",
+            )
+        text = str(input_request.get("text") or "필요한 값을 입력해 주세요.").strip()
+        return {
+            "response": AgentResponse(
+                trace_id=state["trace_id"],
+                agent_name=self.agent_name,
+                prompt_version_id=PROMPT_VERSION_ID,
+                decision_type="input_required",
+                structured_payload={
+                    "routing_mode": "specialist_input_required",
+                    "tool_loop_mode": TOOL_LOOP_MODE,
+                    "agent_graph_mode": TOOL_LOOP_MODE,
+                    "executed_by": self.agent_name,
+                    "specialist_agent": self.agent_name,
+                    "specialist_tool_calls": all_executed_calls,
+                    "model_output": state.get(
+                        "initial_model_output",
+                        {},
+                    ),
+                    **tool_calls_payload(
+                        all_executed_calls,
+                        all_results,
+                    ),
+                    "tool_messages": [
+                        {
+                            "name": message.name,
+                            "tool_call_id": message.tool_call_id,
+                            "content": message.content,
+                        }
+                        for message in all_tool_messages
+                    ],
+                    "input_required": True,
+                    "input_request": input_request,
+                    "chat_response": {
+                        "message_type": "input_box",
+                        "message": input_request,
+                    },
+                    "message_flow": tool_chat_message_flow(len(all_results)),
+                    "iterations": state.get("iterations", 0),
+                },
+                human_summary=text,
+                requires_conversation_alert=False,
+            )
+        }
 
     def _confirmation_response(self, state: ToolChatGraphState) -> dict[str, AgentResponse]:
         all_executed_calls = state.get("all_executed_calls", [])
         all_results = state.get("all_results", [])
         all_tool_messages = state.get("all_tool_messages", [])
         proposal = _first_mutation_confirmation(all_results)
-        proposal_display = (
-            proposal.get("display")
-            if isinstance(proposal.get("display"), dict)
-            else {}
-        )
-        confirmation_summary = str(
-            proposal_display.get("question")
-            or "요청한 내용을 저장할까요?"
-        ).strip()
+        proposal_display = proposal.get("display") if isinstance(proposal.get("display"), dict) else {}
+        confirmation_summary = str(proposal_display.get("question") or "요청한 내용을 저장할까요?").strip()
         return {
             "response": AgentResponse(
                 trace_id=state["trace_id"],
@@ -790,3 +950,50 @@ def _first_mutation_confirmation(results: list[Any]) -> dict[str, Any]:
         if isinstance(proposal, dict):
             return proposal
     return {}
+
+
+def _first_input_request(results: list[Any]) -> dict[str, Any]:
+    for result in results:
+        response = (
+            result.response
+            if isinstance(
+                getattr(result, "response", None),
+                dict,
+            )
+            else {}
+        )
+        if response.get("input_required") is not True:
+            continue
+        input_request = response.get("input_request")
+        if isinstance(input_request, dict) and isinstance(input_request.get("inputs"), list) and input_request["inputs"]:
+            return input_request
+    return {}
+
+
+def _first_selection_request(
+    results: list[Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    for result in results:
+        response = (
+            result.response
+            if isinstance(
+                getattr(result, "response", None),
+                dict,
+            )
+            else {}
+        )
+        if response.get("selection_required") is not True:
+            continue
+        selection_request = response.get("selection_request")
+        dose_selection = response.get("dose_selection")
+        if (
+            isinstance(selection_request, dict)
+            and isinstance(
+                selection_request.get("selections"),
+                list,
+            )
+            and selection_request["selections"]
+            and isinstance(dose_selection, dict)
+        ):
+            return selection_request, dose_selection
+    return {}, {}

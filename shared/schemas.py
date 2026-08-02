@@ -300,6 +300,9 @@ class SideEffectAssessmentResult(BaseModel):
     severity: Literal["none", "low", "moderate", "high"]
     evidence: str
     recommendation: str
+    reference_source: str = ""
+    reference_status: str = ""
+    reference_matches: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SideEffectRecordRequest(BaseModel):
@@ -332,11 +335,6 @@ class SideEffectRecordView(BaseModel):
     updated_at: datetime | None = None
 
 
-class SideEffectRecordResult(BaseModel):
-    success: bool = True
-    record: SideEffectRecordView
-
-
 class SideEffectHistoryResult(BaseModel):
     success: bool = True
     target_date: date | None = None
@@ -366,7 +364,12 @@ class AEProCtcaeQuestion(BaseModel):
 class AEProCtcaeAssessmentResult(BaseModel):
     input_symptom: str
     matched: bool
-    match_type: Literal["exact", "similarity", "other_symptoms"]
+    match_type: Literal[
+        "exact",
+        "similarity",
+        "vector_llm_verified",
+        "other_symptoms",
+    ]
     matched_symptom_term: str = ""
     matched_korean_symptom_name: str = ""
     similarity: float = 0.0
@@ -376,33 +379,6 @@ class AEProCtcaeAssessmentResult(BaseModel):
     sheet_name: str
     questions: list[AEProCtcaeQuestion] = Field(default_factory=list)
     candidates: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class DoseTakenToolRequest(BaseModel):
-    dose_event_id: str | int
-    taken_at: datetime | None = None
-    reason: str = ""
-
-    @field_validator("dose_event_id")
-    @classmethod
-    def validate_dose_event_id(cls, value: str | int) -> str | int:
-        if isinstance(value, bool):
-            raise ValueError("dose_event_id_required")
-        if isinstance(value, int):
-            if value < 1:
-                raise ValueError("dose_event_id_required")
-            return value
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("dose_event_id_required")
-        return normalized
-
-
-class DoseTakenToolResult(BaseModel):
-    dose_event_id: str | int
-    status: Literal["taken", "not_found"]
-    taken_at: datetime | None = None
-    message: str
 
 
 class MedicationDoseEventView(BaseModel):
@@ -426,81 +402,6 @@ class MedicationDoseStatusResult(BaseModel):
     total: int = 0
     summary_by_date: list[dict[str, Any]] = Field(default_factory=list)
     totals_by_status: dict[str, int] = Field(default_factory=dict)
-
-
-class NutritionFoodPayload(BaseModel):
-    food_ref_id: str = ""
-    food_name: str
-    portion: str = "1인분"
-    nutrients: dict[str, Any] = Field(default_factory=dict)
-
-
-class NutritionMealRecordRequest(BaseModel):
-    patient_id: str | None = None
-    foods: list[NutritionFoodPayload]
-    meal_type: Literal["breakfast", "lunch", "dinner", "snack"]
-    meal_date: date | None = None
-    meal_time: str | None = None
-    scenario_key: str = ""
-    description: str = ""
-
-
-class NutritionMealUpdateRequest(BaseModel):
-    patient_id: str | None = None
-    foods: list[NutritionFoodPayload] | None = None
-    meal_type: Literal["breakfast", "lunch", "dinner", "snack"] | None = None
-    meal_date: date | None = None
-    meal_time: str | None = None
-    scenario_key: str | None = None
-    description: str | None = None
-    reason: str = ""
-
-
-class NutritionMealDeleteRequest(BaseModel):
-    patient_id: str | None = None
-    reason: str = ""
-
-
-class NutritionFoodUpdateRequest(BaseModel):
-    patient_id: str | None = None
-    food_ref_id: str | None = None
-    food_name: str | None = None
-    portion: str | None = None
-    nutrients: dict[str, Any] | None = None
-    reason: str = ""
-
-
-class NutritionFoodDeleteRequest(BaseModel):
-    patient_id: str | None = None
-    reason: str = ""
-    delete_empty_meal: bool = True
-
-
-class NutritionPreferenceFactRequest(BaseModel):
-    patient_id: str | None = None
-    predicate: Literal[
-        "likes",
-        "dislikes",
-        "prefers",
-        "avoids_by_preference",
-        "cannot_consume",
-        "allergic_to",
-        "medically_avoids",
-        "religious_avoids",
-    ]
-    object_label: str
-    object_type: Literal["food", "ingredient", "food_category", "cuisine", "preparation", "nutrient", "nutrient_risk", "restriction", "diet_style"] = "food"
-    strength: float = Field(default=1.0, ge=0.0, le=1.0)
-    safety_level: Literal["hard", "soft"] | None = None
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-    source: str = "agent_tool"
-    evidence_text: str = ""
-
-
-class NutritionPreferenceFactResult(BaseModel):
-    success: bool = True
-    fact: dict[str, Any]
-    preferences: dict[str, Any]
 
 
 class AgentNotificationRequest(BaseModel):

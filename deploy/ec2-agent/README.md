@@ -21,15 +21,20 @@ persistent Agent directories without installing or starting the Agent.
 Agent-only does not mean dependency-free. Before activation, provide:
 
 1. Agent PostgreSQL runtime and migration URLs.
+   PostgreSQL 18에 `pgvector` 0.8 이상이 설치되어 있고 DBA가 대상 DB에
+   `CREATE EXTENSION vector`를 먼저 완료해야 합니다.
 2. A Backend PostgreSQL read-only URL with the v1.3 `ai_v13_*` views.
-3. The existing Backend HTTP base URL.
-4. Three distinct service tokens.
+3. The existing Backend HTTPS base URL.
+4. Two distinct tokens: one shared Backend↔AI service token and one internal
+   operations token.
 5. A 32-byte URL-safe base64 feedback encryption key.
 6. Bedrock access through an EC2 IAM role or a Bedrock API key. No IAM instance
    role was attached during the 2026-07-29 preflight.
 7. A private HTTPS route to the self-hosted Langfuse EC2 instance and
    project-scoped public/secret keys.
 8. Approved input/output token prices for the active Agent model.
+9. Agent DB에 적재된 MFDS 부작용 참조 데이터와 현재 release 기준 Cohere
+   embedding backfill.
 
 The workstation's current database and Backend URLs use `127.0.0.1`; those
 values cannot be copied to EC2 unless the matching services also run on EC2.
@@ -105,6 +110,39 @@ sudo -n /opt/dranswer-agent/releases/<release>/venv/bin/python \
   /opt/dranswer-agent/releases/<release>/deploy/ec2-agent/validate_env.py \
   /etc/dranswer-agent/agent.env \
   /etc/dranswer-agent/bedrock.env
+```
+
+After Agent migration and MFDS reference import/restore, backfill reference
+embeddings from the candidate release. The token stays in the root-only
+environment file and is not passed in argv:
+
+```bash
+sudo -n bash -c '
+  set -a
+  . /etc/dranswer-agent/agent.env
+  . /etc/dranswer-agent/bedrock.env
+  . /opt/dranswer-agent/releases/<release>/release.env
+  set +a
+  cd /opt/dranswer-agent/releases/<release>
+  venv/bin/python -m scripts.backfill_agent_embeddings --target all
+  venv/bin/python -m scripts.backfill_agent_embeddings --target all --check
+  venv/bin/python -m scripts.backfill_symptom_concepts --mode exact
+'
+```
+
+The final check exits non-zero if either adverse reactions or Pro-CTCAE aliases
+has pending rows. The operation is resume-safe and commits one Cohere batch at
+a time; do not activate a release against a partially backfilled model/source
+version.
+
+The exact concept build is local and does not call Bedrock. Optional semantic
+linking works concept-first and makes at most one Sonnet verification call per
+processed Pro-CTCAE concept. Run it in explicitly bounded batches, review the
+link counts, and repeat until no concepts remain:
+
+```bash
+venv/bin/python -m scripts.backfill_symptom_concepts \
+  --mode semantic --limit 10
 ```
 
 Set `BEDROCK_AUTH_MODE=bearer_token` to use a Bedrock API key. Install the

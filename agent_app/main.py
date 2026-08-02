@@ -13,7 +13,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from agent_app.errors import AgentExecutionError, public_processing_error
-from shared.chat_contracts import chat_error
 from agent_app.jobs.tasks import reset_running_async_tasks
 from agent_app.jobs.worker import async_task_worker
 from agent_app.openapi_v13 import install_agent_v13_openapi
@@ -28,7 +27,8 @@ from agent_app.routes import tasks as task_routes
 from agent_app.routes.chat import sync_chat
 from agent_app.routes.feedback import chat_feedback
 from agent_app.routes.mcp import agent_mcp
-from agent_app.routes.model import agent_model_config, router as model_router, update_agent_model_config
+from agent_app.routes.model import agent_model_config, update_agent_model_config
+from agent_app.routes.model import router as model_router
 from agent_app.routes.tasks import (
     DAILY_MEDICATION_PATTERN_ANALYSIS_PATH,
     MISSED_DOSE_EVENT_PATH,
@@ -47,7 +47,8 @@ from agent_app.routes.tasks import (
 from agent_app.runtime import create_runtime_components
 from agent_app.security import require_agent_sync_bearer_token
 from shared.backend_v13_contracts import CommonErrorResponse, ContractError
-from shared.public_ids import request_id_from_body
+from shared.chat_contracts import chat_error
+from shared.public_ids import request_id_from_body, request_id_from_request
 from shared.redaction import safe_exception_summary
 from shared.settings import get_settings
 
@@ -101,8 +102,8 @@ task_routes.configure_backend_query_tools(lambda: mcp_tool_server.backend_querie
 async def lifespan(_: FastAPI):
     settings = get_settings()
     settings.require_internal_api_token()
-    settings.require_agent_sync_api_token()
-    settings.require_backend_api_token()
+    settings.require_service_api_token()
+    settings.require_backend_service_https()
     settings.require_backend_read_database_url()
     settings.require_agent_postgresql()
     settings.require_backend_read_postgresql()
@@ -172,7 +173,7 @@ async def agent_execution_error_handler(
         safe_message,
     )
     body = CommonErrorResponse(
-        request_id=await _request_id_from_request(request),
+        request_id=await request_id_from_request(request),
         error=ContractError(
             code=public_error.code,
             message=public_error.message,
@@ -249,7 +250,7 @@ async def http_exception_contract_handler(request: Request, exc: HTTPException):
     if request.url.path in ASYNC_EVENT_ACCEPTANCE_PATHS:
         detail = exc.detail if isinstance(exc.detail, dict) else {}
         body = CommonErrorResponse(
-            request_id=await _request_id_from_request(request),
+            request_id=await request_id_from_request(request),
             error=ContractError(
                 code=str(
                     detail.get("code")
@@ -292,20 +293,12 @@ async def http_exception_contract_handler(request: Request, exc: HTTPException):
         body = chat_error(
             "UNAUTHORIZED",
             "Authorization failed.",
-            request_id=await _request_id_from_request(request),
+            request_id=await request_id_from_request(request),
             retryable=False,
             details=None,
         ).model_dump(mode="json")
         return JSONResponse(status_code=401, content=body, headers=exc.headers)
     return await http_exception_handler(request, exc)
-
-
-async def _request_id_from_request(request: Request) -> str | None:
-    try:
-        body = await request.json()
-    except Exception:
-        return None
-    return request_id_from_body(body)
 
 
 @app.get("/health", include_in_schema=False)

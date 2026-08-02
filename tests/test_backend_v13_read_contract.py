@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import inspect as python_inspect
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import sessionmaker
 
 from agent_app.tools.backend_query import BackendQueryTools, BackendReadContractError
 from shared.backend_read_contract import (
@@ -14,11 +16,13 @@ from shared.backend_read_contract import (
     BACKEND_READ_VIEW_COLUMNS,
     BACKEND_READ_VIEW_DEFINITIONS,
 )
+from shared.chat_contracts import ChatSyncRequest
+from shared.public_ids import new_public_id
 from system_app.migrations import (
     ensure_backend_read_views,
     run_migrations,
 )
-from system_app.models import Base
+from system_app.models import Base, ChatMessage
 from tests.helpers import (
     build_backend_reader_url,
     build_system_engine,
@@ -313,6 +317,139 @@ def test_machine_readable_schema_matches_runtime_contract() -> None:
     assert schema["data_handling"]["ai_server_persistence"].startswith(
         "Query rows and raw patient content must not be persisted"
     )
+
+
+def test_recent_chat_uses_conversation_sequence_across_time_axes(
+    tmp_path: Path,
+) -> None:
+    engine = _database(tmp_path, "chat_time_axes")
+    sessions = sessionmaker(bind=engine, future=True)
+    patient_id = new_public_id("patient")
+    first_request_id = new_public_id("request")
+    current_request_id = new_public_id("request")
+    future_request_id = new_public_id("request")
+    simulated_at = datetime(2026, 4, 20, 0, 30)
+    physically_recorded_at = datetime(2026, 7, 31, 12, 0)
+
+    with sessions() as session:
+        first_user = ChatMessage(
+            patient_id=patient_id,
+            ai_request_id=first_request_id,
+            role="user",
+            sender_type="patient",
+            category="multiturn_chat",
+            message_type="text",
+            content="첫 질문",
+            message_payload_json='{"text":"첫 질문"}',
+            processing_status="completed",
+            created_at=simulated_at,
+            display_at=simulated_at,
+            conversation_at=simulated_at,
+            recorded_at=physically_recorded_at,
+        )
+        session.add(first_user)
+        session.flush()
+        first_assistant = ChatMessage(
+            patient_id=patient_id,
+            ai_request_id=first_request_id,
+            role="assistant",
+            sender_type="assistant",
+            category="multiturn_chat",
+            message_type="text",
+            content="첫 답변",
+            message_payload_json='{"text":"첫 답변"}',
+            reply_to_message_id=first_user.id,
+            processing_status="completed",
+            # This is the old failure shape: physical created_at is months
+            # after the simulated conversation clock.
+            created_at=physically_recorded_at,
+            display_at=simulated_at,
+            conversation_at=simulated_at,
+            recorded_at=physically_recorded_at,
+        )
+        session.add(first_assistant)
+        session.flush()
+        current_user = ChatMessage(
+            patient_id=patient_id,
+            ai_request_id=current_request_id,
+            role="user",
+            sender_type="patient",
+            category="multiturn_chat",
+            message_type="text",
+            content="그 전에는?",
+            message_payload_json='{"text":"그 전에는?"}',
+            processing_status="pending",
+            created_at=simulated_at,
+            display_at=simulated_at,
+            conversation_at=simulated_at,
+            recorded_at=physically_recorded_at + timedelta(seconds=1),
+        )
+        session.add(current_user)
+        session.flush()
+        current_message_id = current_user.public_id
+        current_sequence = current_user.id
+
+        # A same-time row persisted after the current message must not leak
+        # into a retry or a delayed read of the current request.
+        future_assistant = ChatMessage(
+            patient_id=patient_id,
+            ai_request_id=future_request_id,
+            role="assistant",
+            sender_type="assistant",
+            category="multiturn_chat",
+            message_type="text",
+            content="미래 답변",
+            message_payload_json='{"text":"미래 답변"}',
+            processing_status="completed",
+            created_at=physically_recorded_at + timedelta(seconds=2),
+            display_at=simulated_at,
+            conversation_at=simulated_at,
+            recorded_at=physically_recorded_at + timedelta(seconds=2),
+        )
+        session.add(future_assistant)
+        session.commit()
+
+    reader_url, reader_cleanup = build_backend_reader_url(
+        engine,
+        "chat_time_axes_reader",
+    )
+    queries = BackendQueryTools(reader_url)
+    context = queries.validate_chat_message(
+        ChatSyncRequest(
+            request_id=current_request_id,
+            message_id=current_message_id,
+            patient_id=patient_id,
+            requested_return_type="text",
+            message="그 전에는?",
+            message_at=simulated_at.replace(tzinfo=UTC),
+        )
+    )
+
+    assert [item["content"] for item in context["recent_chat"]] == [
+        "첫 질문",
+        "첫 답변",
+        "그 전에는?",
+    ]
+    assert all(
+        item["conversation_at"] == "2026-04-20T00:30:00+00:00"
+        for item in context["recent_chat"]
+    )
+    assert all("created_at" not in item for item in context["recent_chat"])
+    with queries.engine.connect() as connection:
+        boundary = connection.execute(
+            text(
+                "SELECT conversation_sequence, conversation_at, recorded_at "
+                "FROM ai_v13_chat_messages WHERE id = :message_id"
+            ),
+            {"message_id": current_message_id},
+        ).mappings().one()
+    assert boundary["conversation_sequence"] == current_sequence
+    assert boundary["conversation_at"] == simulated_at
+    assert boundary["recorded_at"] > boundary["conversation_at"]
+
+    queries.engine.dispose()
+    reader_cleanup()
+    engine.dispose()
 
 
 def test_food_candidate_read_orders_by_relevance_before_limit(

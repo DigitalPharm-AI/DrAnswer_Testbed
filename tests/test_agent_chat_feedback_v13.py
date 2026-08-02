@@ -659,7 +659,6 @@ def test_feedback_route_fails_closed_when_encryption_is_unavailable(
             _env_file=None,
             agent_feedback_encryption_key="",
             agent_sync_api_token="pytest-agent-sync-token",
-            backend_api_token="pytest-backend-api-token",
         ),
     )
 

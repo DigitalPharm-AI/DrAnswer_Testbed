@@ -113,7 +113,6 @@ os.environ["AGENT_STARTUP_MIGRATIONS_ENABLED"] = "false"
 os.environ["PROMPT_WORKBOOK_PATH"] = str(TEST_DATA_DIR / "prompt_registry.xlsx")
 os.environ["POLICY_WORKBOOK_PATH"] = str(TEST_DATA_DIR / "default_notification_policies.xlsx")
 os.environ["AGENT_SYNC_API_TOKEN"] = "pytest-agent-sync-token"
-os.environ["BACKEND_API_TOKEN"] = "pytest-backend-api-token"
 os.environ["INTERNAL_API_TOKEN"] = "pytest-internal-api-token"
 os.environ["AGENT_FEEDBACK_ENCRYPTION_KEY"] = (
     "cHl0ZXN0LWZlZWRiYWNrLWVuY3J5cHRpb24ta2V5ISE="

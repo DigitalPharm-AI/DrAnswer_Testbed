@@ -13,6 +13,7 @@ from shared.settings import get_settings
 
 def main() -> int:
     settings = get_settings()
+    settings.require_agent_migration_postgresql()
     database_url = settings.agent_migration_database_url.strip()
     if not database_url:
         raise RuntimeError(

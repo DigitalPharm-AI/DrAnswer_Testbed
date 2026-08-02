@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage
 
 from agent_app.llm.messages import (
+    build_chat_messages,
     public_text_delta_from_ai_message,
     public_text_from_ai_message,
 )
 from agent_app.observability.model_calls import (
     capture_model_calls,
     traced_model_astream_message,
+)
+from agent_app.providers.deterministic_test import (
+    DeterministicTestProvider,
 )
 from agent_app.streaming import publish_agent_text_with
 
@@ -108,3 +113,97 @@ def test_tool_call_stream_is_not_published_as_user_text() -> None:
             "type": "tool_call",
         }
     ]
+
+
+def test_deterministic_provider_can_fail_after_public_token(
+    monkeypatch,
+) -> None:
+    marker = "[stream-failure-after-token]"
+    monkeypatch.setenv(
+        "DETERMINISTIC_TEST_STREAM_FAILURE_MARKER",
+        marker,
+    )
+    deltas: list[str] = []
+    observations: list[dict] = []
+
+    async def publish(delta: str) -> None:
+        deltas.append(delta)
+
+    async def run() -> None:
+        with (
+            capture_model_calls(observations),
+            publish_agent_text_with(publish),
+        ):
+            await traced_model_astream_message(
+                DeterministicTestProvider().chat_model(),
+                build_chat_messages(
+                    "test",
+                    {
+                        "message": f"부분 응답 테스트 {marker}",
+                        "decision_type": "system_guidance",
+                    },
+                ),
+                name="test.failure_after_token",
+                prompt_version_id="test",
+                publish_public_text=True,
+            )
+
+    with pytest.raises(
+        RuntimeError,
+        match="deterministic_test_stream_failure_after_token",
+    ):
+        asyncio.run(run())
+
+    assert deltas == ["테스트 부분 응답"]
+    assert len(observations) == 1
+    assert observations[0]["status"] == "ERROR"
+
+
+def test_deterministic_provider_can_emit_burst_token_stream(
+    monkeypatch,
+) -> None:
+    marker = "[burst-token-stream]"
+    monkeypatch.setenv(
+        "DETERMINISTIC_TEST_BURST_STREAM_MARKER",
+        marker,
+    )
+    monkeypatch.setenv(
+        "DETERMINISTIC_TEST_BURST_CHUNK_COUNT",
+        "4",
+    )
+    monkeypatch.setenv(
+        "DETERMINISTIC_TEST_BURST_CHUNK_SIZE",
+        "32",
+    )
+    deltas: list[str] = []
+
+    async def publish(delta: str) -> None:
+        deltas.append(delta)
+
+    async def run():
+        with publish_agent_text_with(publish):
+            return await traced_model_astream_message(
+                DeterministicTestProvider().chat_model(),
+                build_chat_messages(
+                    "test",
+                    {
+                        "message": f"대량 토큰 테스트 {marker}",
+                        "decision_type": "system_guidance",
+                    },
+                ),
+                name="test.burst_stream",
+                prompt_version_id="test",
+                publish_public_text=True,
+            )
+
+    message = asyncio.run(run())
+
+    assert len(deltas) == 4
+    assert all(len(delta) == 32 for delta in deltas)
+    assert [delta[:5] for delta in deltas] == [
+        "0000|",
+        "0001|",
+        "0002|",
+        "0003|",
+    ]
+    assert public_text_from_ai_message(message) == "".join(deltas)

@@ -81,7 +81,3 @@ class ConfirmationActionRegistry:
     def requires_confirmation(cls, action_name: str) -> bool:
         action = cls.get(action_name)
         return action is not None and action.confirmation_policy == CONFIRMATION_USER_REQUIRED
-
-    @classmethod
-    def enabled_action_names(cls) -> frozenset[str]:
-        return frozenset(cls._ACTIONS)

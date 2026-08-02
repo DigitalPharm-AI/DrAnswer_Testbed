@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import inspect, select
 from sqlalchemy.orm import sessionmaker
 
+from agent_app.integration import write_state
 from agent_app.integration.approval_state import (
     APPROVED,
     CONSUMED,
@@ -20,17 +21,12 @@ from agent_app.integration.approval_state import (
 from agent_app.integration.backend_client import (
     BackendV13TransportError,
 )
-from shared.backend_v13_contracts import (
-    RecordChangeResponse,
-    RecordChangeResult,
-)
 from agent_app.integration.write_state import (
     COMPLETED,
     BackendWriteIdentity,
     BackendWriteStateStore,
     canonical_payload_hash,
 )
-from agent_app.integration import write_state
 from agent_app.persistence.migrations import run_migrations
 from agent_app.persistence.models import (
     AgentBackendWriteRequest,
@@ -41,9 +37,13 @@ from agent_app.tools.backend_write import (
     BackendWriteInvocationContext,
     backend_write_request_id,
 )
+from shared.backend_v13_contracts import (
+    RecordChangeResponse,
+    RecordChangeResult,
+)
+from shared.time_utils import utc_now
 from shared.tool_names import UPDATE_NUTRITION_MEAL_RECORD
 from tests.helpers import build_agent_engine
-from shared.time_utils import utc_now
 
 NOW = datetime(2026, 7, 25, 17, 0, tzinfo=UTC)
 PATIENT_ID = "patient_0000000000000001"

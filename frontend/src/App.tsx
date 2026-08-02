@@ -6,6 +6,7 @@ import type {
   ChatSyncData,
   ClientChatHistoryDay,
   ClientChatHistoryMessage,
+  ClientResponseTiming,
   DashboardData,
   FeedbackReaction,
   MedicationScenario,
@@ -296,6 +297,22 @@ function mergeChatHistoryDays(
     .sort((left, right) => left.date.localeCompare(right.date));
 }
 
+function readyNotificationChatMessageIds(
+  dashboard: DashboardData,
+): string[] {
+  return dashboard.notifications.flatMap((notification) => {
+    const interaction = notification.interaction;
+    if (
+      interaction?.kind !== "open_chat" ||
+      interaction.state !== "ready" ||
+      !interaction.message_id
+    ) {
+      return [];
+    }
+    return [interaction.message_id];
+  });
+}
+
 function setOptimisticDelivery(
   days: ClientChatHistoryDay[],
   clientMessageId: string,
@@ -323,6 +340,7 @@ function settleOptimisticChat(
   days: ClientChatHistoryDay[],
   request: PendingChatRequest,
   response: ChatSyncData,
+  responseTiming: ClientResponseTiming,
 ): ClientChatHistoryDay[] {
   const displayMessageAt = response.display_message_at;
   const userMessage: ClientChatHistoryMessage = {
@@ -355,6 +373,7 @@ function settleOptimisticChat(
     reaction: null,
     opinion_submitted: false,
     opinion_submitted_at: null,
+    response_timing: responseTiming,
   };
 
   const withoutOptimistic = days
@@ -408,6 +427,7 @@ function appendStreamingAssistantText(
   days: ClientChatHistoryDay[],
   request: PendingChatRequest,
   text: string,
+  responseTiming: ClientResponseTiming,
 ): ClientChatHistoryDay[] {
   if (!text) {
     return days;
@@ -423,6 +443,7 @@ function appendStreamingAssistantText(
       found = true;
       return {
         ...message,
+        response_timing: responseTiming,
         content: {
           message_title: null,
           text: `${message.content?.text ?? ""}${text}`,
@@ -457,6 +478,7 @@ function appendStreamingAssistantText(
       reaction: null,
       opinion_submitted: false,
       opinion_submitted_at: null,
+      response_timing: responseTiming,
     },
   ]);
 }
@@ -491,6 +513,10 @@ export default function App() {
   const [chatSending, setChatSending] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const [chatErrorRetryable, setChatErrorRetryable] = useState(false);
+  const [activeResponseTiming, setActiveResponseTiming] =
+    useState<ClientResponseTiming | null>(null);
+  const [failedResponseTiming, setFailedResponseTiming] =
+    useState<ClientResponseTiming | null>(null);
   const [dashboardSyncError, setDashboardSyncError] = useState<string | null>(
     null,
   );
@@ -527,6 +553,8 @@ export default function App() {
   const mountedRef = useRef(true);
   const dashboardRequestRef = useRef<Promise<DashboardData> | null>(null);
   const statusRequestRef = useRef<Promise<SystemStatusData> | null>(null);
+  const notificationChatRefreshRef = useRef<Promise<void> | null>(null);
+  const chatMessageIdsRef = useRef<Set<string>>(new Set());
   const resetRequestRef = useRef<string | null>(null);
   const resettingRef = useRef(false);
 
@@ -564,6 +592,58 @@ export default function App() {
     }));
   }, []);
 
+  const reconcileReadyNotificationChats = useCallback(
+    async (nextDashboard: DashboardData) => {
+      const targetMessageIds = readyNotificationChatMessageIds(nextDashboard);
+      if (
+        !targetMessageIds.some(
+          (messageId) => !chatMessageIdsRef.current.has(messageId),
+        )
+      ) {
+        return;
+      }
+
+      const activeRefresh = notificationChatRefreshRef.current;
+      if (activeRefresh) {
+        await activeRefresh;
+        if (
+          !targetMessageIds.some(
+            (messageId) => !chatMessageIdsRef.current.has(messageId),
+          )
+        ) {
+          return;
+        }
+      }
+
+      let request: Promise<void>;
+      request = uiApi
+        .chatHistory(undefined, 1)
+        .then((result) => {
+          if (!mountedRef.current) {
+            return;
+          }
+          const fetchedMessageIds = result.days.flatMap((day) =>
+            day.messages.map((message) => message.message_id),
+          );
+          chatMessageIdsRef.current = new Set([
+            ...chatMessageIdsRef.current,
+            ...fetchedMessageIds,
+          ]);
+          setChatDays((current) =>
+            mergeChatHistoryDays(current, result.days),
+          );
+        })
+        .finally(() => {
+          if (notificationChatRefreshRef.current === request) {
+            notificationChatRefreshRef.current = null;
+          }
+        });
+      notificationChatRefreshRef.current = request;
+      await request;
+    },
+    [],
+  );
+
   const reconcileDashboard = useCallback(
     async (requireFreshAfterActiveRequest = false) => {
       if (resettingRef.current) {
@@ -584,6 +664,14 @@ export default function App() {
       try {
         const nextDashboard = await fetchDashboardOnce();
         if (mountedRef.current) {
+          try {
+            await reconcileReadyNotificationChats(nextDashboard);
+          } catch {
+            // Keep the Home dashboard available. The next reconciliation
+            // retries the background Chat history synchronization.
+          }
+        }
+        if (mountedRef.current) {
           setDashboard(nextDashboard);
           setDashboardSyncError(null);
         }
@@ -591,7 +679,11 @@ export default function App() {
         markDashboardSyncFailure(error);
       }
     },
-    [fetchDashboardOnce, markDashboardSyncFailure],
+    [
+      fetchDashboardOnce,
+      markDashboardSyncFailure,
+      reconcileReadyNotificationChats,
+    ],
   );
 
   const refreshSystemStatus = useCallback(async () => {
@@ -649,6 +741,7 @@ export default function App() {
 
   const loadApplicationData = useCallback(async (): Promise<boolean> => {
     chatRequestsRef.current.clear();
+    chatMessageIdsRef.current = new Set();
     chatSendingRef.current = false;
     activeChatRequestIdRef.current = null;
     feedbackRequestsRef.current.clear();
@@ -740,6 +833,14 @@ export default function App() {
       mountedRef.current = false;
     };
   }, [loadApplicationData]);
+
+  useEffect(() => {
+    chatMessageIdsRef.current = new Set(
+      chatDays.flatMap((day) =>
+        day.messages.map((message) => message.message_id),
+      ),
+    );
+  }, [chatDays]);
 
   useEffect(() => {
     if (runtimeLoadState !== "ready") {
@@ -958,6 +1059,11 @@ export default function App() {
       if (activeDashboardRequest) {
         await activeDashboardRequest.catch(() => undefined);
       }
+      const activeNotificationChatRefresh =
+        notificationChatRefreshRef.current;
+      if (activeNotificationChatRefresh) {
+        await activeNotificationChatRefresh.catch(() => undefined);
+      }
 
       await uiApi.resetTestbed(resetRequestRef.current);
       resetRequestRef.current = null;
@@ -1042,6 +1148,14 @@ export default function App() {
     setChatSending(true);
     setChatError(null);
     setChatErrorRetryable(false);
+    setFailedResponseTiming(null);
+    let responseTiming: ClientResponseTiming = {
+      status: "running",
+      startedAtMonotonicMs: performance.now(),
+      firstResponseMs: null,
+      totalResponseMs: null,
+    };
+    setActiveResponseTiming(responseTiming);
     setChatDays((current) =>
       setOptimisticDelivery(
         current,
@@ -1066,7 +1180,12 @@ export default function App() {
       const text = pendingText;
       pendingText = "";
       setChatDays((current) =>
-        appendStreamingAssistantText(current, request, text),
+        appendStreamingAssistantText(
+          current,
+          request,
+          text,
+          responseTiming,
+        ),
       );
     };
     const cancelPendingText = () => {
@@ -1090,6 +1209,15 @@ export default function App() {
             return;
           }
           if (event.type === "text_delta") {
+            if (responseTiming.firstResponseMs === null) {
+              responseTiming = {
+                ...responseTiming,
+                firstResponseMs:
+                  performance.now() -
+                  responseTiming.startedAtMonotonicMs,
+              };
+              setActiveResponseTiming(responseTiming);
+            }
             pendingText += event.text;
             if (animationFrameId === null) {
               animationFrameId =
@@ -1106,8 +1234,23 @@ export default function App() {
       if (activeChatRequestIdRef.current !== request.requestId) {
         return;
       }
+      const totalResponseMs =
+        performance.now() - responseTiming.startedAtMonotonicMs;
+      responseTiming = {
+        ...responseTiming,
+        status: "completed",
+        firstResponseMs:
+          responseTiming.firstResponseMs ?? totalResponseMs,
+        totalResponseMs,
+      };
+      setActiveResponseTiming(null);
       setChatDays((current) =>
-        settleOptimisticChat(current, request, response),
+        settleOptimisticChat(
+          current,
+          request,
+          response,
+          responseTiming,
+        ),
       );
       chatRequestsRef.current.delete(request.clientMessageId);
       void reconcileDashboard(true);
@@ -1130,6 +1273,15 @@ export default function App() {
       const failureMessage = errorMessage(error);
       const retryable =
         error instanceof UiApiError && error.retryable;
+      const totalResponseMs =
+        performance.now() - responseTiming.startedAtMonotonicMs;
+      responseTiming = {
+        ...responseTiming,
+        status: "failed",
+        totalResponseMs,
+      };
+      setActiveResponseTiming(null);
+      setFailedResponseTiming(responseTiming);
       setChatDays((current) =>
         setOptimisticDelivery(
           removeStreamingAssistant(current, request.requestId),
@@ -1594,6 +1746,8 @@ export default function App() {
                   chatSending={chatSending}
                   chatError={chatError}
                   chatErrorRetryable={chatErrorRetryable}
+                  activeResponseTiming={activeResponseTiming}
+                  failedResponseTiming={failedResponseTiming}
                   draft={chatDraft}
                   onDraftChange={setChatDraft}
                   onLoadPrevious={loadPreviousHistory}

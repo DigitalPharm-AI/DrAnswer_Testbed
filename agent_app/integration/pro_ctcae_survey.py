@@ -1,21 +1,19 @@
 from __future__ import annotations
 
-import base64
-import binascii
-import hashlib
 import hmac
 import json
-import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
 from uuid import uuid4
 
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
+from agent_app.integration.state_crypto import (
+    AgentStateCipher,
+    AgentStateCipherError,
+)
 from agent_app.persistence.models import (
     AgentProCtcaeResponse,
     AgentProCtcaeSurvey,
@@ -25,6 +23,7 @@ from shared.backend_v13_contracts import (
     ProCtcaeResponse,
     ProCtcaeSeverityResult,
 )
+from shared.json_utils import canonical_json
 from shared.schemas import AEProCtcaeAssessmentResult, AgentResponse
 from shared.settings import Settings
 from shared.time_utils import utc_now
@@ -87,8 +86,7 @@ class ProCtcaeSurveyCipher:
                 "pro_ctcae_survey_encryption_key_id_required"
             )
         self.key_id = key_id.strip()
-        self._key = key
-        self._cipher = AESGCM(key)
+        self._state_cipher = AgentStateCipher(key)
 
     @classmethod
     def from_settings(
@@ -109,7 +107,7 @@ class ProCtcaeSurveyCipher:
     def payload_digest(self, payload: dict[str, Any]) -> str:
         return self._digest(
             b"pro-ctcae-survey-payload-v1\0"
-            + _canonical_json(payload).encode("utf-8")
+            + canonical_json(payload).encode("utf-8")
         )
 
     def encrypt_payload(
@@ -118,16 +116,10 @@ class ProCtcaeSurveyCipher:
         *,
         context: ProCtcaeSurveyEncryptionContext,
     ) -> str:
-        nonce = os.urandom(12)
-        ciphertext = self._cipher.encrypt(
-            nonce,
-            _canonical_json(payload).encode("utf-8"),
-            context.associated_data(),
+        return self._state_cipher.encrypt(
+            canonical_json(payload).encode("utf-8"),
+            associated_data=context.associated_data(),
         )
-        token = base64.urlsafe_b64encode(
-            nonce + ciphertext
-        ).decode("ascii")
-        return f"v1.{token}"
 
     def decrypt_payload(
         self,
@@ -136,21 +128,16 @@ class ProCtcaeSurveyCipher:
         context: ProCtcaeSurveyEncryptionContext,
         expected_hash: str,
     ) -> dict[str, Any]:
-        if not token.startswith("v1."):
-            raise ProCtcaeSurveyEncryptionError(
-                "unsupported_pro_ctcae_survey_ciphertext_version"
-            )
         try:
-            encoded = token.removeprefix("v1.")
-            payload = base64.urlsafe_b64decode(
-                encoded + ("=" * (-len(encoded) % 4))
-            )
-            if len(payload) < 29:
-                raise ValueError("ciphertext_too_short")
-            plaintext = self._cipher.decrypt(
-                payload[:12],
-                payload[12:],
-                context.associated_data(),
+            plaintext = self._state_cipher.decrypt(
+                token,
+                associated_data=context.associated_data(),
+                version_error=(
+                    "unsupported_pro_ctcae_survey_ciphertext_version"
+                ),
+                authentication_error=(
+                    "pro_ctcae_survey_ciphertext_authentication_failed"
+                ),
             ).decode("utf-8")
             value = json.loads(plaintext)
             if not isinstance(value, dict):
@@ -161,23 +148,15 @@ class ProCtcaeSurveyCipher:
             ):
                 raise ValueError("survey_payload_hash_mismatch")
             return value
-        except (
-            InvalidTag,
-            UnicodeDecodeError,
-            ValueError,
-            binascii.Error,
-            json.JSONDecodeError,
-        ) as exc:
+        except AgentStateCipherError as exc:
+            raise ProCtcaeSurveyEncryptionError(str(exc)) from exc
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
             raise ProCtcaeSurveyEncryptionError(
                 "pro_ctcae_survey_ciphertext_authentication_failed"
             ) from exc
 
     def _digest(self, value: bytes) -> str:
-        return hmac.new(
-            self._key,
-            value,
-            hashlib.sha256,
-        ).hexdigest()
+        return self._state_cipher.digest(value)
 
 
 @dataclass(frozen=True)
@@ -190,6 +169,8 @@ class ProCtcaeSurveyTransition:
     question_count: int
     severity: ProCtcaeSeverityResult | None
     completed_context: dict[str, Any] | None
+    symptom_number: int = 1
+    symptom_count: int = 1
 
 
 class ProCtcaeSurveyService:
@@ -221,61 +202,81 @@ class ProCtcaeSurveyService:
         user_message: str,
         response: AgentResponse,
     ) -> ProCtcaeSurveyTransition | None:
-        questionnaire = _questionnaire_from_response(response)
-        if questionnaire is None:
+        questionnaires = _questionnaires_from_response(response)
+        if not questionnaires:
             return None
-        questions = _contract_questions(questionnaire)
-        if not questions:
-            raise ProCtcaeSurveyError(
-                "pro_ctcae_survey_questions_missing",
-            )
-
         structured = response.structured_payload
-        lookup = structured.get("side_effect_lookup")
-        lookup_response = (
-            lookup.get("response")
-            if isinstance(lookup, dict)
-            and isinstance(lookup.get("response"), dict)
-            else {}
-        )
+        lookup_response = _side_effect_lookup_response(structured)
+        assessments = _side_effect_assessments(lookup_response)
         tool_arguments = _side_effect_tool_arguments(structured)
-        symptom_text = str(
-            questionnaire.input_symptom
-            or tool_arguments.get("symptom_text")
-            or user_message
-        ).strip()
-        symptom_onset_text = str(
-            tool_arguments.get("symptom_onset_text") or ""
-        ).strip()
-        medication_name = str(
-            tool_arguments.get("medication_name") or ""
-        ).strip()
-        symptom_name = str(
-            questionnaire.matched_korean_symptom_name
-            or questionnaire.questions[0].korean_symptom_name
-            or "증상"
-        ).strip()
-        matched_items = _string_list(
-            lookup_response.get("matched_items")
-        )
-        matched_effects = _string_list(
-            lookup_response.get("matched_effects")
-        )
+        medication_name = str(tool_arguments.get("medication_name") or "").strip()
+        symptom_states: list[dict[str, Any]] = []
+        questions: list[ProCtcaeQuestion] = []
+        seen_concepts: set[tuple[str, str]] = set()
+        for questionnaire in questionnaires:
+            contract_questions = _contract_questions(questionnaire)
+            if not contract_questions:
+                raise ProCtcaeSurveyError(
+                    "pro_ctcae_survey_questions_missing",
+                )
+            concept_key = (
+                str(questionnaire.matched_symptom_term or "").strip(),
+                str(
+                    questionnaire.matched_korean_symptom_name or ""
+                ).strip(),
+            )
+            if concept_key != ("", "") and concept_key in seen_concepts:
+                continue
+            seen_concepts.add(concept_key)
+            symptom_text = str(
+                questionnaire.input_symptom or user_message
+            ).strip()
+            assessment = _assessment_for_symptom(
+                assessments,
+                symptom_text,
+            )
+            symptom_name = str(
+                questionnaire.matched_korean_symptom_name
+                or questionnaire.questions[0].korean_symptom_name
+                or "증상"
+            ).strip()
+            symptom_state = {
+                "symptom_name": symptom_name,
+                "symptom_text": symptom_text,
+                "symptom_onset_text": str(
+                    assessment.get("symptom_onset_text") or ""
+                ).strip(),
+                "medication_name": medication_name or None,
+                "matched_items": _string_list(
+                    assessment.get("matched_items")
+                ),
+                "matched_effects": _string_list(
+                    assessment.get("matched_effects")
+                ),
+                "suspected": bool(assessment.get("suspected")),
+                "questions": [
+                    question.model_dump(mode="json")
+                    for question in contract_questions
+                ],
+                "severity": None,
+            }
+            symptom_states.append(symptom_state)
+            questions.extend(contract_questions)
+        if not symptom_states:
+            return None
+        item_codes = [question.item_code for question in questions]
+        if len(set(item_codes)) != len(item_codes):
+            raise ProCtcaeSurveyError(
+                "pro_ctcae_survey_batch_question_codes_duplicate",
+            )
         state = {
-            "symptom_name": symptom_name,
-            "symptom_text": symptom_text,
-            "symptom_onset_text": symptom_onset_text,
-            # A medication is authoritative only when the patient explicitly
-            # named it. Multiple matches remain evidence, not a forced choice.
-            "medication_name": medication_name or None,
-            "matched_items": matched_items,
-            "matched_effects": matched_effects,
-            "suspected": bool(lookup_response.get("suspected")),
+            "symptoms": symptom_states,
             "questions": [
                 question.model_dump(mode="json")
                 for question in questions
             ],
-            "severity": None,
+            "approval_cursor": 0,
+            "approval_outcomes": [],
         }
         patient_hash = self.cipher.patient_digest(patient_id)
         now = utc_now()
@@ -548,32 +549,88 @@ class ProCtcaeSurveyService:
         *,
         patient_id: str,
         applied: bool,
-    ) -> None:
-        """Close a completed survey after its Agent-owned write approval."""
+    ) -> ProCtcaeSurveyTransition | None:
+        """Resolve one record approval and return the next batch item."""
 
         patient_hash = self.cipher.patient_digest(patient_id)
         now = utc_now()
         with self.session_factory() as session:
-            changed = session.execute(
-                update(AgentProCtcaeSurvey)
+            survey = session.scalar(
+                select(AgentProCtcaeSurvey)
                 .where(
                     AgentProCtcaeSurvey.patient_id_hash
                     == patient_hash,
                     AgentProCtcaeSurvey.status == APPROVAL_PENDING,
                 )
-                .values(
-                    status=APPLIED if applied else CANCELLED,
-                    resolved_at=now,
-                    updated_at=now,
-                    version=AgentProCtcaeSurvey.version + 1,
+                .with_for_update()
+            )
+            if survey is None:
+                session.commit()
+                return None
+            state = self._state(survey)
+            questions = _questions_from_state(state)
+            responses = self._responses(session, survey.id)
+            contexts = _completed_contexts(
+                survey,
+                state=state,
+                questions=questions,
+                responses=responses,
+            )
+            cursor = max(0, int(state.get("approval_cursor") or 0))
+            outcomes = state.get("approval_outcomes")
+            if not isinstance(outcomes, list):
+                outcomes = []
+            outcomes.append(
+                {
+                    "symptom_number": cursor + 1,
+                    "applied": applied,
+                }
+            )
+            next_cursor = cursor + 1
+            state["approval_cursor"] = next_cursor
+            state["approval_outcomes"] = outcomes
+            survey.updated_at = now
+            survey.version += 1
+            if next_cursor < len(contexts):
+                survey.status = COMPLETED
+                context = ProCtcaeSurveyEncryptionContext(
+                    survey_id=survey.public_id,
+                    patient_id_hash=survey.patient_id_hash,
                 )
-            ).rowcount
+                survey.payload_ciphertext = self.cipher.encrypt_payload(
+                    state,
+                    context=context,
+                )
+                survey.payload_hash = self.cipher.payload_digest(state)
+                transition = _completed_transition(
+                    survey,
+                    state=state,
+                    questions=questions,
+                    responses=responses,
+                )
+                session.commit()
+                return transition
+            survey.status = (
+                APPLIED
+                if any(
+                    isinstance(outcome, dict)
+                    and outcome.get("applied") is True
+                    for outcome in outcomes
+                )
+                else CANCELLED
+            )
+            survey.resolved_at = now
+            context = ProCtcaeSurveyEncryptionContext(
+                survey_id=survey.public_id,
+                patient_id_hash=survey.patient_id_hash,
+            )
+            survey.payload_ciphertext = self.cipher.encrypt_payload(
+                state,
+                context=context,
+            )
+            survey.payload_hash = self.cipher.payload_digest(state)
             session.commit()
-            if changed not in (0, 1):
-                raise ProCtcaeSurveyError(
-                    "pro_ctcae_survey_state_update_failed",
-                    retryable=True,
-                )
+            return None
 
     def _transition_for_row(
         self,
@@ -594,16 +651,11 @@ class ProCtcaeSurveyService:
                 questions=questions,
                 question=remaining[0],
             )
-        severity = _severity_from_state_or_responses(
-            state,
-            questions=questions,
-            responses=responses,
-        )
         return _completed_transition(
             survey,
             state=state,
             questions=questions,
-            severity=severity,
+            responses=responses,
         )
 
     def _complete(
@@ -615,11 +667,22 @@ class ProCtcaeSurveyService:
         responses: list[AgentProCtcaeResponse],
         now: datetime,
     ) -> ProCtcaeSurveyTransition:
-        severity = _build_severity(
-            questions,
-            responses,
-        )
-        state["severity"] = severity.model_dump(mode="json")
+        symptoms = _symptom_states(state)
+        if symptoms:
+            for symptom in symptoms:
+                symptom_questions = _questions_for_symptom(symptom)
+                severity = _build_severity(
+                    symptom_questions,
+                    responses,
+                )
+                symptom["severity"] = severity.model_dump(mode="json")
+            state["symptoms"] = symptoms
+        else:
+            severity = _build_severity(
+                questions,
+                responses,
+            )
+            state["severity"] = severity.model_dump(mode="json")
         context = ProCtcaeSurveyEncryptionContext(
             survey_id=survey.public_id,
             patient_id_hash=survey.patient_id_hash,
@@ -638,7 +701,7 @@ class ProCtcaeSurveyService:
             survey,
             state=state,
             questions=questions,
-            severity=severity,
+            responses=responses,
         )
 
     def _state(
@@ -703,6 +766,8 @@ def pro_ctcae_question_response(
             "survey_progress": {
                 "current": transition.question_number,
                 "total": transition.question_count,
+                "symptom_current": transition.symptom_number,
+                "symptom_total": transition.symptom_count,
             },
             "chat_response": {
                 "message_type": "selection_box",
@@ -711,6 +776,12 @@ def pro_ctcae_question_response(
                         f"{transition.symptom_name} 관련 자가 보고 설문 "
                         f"({transition.question_number}/"
                         f"{transition.question_count})"
+                        + (
+                            f" · 증상 {transition.symptom_number}/"
+                            f"{transition.symptom_count}"
+                            if transition.symptom_count > 1
+                            else ""
+                        )
                     ),
                     "text": text,
                     "tables": None,
@@ -726,18 +797,63 @@ def pro_ctcae_question_response(
     )
 
 
-def _questionnaire_from_response(
+def _questionnaires_from_response(
     response: AgentResponse,
-) -> AEProCtcaeAssessmentResult | None:
-    raw = response.structured_payload.get("ae_pro_ctcae")
-    if not isinstance(raw, dict):
-        return None
+) -> list[AEProCtcaeAssessmentResult]:
+    structured = response.structured_payload
+    raw_items = structured.get("ae_pro_ctcae_items")
+    if isinstance(raw_items, list):
+        raw_questionnaires = raw_items
+    else:
+        raw = structured.get("ae_pro_ctcae")
+        raw_questionnaires = [raw] if isinstance(raw, dict) else []
+    if not raw_questionnaires:
+        return []
     try:
-        return AEProCtcaeAssessmentResult.model_validate(raw)
+        return [
+            AEProCtcaeAssessmentResult.model_validate(raw)
+            for raw in raw_questionnaires
+            if isinstance(raw, dict)
+        ]
     except Exception as exc:
         raise ProCtcaeSurveyError(
             "pro_ctcae_survey_questionnaire_invalid",
         ) from exc
+
+
+def _side_effect_lookup_response(
+    structured: dict[str, Any],
+) -> dict[str, Any]:
+    lookup = structured.get("side_effect_lookup")
+    if not isinstance(lookup, dict):
+        return {}
+    response = lookup.get("response")
+    return response if isinstance(response, dict) else {}
+
+
+def _side_effect_assessments(
+    lookup_response: dict[str, Any],
+) -> list[dict[str, Any]]:
+    raw = lookup_response.get("assessments")
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, dict)]
+    return [lookup_response] if lookup_response else []
+
+
+def _assessment_for_symptom(
+    assessments: list[dict[str, Any]],
+    symptom_text: str,
+) -> dict[str, Any]:
+    normalized = symptom_text.strip().casefold()
+    for assessment in assessments:
+        if (
+            str(assessment.get("symptom_text") or "")
+            .strip()
+            .casefold()
+            == normalized
+        ):
+            return assessment
+    return assessments[0] if len(assessments) == 1 else {}
 
 
 def _contract_questions(
@@ -863,6 +979,106 @@ def _severity_from_state_or_responses(
     return _build_severity(questions, responses)
 
 
+def _symptom_states(state: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = state.get("symptoms")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def _questions_for_symptom(
+    symptom: dict[str, Any],
+) -> list[ProCtcaeQuestion]:
+    raw = symptom.get("questions")
+    if not isinstance(raw, list):
+        raise ProCtcaeSurveyError(
+            "pro_ctcae_survey_questions_missing",
+            retryable=True,
+        )
+    try:
+        return [
+            ProCtcaeQuestion.model_validate(question)
+            for question in raw
+        ]
+    except Exception as exc:
+        raise ProCtcaeSurveyError(
+            "pro_ctcae_survey_questions_invalid",
+            retryable=True,
+        ) from exc
+
+
+def _symptom_for_question(
+    symptoms: list[dict[str, Any]],
+    question: ProCtcaeQuestion,
+) -> tuple[int, dict[str, Any] | None]:
+    for index, symptom in enumerate(symptoms):
+        if any(
+            candidate.item_code == question.item_code
+            for candidate in _questions_for_symptom(symptom)
+        ):
+            return index, symptom
+    return 0, None
+
+
+def _completed_contexts(
+    survey: AgentProCtcaeSurvey,
+    *,
+    state: dict[str, Any],
+    questions: list[ProCtcaeQuestion],
+    responses: list[AgentProCtcaeResponse],
+) -> list[dict[str, Any]]:
+    symptoms = _symptom_states(state)
+    if not symptoms:
+        severity = _severity_from_state_or_responses(
+            state,
+            questions=questions,
+            responses=responses,
+        )
+        symptoms = [state]
+        severities = [severity]
+    else:
+        severities = []
+        for symptom in symptoms:
+            symptom_questions = _questions_for_symptom(symptom)
+            raw_severity = symptom.get("severity")
+            severity = (
+                ProCtcaeSeverityResult.model_validate(raw_severity)
+                if isinstance(raw_severity, dict)
+                else _build_severity(symptom_questions, responses)
+            )
+            severities.append(severity)
+    contexts: list[dict[str, Any]] = []
+    for index, (symptom, severity) in enumerate(
+        zip(symptoms, severities, strict=True)
+    ):
+        contexts.append(
+            {
+                "survey_id": survey.public_id,
+                "symptom_number": index + 1,
+                "symptom_count": len(symptoms),
+                "symptom_name": str(
+                    symptom.get("symptom_name") or "증상"
+                ),
+                "symptom_text": str(
+                    symptom.get("symptom_text") or ""
+                ),
+                "symptom_onset_text": str(
+                    symptom.get("symptom_onset_text") or ""
+                ),
+                "medication_name": symptom.get("medication_name"),
+                "suspected": bool(symptom.get("suspected")),
+                "matched_items": _string_list(
+                    symptom.get("matched_items")
+                ),
+                "matched_effects": _string_list(
+                    symptom.get("matched_effects")
+                ),
+                "severity": severity.model_dump(mode="json"),
+            }
+        )
+    return contexts
+
+
 def _question_transition(
     survey: AgentProCtcaeSurvey,
     *,
@@ -870,18 +1086,30 @@ def _question_transition(
     questions: list[ProCtcaeQuestion],
     question: ProCtcaeQuestion,
 ) -> ProCtcaeSurveyTransition:
-    question_index = questions.index(question)
+    symptoms = _symptom_states(state)
+    symptom_index, symptom = _symptom_for_question(
+        symptoms,
+        question,
+    )
+    symptom_questions = (
+        _questions_for_symptom(symptom)
+        if symptom is not None
+        else questions
+    )
+    symptom_question_index = symptom_questions.index(question)
     return ProCtcaeSurveyTransition(
         kind="next_question",
         survey_id=survey.public_id,
         symptom_name=str(
-            state.get("symptom_name") or "증상"
+            (symptom or state).get("symptom_name") or "증상"
         ),
         question=question,
-        question_number=question_index + 1,
-        question_count=len(questions),
+        question_number=symptom_question_index + 1,
+        question_count=len(symptom_questions),
         severity=None,
         completed_context=None,
+        symptom_number=symptom_index + 1,
+        symptom_count=max(1, len(symptoms)),
     )
 
 
@@ -890,40 +1118,38 @@ def _completed_transition(
     *,
     state: dict[str, Any],
     questions: list[ProCtcaeQuestion],
-    severity: ProCtcaeSeverityResult,
+    responses: list[AgentProCtcaeResponse],
 ) -> ProCtcaeSurveyTransition:
-    completed_context = {
-        "survey_id": survey.public_id,
-        "symptom_name": str(
-            state.get("symptom_name") or "증상"
-        ),
-        "symptom_text": str(
-            state.get("symptom_text") or ""
-        ),
-        "symptom_onset_text": str(
-            state.get("symptom_onset_text") or ""
-        ),
-        "medication_name": state.get("medication_name"),
-        "suspected": bool(state.get("suspected")),
-        "matched_items": _string_list(
-            state.get("matched_items")
-        ),
-        "matched_effects": _string_list(
-            state.get("matched_effects")
-        ),
-        "severity": severity.model_dump(mode="json"),
-    }
+    completed_contexts = _completed_contexts(
+        survey,
+        state=state,
+        questions=questions,
+        responses=responses,
+    )
+    if not completed_contexts:
+        raise ProCtcaeSurveyError(
+            "pro_ctcae_survey_completion_missing",
+            retryable=True,
+        )
+    cursor = min(
+        max(0, int(state.get("approval_cursor") or 0)),
+        len(completed_contexts) - 1,
+    )
+    completed_context = completed_contexts[cursor]
+    severity = ProCtcaeSeverityResult.model_validate(
+        completed_context["severity"]
+    )
     return ProCtcaeSurveyTransition(
         kind="completed",
         survey_id=survey.public_id,
-        symptom_name=str(
-            state.get("symptom_name") or "증상"
-        ),
+        symptom_name=str(completed_context.get("symptom_name") or "증상"),
         question=None,
         question_number=len(questions),
         question_count=len(questions),
         severity=severity,
         completed_context=completed_context,
+        symptom_number=cursor + 1,
+        symptom_count=len(completed_contexts),
     )
 
 
@@ -949,13 +1175,4 @@ def _string_list(value: Any) -> list[str]:
             for item in value
             if str(item).strip()
         )
-    )
-
-
-def _canonical_json(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
     )

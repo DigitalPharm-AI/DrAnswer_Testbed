@@ -12,11 +12,16 @@ from pydantic import (
 )
 
 from shared.contract_boundary import remove_retired_conversation_fields
+from shared.feedback_contracts import ChatFeedbackAccepted
 from shared.public_ids import AssistantMessageId, RequestId
+from shared.time_utils import require_aware_datetime
 
 
 class StrictUiFeedbackContract(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+AgentChatFeedbackAccepted = ChatFeedbackAccepted
 
 
 class UiChatOpinionRequest(StrictUiFeedbackContract):
@@ -43,9 +48,7 @@ class UiChatOpinionRequest(StrictUiFeedbackContract):
     @field_validator("feedback_at")
     @classmethod
     def validate_feedback_at(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("timezone_offset_required")
-        return value
+        return require_aware_datetime(value)
 
     @model_validator(mode="after")
     def require_reaction_or_opinion(self) -> UiChatOpinionRequest:
@@ -61,24 +64,6 @@ class UiChatOpinionAccepted(StrictUiFeedbackContract):
     reaction: Literal["like", "dislike"] | None
     opinion_submitted: bool
     opinion_submitted_at: datetime | None
-
-
-class AgentChatFeedbackAccepted(StrictUiFeedbackContract):
-    status: Literal["accepted"]
-    reaction: Literal["like", "dislike"] | None = None
-    accepted_at: datetime | None = None
-
-    @field_validator("accepted_at")
-    @classmethod
-    def validate_accepted_at(
-        cls,
-        value: datetime | None,
-    ) -> datetime | None:
-        if value is not None and (
-            value.tzinfo is None or value.utcoffset() is None
-        ):
-            raise ValueError("timezone_offset_required")
-        return value
 
 
 class UiChatOpinionAcceptedResponse(StrictUiFeedbackContract):

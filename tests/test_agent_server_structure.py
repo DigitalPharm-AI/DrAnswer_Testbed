@@ -9,11 +9,12 @@ from agent_app.errors import AgentExecutionError
 from agent_app.llm.messages import langchain_tools_from_catalog
 from agent_app.main import (
     agent_execution_error_handler,
+)
+from agent_app.main import (
     app as agent_app,
 )
+from agent_app.observability.tool_calls import capture_tool_calls
 from agent_app.providers.base import BaseLLMProvider
-from shared.tool_catalog import ToolCatalog
-from shared.tool_permissions import requires_human_handoff
 from agent_app.tools.policy import DEFERRED_POLICY_TOOL_NAMES
 from agent_app.tools.protocol import ALLOWED_TOOL_NAMES
 from agent_app.tools.runtime import ToolRuntime
@@ -22,10 +23,12 @@ from shared.retention_policy import (
     AGENT_OBSERVABILITY_RETENTION_SECONDS,
 )
 from shared.schemas import ToolCallResult
+from shared.tool_catalog import ToolCatalog
 from shared.tool_names import (
     GET_SIDE_EFFECT_HISTORY,
     SOURCE_MEDICATION_AGENT,
 )
+from shared.tool_permissions import requires_human_handoff
 
 
 def _routes() -> set[tuple[str, str]]:
@@ -202,6 +205,7 @@ def test_tool_runtime_delegates_authorized_calls_to_executor_boundary():
 
 def test_tool_runtime_logs_routing_context(monkeypatch):
     events: list[dict] = []
+    observations: list[dict] = []
 
     class CapturingExecutor:
         async def execute_tool_call(self, tool_call, *, trace_id, source_event_type, payload):
@@ -218,31 +222,44 @@ def test_tool_runtime_logs_routing_context(monkeypatch):
     monkeypatch.setattr("agent_app.tools.runtime.trace_logging.log_info", capture_log)
 
     runtime = ToolRuntime(CapturingExecutor())
-    asyncio.run(
-        runtime.execute(
-            [{"name": "update_medication_dose_event_status", "arguments": {"dose_event_id": 12}}],
-            trace_id="routing-log-trace",
-            source_event_type="multiturn_chat",
-            payload={},
-            routing_context={
-                "routing_mode": "delegated_agent",
-                "executed_by": "medication_agent",
-                "supervisor_agent": "multiturn_chat_agent",
-                "specialist_agent": "medication_agent",
-                "tool_loop_mode": "langgraph_state_graph",
-                "supervisor_tool_names": ["delegate_to_medication_agent"],
-                "specialist_tool_names": ["update_medication_dose_event_status"],
-            },
+    with capture_tool_calls(observations):
+        asyncio.run(
+            runtime.execute(
+                [{"name": "update_medication_dose_event_status", "arguments": {"dose_event_id": 12}}],
+                trace_id="routing-log-trace",
+                source_event_type="multiturn_chat",
+                payload={},
+                routing_context={
+                    "routing_mode": "delegated_agent",
+                    "executed_by": "medication_agent",
+                    "supervisor_agent": "multiturn_chat_agent",
+                    "specialist_agent": "medication_agent",
+                    "tool_loop_mode": "langgraph_state_graph",
+                    "supervisor_tool_names": ["delegate_to_medication_agent"],
+                    "specialist_tool_names": ["update_medication_dose_event_status"],
+                },
+            )
         )
-    )
 
     started = next(event for event in events if event["event"] == "agent_tool_call_started")
+    completed = next(event for event in events if event["event"] == "agent_tool_call_completed")
 
     assert started["routing"]["routing_mode"] == "delegated_agent"
     assert started["routing"]["executed_by"] == "medication_agent"
     assert started["routing"]["tool_loop_mode"] == "langgraph_state_graph"
     assert started["routing"]["supervisor_tool_names"] == ["delegate_to_medication_agent"]
     assert started["routing"]["specialist_tool_names"] == ["update_medication_dose_event_status"]
+    assert started["started_at"]
+    assert completed["started_at"] == started["started_at"]
+    assert completed["completed_at"]
+    assert completed["elapsed_ms"] >= 0
+    assert len(observations) == 1
+    assert observations[0]["call"]["name"] == (
+        "update_medication_dose_event_status"
+    )
+    assert observations[0]["result"]["status"] == completed["status"]
+    assert observations[0]["started_at"] == started["started_at"]
+    assert observations[0]["completed_at"] == completed["completed_at"]
 
 
 def test_agent_observability_retention_is_fixed_to_three_years():

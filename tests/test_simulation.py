@@ -25,17 +25,16 @@ from system_app.services.medication_plan_service import (
 )
 from system_app.services.notification_service import create_notification
 from system_app.services.patient_profile_service import ensure_base_data
+from system_app.services.side_effect_reminder_safety import set_reminder_suppressed_after_side_effect
 from system_app.services.simulation_constants import (
     resolve_choice_value,
     resolve_schedule_times,
 )
-from system_app.services.side_effect_reminder_safety import set_reminder_suppressed_after_side_effect
 from system_app.services.timeline_service import (
     get_latest_reply_prompt,
     get_today_dose_events,
 )
 from tests.helpers import build_session
-
 
 TEST_PATIENT_ID = get_settings().patient_id
 

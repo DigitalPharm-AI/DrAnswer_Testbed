@@ -5,10 +5,10 @@ from typing import Any
 from agent_app.agents.tool_chat import ToolChatAgentGraph
 from agent_app.llm.prompts import nutrition_recommendation_agent_prompt
 from agent_app.providers.base import BaseLLMProvider
-from shared.tool_names import SOURCE_NUTRITION_RECOMMENDATION_AGENT
-from shared.tool_permissions import NUTRITION_RECOMMENDATION_TOOLS
 from agent_app.tools.runtime import ToolRuntime
 from shared.schemas import AgentResponse
+from shared.tool_names import SOURCE_NUTRITION_RECOMMENDATION_AGENT
+from shared.tool_permissions import NUTRITION_RECOMMENDATION_TOOLS
 
 
 class NutritionRecommendationAgent:

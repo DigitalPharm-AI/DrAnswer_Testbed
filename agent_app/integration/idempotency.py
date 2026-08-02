@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -10,8 +9,9 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from shared.chat_contracts import ChatSyncRequest
 from agent_app.persistence.models import AgentPatientLock, AgentSyncRequest
+from shared.chat_contracts import ChatSyncRequest
+from shared.json_utils import sha256_json
 from shared.time_utils import utc_now
 
 RECEIVED = "RECEIVED"
@@ -64,14 +64,7 @@ class StaleSyncRequestAttemptError(RuntimeError):
 
 
 def canonical_request_hash(request: ChatSyncRequest) -> str:
-    body = request.model_dump(mode="json")
-    encoded = json.dumps(
-        body,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return sha256_json(request.model_dump(mode="json"))
 
 
 class SyncRequestGate:

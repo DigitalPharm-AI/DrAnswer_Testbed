@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from shared.contract_boundary import remove_retired_conversation_fields
 from shared.public_ids import PatientId, RequestId, UserMessageId
 from shared.schemas import AgentResponse
+from shared.time_utils import require_aware_datetime
 
 RequestedReturnType = Literal["text", "selection_box", "input_box"]
 ChatMessageType = Literal["text", "selection_box", "input_box"]
@@ -18,10 +19,14 @@ INPUT_BOX_MESSAGE_MAX_BYTES = 32_768
 INPUT_BOX_MESSAGE_MAX_FIELDS = 100
 
 
-def _validate_aware_datetime(value: datetime) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("timezone_offset_required")
-    return value
+def require_structured_response_source(
+    requested_return_type: RequestedReturnType,
+    source_message_id: str | None,
+) -> None:
+    if requested_return_type != "text" and source_message_id is None:
+        raise ValueError(
+            "source_message_id_required_for_structured_response"
+        )
 
 
 class StrictChatContractModel(BaseModel):
@@ -41,7 +46,7 @@ class ChatSyncRequest(StrictChatContractModel):
     @field_validator("message_at")
     @classmethod
     def validate_message_at(cls, value: datetime) -> datetime:
-        return _validate_aware_datetime(value)
+        return require_aware_datetime(value)
 
     @model_validator(mode="after")
     def validate_input_box_message(self) -> ChatSyncRequest:
@@ -137,7 +142,7 @@ class ChatSyncResponse(StrictChatContractModel):
     @field_validator("message_at")
     @classmethod
     def validate_message_at(cls, value: datetime) -> datetime:
-        return _validate_aware_datetime(value)
+        return require_aware_datetime(value)
 
     @model_validator(mode="after")
     def validate_message_type_payload(self) -> ChatSyncResponse:
@@ -197,7 +202,7 @@ class ChatStreamEvent(StrictChatContractModel):
     @field_validator("event_at")
     @classmethod
     def validate_event_at(cls, value: datetime) -> datetime:
-        return _validate_aware_datetime(value)
+        return require_aware_datetime(value)
 
     @model_validator(mode="after")
     def validate_status_payload(self) -> ChatStreamEvent:

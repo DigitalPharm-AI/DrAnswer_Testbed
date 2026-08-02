@@ -203,7 +203,7 @@ def main() -> int:
         "callback_mode": env["CALLBACK_MODE"],
         "backend_callback_configured": bool(
             env.get("BACKEND_CALLBACK_BASE_URL")
-            and env.get("BACKEND_API_TOKEN")
+            and env.get("AGENT_SYNC_API_TOKEN")
         ),
     }
     args.output.write_text(

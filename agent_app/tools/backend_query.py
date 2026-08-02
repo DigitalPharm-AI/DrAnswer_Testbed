@@ -2,17 +2,25 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import UTC, date, datetime, time, timedelta
-from difflib import SequenceMatcher
-import re
 from typing import Any
-import unicodedata
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine, inspect, text
 from sqlalchemy.engine import Connection, make_url
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
-from shared.chat_contracts import ChatSyncRequest
+from agent_app.tools.backend_food_queries import (
+    expanded_food_candidate_rows,
+    food_record_view,
+    food_reference_view,
+    normalize_food_search_text,
+)
+from shared.backend_read_contract import (
+    BACKEND_READ_CONTRACT_VERSION,
+    BACKEND_READ_NON_NULL_INVARIANTS,
+    BACKEND_READ_VIEW_COLUMNS,
+    BACKEND_READ_VIEW_DEFINITIONS,
+)
 from shared.backend_v13_contracts import (
     POLICY_MAX_EFFECTIVE_DAYS,
     POLICY_MAX_EXTRA_REMINDERS,
@@ -24,12 +32,7 @@ from shared.backend_v13_contracts import (
     POLICY_MIN_MISSED_DOSE_AFTER_MINUTES,
     POLICY_MIN_PRIMARY_REMINDER_OFFSET_MINUTES,
 )
-from shared.backend_read_contract import (
-    BACKEND_READ_CONTRACT_VERSION,
-    BACKEND_READ_NON_NULL_INVARIANTS,
-    BACKEND_READ_VIEW_COLUMNS,
-    BACKEND_READ_VIEW_DEFINITIONS,
-)
+from shared.chat_contracts import ChatSyncRequest
 from shared.db import DatabaseEngineConfig, create_database_engine
 from shared.public_ids import require_public_id
 from shared.schemas import DailyMedicationPattern, DosePatternEvent, SlotAdherenceSummary
@@ -204,7 +207,9 @@ class BackendQueryTools:
             message = connection.execute(
                 text(
                     """
-                    SELECT id, patient_id, role, content, created_at,
+                    SELECT id, patient_id, role, content,
+                           conversation_at, recorded_at,
+                           conversation_sequence,
                            message_type, message_payload_json,
                            reply_to_message_id, metadata_json
                     FROM ai_v13_chat_messages
@@ -225,26 +230,26 @@ class BackendQueryTools:
                     """
                     SELECT c.id, c.role, c.message_type, c.content,
                            c.message_payload_json, c.reply_to_message_id,
-                           c.created_at
+                           c.conversation_at,
+                           c.conversation_sequence
                     FROM ai_v13_chat_messages c
                     WHERE c.patient_id = :patient_id
-                      AND c.created_at <= :current_message_at
-                    ORDER BY c.created_at DESC, c.id DESC
+                      AND c.conversation_sequence <= :current_sequence
+                    ORDER BY c.conversation_sequence DESC
                     LIMIT :limit
                     """
                 ),
                 {
                     "patient_id": request.patient_id,
-                    "current_message_at": message["created_at"],
+                    "current_sequence": message[
+                        "conversation_sequence"
+                    ],
                     "limit": limit + 1,
                 },
             ).mappings().all()
             history_truncated = len(rows) > limit
             rows = rows[:limit]
-            rows = _causally_order_chat_rows(
-                rows,
-                current_message_id=request.message_id,
-            )
+            rows = _causally_order_chat_rows(rows)
             structured_response_context = _structured_response_context(
                 connection,
                 current_message=message,
@@ -277,7 +282,9 @@ class BackendQueryTools:
                         if row["reply_to_message_id"] is not None
                         else None
                     ),
-                    "created_at": _iso(row["created_at"]),
+                    "conversation_at": _iso(
+                        row["conversation_at"]
+                    ),
                 }
                 for row in rows
             ],
@@ -958,7 +965,7 @@ class BackendQueryTools:
             ).mappings().all()
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in foods:
-            grouped[str(row["meal_id"])].append(_food_view(row))
+            grouped[str(row["meal_id"])].append(food_record_view(row))
         payload = [
             {
                 "id": row["id"],
@@ -976,7 +983,7 @@ class BackendQueryTools:
         return {"success": True, "meals": payload, "total": len(payload)}
 
     def search_food_candidates(self, *, query: str, limit: int = 6) -> dict[str, Any]:
-        normalized = _normalize_food_search_text(query)
+        normalized = normalize_food_search_text(query)
         if not normalized:
             return {"success": False, "error": "query_required", "candidates": [], "source": "db"}
         bounded_limit = self._limit(limit)
@@ -1008,7 +1015,7 @@ class BackendQueryTools:
             ).mappings().all()
             match_mode = "direct"
             if not rows:
-                rows = _expanded_food_candidate_rows(
+                rows = expanded_food_candidate_rows(
                     connection,
                     normalized_query=normalized,
                     limit=bounded_limit,
@@ -1017,7 +1024,7 @@ class BackendQueryTools:
                 match_mode = "expanded" if rows else "none"
         return {
             "success": True,
-            "candidates": [_food_ref_view(row) for row in rows],
+            "candidates": [food_reference_view(row) for row in rows],
             "source": "backend_read_db",
             "error": "",
             "query": query,
@@ -1178,7 +1185,7 @@ class BackendQueryTools:
         return {
             "success": True,
             "patient_id": patient_id,
-            "recommendations": [_food_ref_view(row) for row in rows],
+            "recommendations": [food_reference_view(row) for row in rows],
             "total": len(rows),
             "source": "backend_read_db",
         }
@@ -1361,7 +1368,8 @@ def _structured_response_context(
         text(
             """
             SELECT id, role, message_type, content, message_payload_json,
-                   reply_to_message_id, created_at
+                   reply_to_message_id, conversation_at,
+                   conversation_sequence
             FROM ai_v13_chat_messages
             WHERE id = :source_message_id
               AND patient_id = :patient_id
@@ -1388,7 +1396,7 @@ def _structured_response_context(
             text(
                 """
                 SELECT role, message_type, content, message_payload_json,
-                       created_at
+                       conversation_at, conversation_sequence
                 FROM ai_v13_chat_messages
                 WHERE id = :original_message_id
                   AND patient_id = :patient_id
@@ -1413,7 +1421,7 @@ def _structured_response_context(
             "message_type": source_type,
             "content": str(source["content"] or ""),
             "message": _json_object(source["message_payload_json"]),
-            "created_at": _iso(source["created_at"]),
+            "conversation_at": _iso(source["conversation_at"]),
         },
     }
     if original is not None:
@@ -1422,7 +1430,7 @@ def _structured_response_context(
             "message_type": str(original["message_type"] or "text"),
             "content": str(original["content"] or ""),
             "message": _json_object(original["message_payload_json"]),
-            "created_at": _iso(original["created_at"]),
+            "conversation_at": _iso(original["conversation_at"]),
         }
     return result
 
@@ -1565,138 +1573,6 @@ def _date_range(
     return start, end, None
 
 
-def _normalize_food_search_text(value: Any) -> str:
-    normalized = unicodedata.normalize("NFKC", str(value or "")).lower()
-    return re.sub(r"[\W_]+", "", normalized, flags=re.UNICODE)
-
-
-def _food_search_bigrams(value: str) -> set[str]:
-    if len(value) < 2:
-        return {value} if value else set()
-    return {value[index : index + 2] for index in range(len(value) - 1)}
-
-
-def _expanded_food_candidate_rows(
-    connection,
-    *,
-    normalized_query: str,
-    limit: int,
-    max_rows: int,
-) -> list[Any]:
-    """Resolve spelling/compound-name variants inside the read Tool.
-
-    LLM supplies only the user's food expression. Candidate expansion and
-    ranking remain deterministic here, so the model does not need to issue
-    extra searches such as "된장국" and "두부국" for "두부된장국".
-    """
-
-    anchors = sorted(
-        _food_search_bigrams(normalized_query),
-        key=lambda item: (-len(item), item),
-    )
-    if not anchors:
-        return []
-    params: dict[str, Any] = {
-        "candidate_pool_limit": min(max(20, limit * 12), max_rows),
-    }
-    clauses: list[str] = []
-    for index, anchor in enumerate(anchors):
-        parameter = f"anchor_{index}"
-        clauses.append(
-            f"LOWER(REPLACE(food_name, ' ', '')) LIKE :{parameter}"
-        )
-        params[parameter] = f"%{anchor}%"
-    candidate_rows = connection.execute(
-        text(
-            f"""
-            SELECT food_ref_id, food_name, category, serving_size, energy,
-                   carbohydrate, protein, fat, sodium, source, manufacturer
-            FROM ai_v13_nutrition_food_ref
-            WHERE {" OR ".join(clauses)}
-            ORDER BY LENGTH(food_name), LOWER(food_name), food_ref_id
-            LIMIT :candidate_pool_limit
-            """
-        ),
-        params,
-    ).mappings().all()
-
-    query_bigrams = _food_search_bigrams(normalized_query)
-    ranked: list[tuple[float, int, str, Any]] = []
-    for row in candidate_rows:
-        normalized_name = _normalize_food_search_text(row["food_name"])
-        if not normalized_name:
-            continue
-        name_bigrams = _food_search_bigrams(normalized_name)
-        union = query_bigrams | name_bigrams
-        overlap = (
-            len(query_bigrams & name_bigrams) / len(union)
-            if union
-            else 0.0
-        )
-        sequence = SequenceMatcher(
-            None,
-            normalized_query,
-            normalized_name,
-            autojunk=False,
-        ).ratio()
-        containment = (
-            1.0
-            if (
-                normalized_query in normalized_name
-                or normalized_name in normalized_query
-            )
-            else 0.0
-        )
-        score = (sequence * 0.65) + (overlap * 0.25) + (containment * 0.10)
-        if score < 0.32:
-            continue
-        ranked.append(
-            (
-                score,
-                abs(len(normalized_query) - len(normalized_name)),
-                normalized_name,
-                row,
-            )
-        )
-    ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
-    return [item[3] for item in ranked[:limit]]
-
-
-def _food_view(row: Any) -> dict[str, Any]:
-    return {
-        "id": row["id"],
-        "food_ref_id": row["food_ref_id"],
-        "food_name": row["food_name"],
-        "portion": row["portion"],
-        "version": row["version"] or 1,
-        "nutrients": {
-            "칼로리": {"value": row["calories"], "unit": "kcal"},
-            "단백질": {"value": row["protein"], "unit": "g"},
-            "나트륨": {"value": row["sodium"], "unit": "mg"},
-            "지방": {"value": row["fat"], "unit": "g"},
-            "탄수화물": {"value": row["carbohydrates"], "unit": "g"},
-        },
-    }
-
-
-def _food_ref_view(row: Any) -> dict[str, Any]:
-    return {
-        "food_ref_id": row["food_ref_id"],
-        "food_name": row["food_name"],
-        "category": row["category"] or "",
-        "portion": f"{row['serving_size']}g" if row["serving_size"] else "1인분",
-        "nutrients": {
-            "calories": row["energy"] or 0,
-            "carbohydrates": row["carbohydrate"] or 0,
-            "protein": row["protein"] or 0,
-            "fat": row["fat"] or 0,
-            "sodium": row["sodium"] or 0,
-        },
-        "source": row["source"] or "",
-        "manufacturer": row["manufacturer"] or "",
-    }
-
-
 def _iso(value: Any) -> str:
     if isinstance(value, datetime):
         if value.tzinfo is None:
@@ -1707,16 +1583,12 @@ def _iso(value: Any) -> str:
 
 def _causally_order_chat_rows(
     rows: list[Any],
-    *,
-    current_message_id: str,
 ) -> list[Any]:
-    """Order equal-timestamp messages by their explicit reply relation.
+    """Order messages by Backend sequence while preserving reply causality.
 
-    Public IDs are opaque and therefore cannot be used as a conversation
-    sequence. The Backend read view intentionally exposes ``reply_to_message_id``
-    instead of its numeric primary key, so a stable topological order preserves
-    user -> assistant -> structured reply causality without leaking internal
-    identifiers.
+    Public IDs remain opaque resource identifiers. ``conversation_sequence``
+    is an internal, ordering-only projection and never replaces those IDs.
+    Reply edges provide the authoritative parent-before-child constraint.
     """
 
     by_id = {str(row["id"]): row for row in rows}
@@ -1734,12 +1606,15 @@ def _causally_order_chat_rows(
         children[parent_id].append(message_id)
         indegree[message_id] += 1
 
-    def order_key(message_id: str) -> tuple[str, int, int, str]:
+    def order_key(message_id: str) -> tuple[int, int, str]:
         row = by_id[message_id]
         role = str(row["role"])
+        try:
+            sequence = int(row["conversation_sequence"])
+        except (KeyError, TypeError, ValueError):
+            sequence = 0
         return (
-            _iso(row["created_at"]),
-            1 if message_id == current_message_id else 0,
+            sequence,
             {
                 "assistant": 0,
                 "system": 1,

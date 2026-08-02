@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
-from collections.abc import AsyncIterator, Callable
-from datetime import UTC, datetime
+from collections.abc import Callable
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -12,12 +10,16 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session, sessionmaker
 
 from agent_app import trace_logging
-from agent_app.errors import AgentExecutionError, public_processing_error
+from agent_app.errors import AgentExecutionError
 from agent_app.integration.approval_state import (
     InternalApprovalDecision,
     InternalApprovalEncryptionError,
     InternalApprovalError,
     InternalApprovalStore,
+)
+from agent_app.integration.dose_selection_state import (
+    DoseSelectionStateStore,
+    ResolvedDoseSelection,
 )
 from agent_app.integration.idempotency import (
     PatientThreadBusyError,
@@ -34,16 +36,16 @@ from agent_app.integration.pro_ctcae_survey import (
     ProCtcaeSurveyTransition,
     pro_ctcae_question_response,
 )
+from agent_app.integration.selection_errors import (
+    DoseSelectionStateEncryptionError,
+    DoseSelectionStateError,
+    SelectionStateEncryptionError,
+    SelectionStateError,
+)
 from agent_app.integration.selection_state import (
     FoodSelectionStateStore,
     ResolvedFoodSelection,
-    SelectionStateEncryptionError,
-    SelectionStateError,
     food_selection_question_response,
-)
-from agent_app.observability.model_calls import (
-    capture_model_calls,
-    response_with_model_calls,
 )
 from agent_app.orchestration.continuation import (
     resolve_required_continuations,
@@ -52,14 +54,18 @@ from agent_app.orchestration.graph import (
     AgentLangGraphNativeOrchestrator,
 )
 from agent_app.persistence.trace_store import AgentTraceStore
+from agent_app.routes.chat_streaming import (
+    NDJSON_MEDIA_TYPE,
+    accepts_ndjson,
+    replay_chat_response,
+    stream_chat_response,
+)
 from agent_app.security import require_agent_sync_bearer_token
-from agent_app.streaming import publish_agent_text_with
 from agent_app.tools.backend_query import (
     BackendChatMessageNotFound,
     BackendQueryTools,
 )
 from shared.chat_contracts import (
-    ChatContractError,
     ChatErrorResponse,
     ChatStreamEvent,
     ChatSyncRequest,
@@ -67,6 +73,7 @@ from shared.chat_contracts import (
     agent_chat_payload,
     chat_error,
     chat_sync_response,
+    parse_input_box_message,
 )
 from shared.redaction import safe_exception_summary
 from shared.schemas import AgentResponse
@@ -74,12 +81,11 @@ from shared.settings import get_settings
 from shared.tool_names import (
     CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     REQUEST_RECORD_APPROVAL,
+    UPDATE_MEDICATION_DOSE_EVENT_STATUS,
 )
 
 router = APIRouter()
 SYNC_CHAT_PATH = "/agent/sync/chat"
-NDJSON_MEDIA_TYPE = "application/x-ndjson"
-STORED_STREAM_EVENTS_KEY = "_chat_stream_events_v1"
 SYNC_CHAT_RESPONSES = {
     400: {
         "model": ChatErrorResponse,
@@ -203,6 +209,17 @@ def _food_selection_store() -> FoodSelectionStateStore:
     )
 
 
+def _dose_selection_store() -> DoseSelectionStateStore:
+    if _sync_session_factory_getter is None:
+        raise RuntimeError(
+            "agent_sync_session_factory_not_configured"
+        )
+    return DoseSelectionStateStore(
+        _sync_session_factory_getter(),
+        settings=get_settings(),
+    )
+
+
 def _backend_query_tools() -> BackendQueryTools | None:
     if _backend_query_tools_getter is None:
         return None
@@ -244,6 +261,7 @@ async def _invoke_sync_chat_contract(
 ) -> tuple[AgentResponse, ChatSyncResponse]:
     survey_service = _pro_ctcae_survey_service()
     selection_store = _food_selection_store()
+    dose_selection_store = _dose_selection_store()
     resolved_food_selection: ResolvedFoodSelection | None = None
     try:
         approval_decision = await _submit_record_approval_if_present(
@@ -256,11 +274,22 @@ async def _invoke_sync_chat_contract(
                     trace_id=trace_id,
                     action_name=approval_decision.action_name,
                 )
-                await asyncio.to_thread(
+                next_survey_approval = await asyncio.to_thread(
                     survey_service.resolve_approval,
                     patient_id=payload.patient_id,
                     applied=False,
                 )
+                if next_survey_approval is not None:
+                    agent_response = await (
+                        _agent_response_for_survey_transition(
+                            survey_service,
+                            orchestrator=orchestrator,
+                            payload=payload,
+                            agent_payload=agent_payload,
+                            trace_id=trace_id,
+                            transition=next_survey_approval,
+                        )
+                    )
             else:
                 context = dict(agent_payload.get("context") or {})
                 context["approved_user_action"] = {
@@ -275,12 +304,70 @@ async def _invoke_sync_chat_contract(
                     agent_payload={**agent_payload, "context": context},
                     trace_id=trace_id,
                 )
-                await asyncio.to_thread(
+                next_survey_approval = await asyncio.to_thread(
                     survey_service.resolve_approval,
                     patient_id=payload.patient_id,
                     applied=True,
                 )
+                if next_survey_approval is not None:
+                    agent_response = await (
+                        _agent_response_for_survey_transition(
+                            survey_service,
+                            orchestrator=orchestrator,
+                            payload=payload,
+                            agent_payload=agent_payload,
+                            trace_id=trace_id,
+                            transition=next_survey_approval,
+                        )
+                    )
         else:
+            resolved_dose_selection = await asyncio.to_thread(
+                _resolve_dose_selection_if_present,
+                dose_selection_store,
+                payload=payload,
+                agent_payload=agent_payload,
+            )
+            if resolved_dose_selection is not None:
+                agent_response = await (
+                    orchestrator.multiturn_chat_agent
+                    .medication_agent.continue_with_tool_calls(
+                        trace_id,
+                        agent_payload,
+                        tool_calls=[
+                            {
+                                "id": (
+                                    "dose_selection_"
+                                    f"{resolved_dose_selection.selection_id}"
+                                ),
+                                "name": REQUEST_RECORD_APPROVAL,
+                                "arguments": {
+                                    "action_name": (
+                                        UPDATE_MEDICATION_DOSE_EVENT_STATUS
+                                    ),
+                                    "record_arguments": {
+                                        "dose_event_id": (
+                                            resolved_dose_selection
+                                            .dose_event_id
+                                        )
+                                    },
+                                },
+                            }
+                        ],
+                    )
+                )
+                await asyncio.to_thread(
+                    dose_selection_store.consume,
+                    patient_id=payload.patient_id,
+                    origin_message_id=(
+                        resolved_dose_selection.origin_message_id
+                    ),
+                    current_user_message_id=payload.message_id,
+                )
+                external_response = chat_sync_response(
+                    payload,
+                    agent_response,
+                )
+                return agent_response, external_response
             transition = await _submit_pro_ctcae_response_if_present(
                 survey_service,
                 payload=payload,
@@ -297,71 +384,119 @@ async def _invoke_sync_chat_contract(
                 )
             else:
                 resolved_food_selection = await asyncio.to_thread(
-                    _resolve_food_selection_if_present,
+                    _resolve_food_portion_input_if_present,
                     selection_store,
                     payload=payload,
                     agent_payload=agent_payload,
                 )
                 if resolved_food_selection is not None:
-                    if (
-                        resolved_food_selection.kind
-                        == "next_selection"
-                    ):
-                        agent_response = (
-                            food_selection_question_response(
-                                resolved_food_selection,
-                                trace_id=trace_id,
-                            )
-                        )
-                    else:
-                        record_arguments = (
-                            resolved_food_selection
-                            .record_arguments()
-                        )
-                        agent_response = await (
-                            orchestrator
-                            .continue_nutrition_food_selection(
-                                trace_id=trace_id,
-                                payload=agent_payload,
-                                record_arguments=(
-                                    record_arguments
-                                ),
-                                selection_id=(
-                                    resolved_food_selection
-                                    .selection_id
-                                ),
-                                origin_message_id=(
-                                    resolved_food_selection
-                                    .origin_message_id
-                                ),
-                            )
-                        )
-                        if isinstance(
-                            agent_response
-                            .structured_payload.get(
-                                "mutation_confirmation"
-                            ),
-                            dict,
-                        ):
-                            await asyncio.to_thread(
-                                selection_store.consume,
-                                patient_id=(
-                                    payload.patient_id
-                                ),
-                                origin_message_id=(
-                                    resolved_food_selection
-                                    .origin_message_id
-                                ),
-                                current_user_message_id=(
-                                    payload.message_id
-                                ),
-                            )
-                else:
-                    agent_response = await _invoke_sync_chat(
-                        orchestrator=orchestrator,
-                        agent_payload=agent_payload,
-                        trace_id=trace_id,
+                    record_arguments = (
+                        resolved_food_selection
+                        .record_arguments()
                     )
+                    agent_response = await (
+                        orchestrator
+                        .continue_nutrition_food_selection(
+                            trace_id=trace_id,
+                            payload=agent_payload,
+                            record_arguments=(
+                                record_arguments
+                            ),
+                            selection_id=(
+                                resolved_food_selection
+                                .selection_id
+                            ),
+                            origin_message_id=(
+                                resolved_food_selection
+                                .origin_message_id
+                            ),
+                            require_portion_input=False,
+                        )
+                    )
+                    if isinstance(
+                        agent_response.structured_payload.get(
+                            "mutation_confirmation"
+                        ),
+                        dict,
+                    ):
+                        await asyncio.to_thread(
+                            selection_store.consume,
+                            patient_id=payload.patient_id,
+                            origin_message_id=(
+                                resolved_food_selection
+                                .origin_message_id
+                            ),
+                            current_user_message_id=(
+                                payload.message_id
+                            ),
+                        )
+                else:
+                    resolved_food_selection = await asyncio.to_thread(
+                        _resolve_food_selection_if_present,
+                        selection_store,
+                        payload=payload,
+                        agent_payload=agent_payload,
+                    )
+                    if resolved_food_selection is not None:
+                        if (
+                            resolved_food_selection.kind
+                            == "next_selection"
+                        ):
+                            agent_response = (
+                                food_selection_question_response(
+                                    resolved_food_selection,
+                                    trace_id=trace_id,
+                                )
+                            )
+                        else:
+                            record_arguments = (
+                                resolved_food_selection
+                                .record_arguments()
+                            )
+                            agent_response = await (
+                                orchestrator
+                                .continue_nutrition_food_selection(
+                                    trace_id=trace_id,
+                                    payload=agent_payload,
+                                    record_arguments=(
+                                        record_arguments
+                                    ),
+                                    selection_id=(
+                                        resolved_food_selection
+                                        .selection_id
+                                    ),
+                                    origin_message_id=(
+                                        resolved_food_selection
+                                        .origin_message_id
+                                    ),
+                                )
+                            )
+                            if isinstance(
+                                agent_response
+                                .structured_payload.get(
+                                    "mutation_confirmation"
+                                ),
+                                dict,
+                            ):
+                                await asyncio.to_thread(
+                                    selection_store.consume,
+                                    patient_id=(
+                                        payload.patient_id
+                                    ),
+                                    origin_message_id=(
+                                        resolved_food_selection
+                                        .origin_message_id
+                                    ),
+                                    current_user_message_id=(
+                                        payload.message_id
+                                    ),
+                                )
+                    else:
+                        agent_response = await _invoke_sync_chat(
+                            orchestrator=orchestrator,
+                            agent_payload=agent_payload,
+                            trace_id=trace_id,
+                        )
                 started = await asyncio.to_thread(
                     survey_service.start_from_agent_response,
                     patient_id=payload.patient_id,
@@ -382,6 +517,15 @@ async def _invoke_sync_chat_contract(
                         )
                     )
         await asyncio.to_thread(
+            dose_selection_store.prepare_from_agent_response,
+            patient_id=payload.patient_id,
+            origin_message_id=payload.message_id,
+            source_chat_request_id=payload.request_id,
+            trace_id=trace_id,
+            message_at=payload.message_at,
+            response=agent_response,
+        )
+        await asyncio.to_thread(
             selection_store.prepare_from_agent_response,
             patient_id=payload.patient_id,
             origin_message_id=payload.message_id,
@@ -400,6 +544,17 @@ async def _invoke_sync_chat_contract(
             trace_id=trace_id,
             agent_name="internal_approval_state",
             decision_type="record_approval",
+        ) from exc
+    except (
+        DoseSelectionStateError,
+        DoseSelectionStateEncryptionError,
+    ) as exc:
+        raise AgentExecutionError(
+            str(exc),
+            error_type="dose_selection_state_failed",
+            trace_id=trace_id,
+            agent_name="dose_selection_state",
+            decision_type="dose_selection_continuation",
         ) from exc
     except (
         SelectionStateError,
@@ -469,6 +624,70 @@ def _resolve_food_selection_if_present(
             originating_user_message_id
         ),
         submitted_value=payload.message,
+    )
+
+
+def _resolve_dose_selection_if_present(
+    selection_store: DoseSelectionStateStore,
+    *,
+    payload: ChatSyncRequest,
+    agent_payload: dict[str, Any],
+) -> ResolvedDoseSelection | None:
+    if payload.requested_return_type != "selection_box":
+        return None
+    context = agent_payload.get("context")
+    if not isinstance(context, dict):
+        return None
+    structured = context.get("structured_response_context")
+    if not isinstance(structured, dict):
+        return None
+    if structured.get("response_type") != "selection_box":
+        return None
+    originating_user_message_id = str(
+        structured.get("originating_user_message_id") or ""
+    ).strip()
+    if not originating_user_message_id:
+        return None
+    return selection_store.resolve(
+        patient_id=payload.patient_id,
+        current_user_message_id=payload.message_id,
+        originating_user_message_id=(
+            originating_user_message_id
+        ),
+        submitted_value=payload.message,
+    )
+
+
+def _resolve_food_portion_input_if_present(
+    selection_store: FoodSelectionStateStore,
+    *,
+    payload: ChatSyncRequest,
+    agent_payload: dict[str, Any],
+) -> ResolvedFoodSelection | None:
+    if payload.requested_return_type != "input_box":
+        return None
+    context = agent_payload.get("context")
+    if not isinstance(context, dict):
+        return None
+    structured = context.get("structured_response_context")
+    if not isinstance(structured, dict):
+        return None
+    if structured.get("response_type") != "input_box":
+        return None
+    originating_user_message_id = str(
+        structured.get("originating_user_message_id") or ""
+    ).strip()
+    if not originating_user_message_id:
+        return None
+    return selection_store.resolve_portions(
+        patient_id=payload.patient_id,
+        current_user_message_id=payload.message_id,
+        originating_user_message_id=(
+            originating_user_message_id
+        ),
+        submitted_values=parse_input_box_message(
+            payload.message
+        ),
     )
 
 
@@ -677,7 +896,7 @@ async def sync_chat(
     settings = get_settings()
     internal_trace_id = str(uuid4())
     trace_store = _trace_store()
-    if not _accepts_ndjson(accept):
+    if not accepts_ndjson(accept):
         body = chat_error(
             "INVALID_REQUEST",
             "Request schema or required field is invalid.",
@@ -767,7 +986,7 @@ async def sync_chat(
         )
 
     if isinstance(begin_result, StoredHttpResponse):
-        return _replay_chat_response(payload, begin_result)
+        return replay_chat_response(payload, begin_result)
     claim = begin_result
 
     backend_context: dict[str, Any] = {}
@@ -803,6 +1022,11 @@ async def sync_chat(
             backend_queries.patient_context_snapshot,
             patient_id=payload.patient_id,
             as_of=payload.message_at,
+        )
+        _log_backend_chat_context(
+            payload=payload,
+            trace_id=internal_trace_id,
+            backend_context=backend_context,
         )
     except BackendChatMessageNotFound:
         return _final_chat_error(
@@ -869,7 +1093,7 @@ async def sync_chat(
             retryable=True,
         )
 
-    return _stream_chat_response(
+    return stream_chat_response(
         gate=gate,
         trace_store=trace_store,
         orchestrator=orchestrator,
@@ -881,418 +1105,141 @@ async def sync_chat(
         ),
         trace_id=internal_trace_id,
         timeout_seconds=settings.agent_sync_chat_timeout_seconds,
+        invoke_sync_chat_contract=_invoke_sync_chat_contract,
+        log_sync_chat_completed=_log_sync_chat_completed,
     )
 
 
-def _stream_chat_response(
+def _log_backend_chat_context(
     *,
-    gate: SyncRequestGate,
-    trace_store: AgentTraceStore,
-    orchestrator: AgentLangGraphNativeOrchestrator,
     payload: ChatSyncRequest,
-    claim: SyncRequestClaim,
-    agent_payload: dict[str, Any],
     trace_id: str,
-    timeout_seconds: float,
-) -> StreamingResponse:
-    queue: asyncio.Queue[ChatStreamEvent] = asyncio.Queue()
-    client_connected = True
-    public_text_published = False
-    published_events: list[ChatStreamEvent] = []
-
-    async def publish_text(text: str) -> None:
-        nonlocal public_text_published
-        if not text:
-            return
-        public_text_published = True
-        event = ChatStreamEvent(
-            request_id=payload.request_id,
-            message_id=payload.message_id,
-            sequence=0,
-            status="streaming",
-            message_type="text",
-            delta=text,
-            message=None,
-            error=None,
-            event_at=_event_time(),
-        )
-        published_events.append(event)
-        if client_connected:
-            await queue.put(event)
-
-    async def run_chat() -> None:
-        model_call_observations: list[dict[str, Any]] = []
-        try:
-            with (
-                capture_model_calls(model_call_observations),
-                publish_agent_text_with(publish_text),
-            ):
-                agent_response, external_response = (
-                    await asyncio.wait_for(
-                        _invoke_sync_chat_contract(
-                            orchestrator=orchestrator,
-                            agent_payload=agent_payload,
-                            payload=payload,
-                            trace_id=trace_id,
-                        ),
-                        timeout=timeout_seconds,
-                    )
-                )
-            agent_response = response_with_model_calls(
-                agent_response,
-                model_call_observations,
-            )
-            if not public_text_published and external_response.message.text:
-                # The normal Agent loop now owns the final answer. Publish that
-                # single authoritative text before the completed response/card.
-                await publish_text(external_response.message.text)
-            terminal = ChatStreamEvent(
-                request_id=payload.request_id,
-                message_id=payload.message_id,
-                sequence=0,
-                status="completed",
-                message_type=external_response.message_type,
-                delta=None,
-                message=external_response.message,
-                error=None,
-                event_at=external_response.message_at,
-            )
-            try:
-                trace_store.complete_chat(
-                    payload,
-                    agent_response,
-                    model_call_observations=(
-                        model_call_observations
-                    ),
-                )
-                stored_events = [
-                    event.model_copy(
-                        update={"sequence": sequence}
-                    ).model_dump(mode="json")
-                    for sequence, event in enumerate(
-                        [*published_events, terminal]
-                    )
-                ]
-                gate.complete(
-                    payload,
-                    claim=claim,
-                    status_code=200,
-                    body={
-                        STORED_STREAM_EVENTS_KEY: stored_events,
-                    },
-                    trace_id=agent_response.trace_id,
-                )
-            except Exception as exc:
-                trace_logging.log_info(
-                    "agent_sync_chat_completion_persistence_failed",
-                    request_id=payload.request_id,
-                    trace_id=trace_id,
-                    error=safe_exception_summary(exc, limit=300),
-                )
-                terminal = _stream_error_event(
-                    payload,
-                    code="AI_PROCESSING_ERROR",
-                    message=(
-                        "An internal AI Server processing error occurred."
-                    ),
-                    retryable=True,
-                )
-                _persist_stream_failure(
-                    gate,
-                    trace_store,
-                    payload,
-                    claim=claim,
-                    terminal=terminal,
-                    trace_id=trace_id,
-                    model_call_observations=model_call_observations,
-                )
-        except TimeoutError as exc:
-            public_error = public_processing_error(exc)
-            terminal = _stream_error_event(
-                payload,
-                code=public_error.code,
-                message=public_error.message,
-                retryable=public_error.retryable,
-            )
-            _persist_stream_failure(
-                gate,
-                trace_store,
-                payload,
-                claim=claim,
-                terminal=terminal,
-                trace_id=trace_id,
-                model_call_observations=model_call_observations,
-            )
-        except AgentExecutionError as exc:
-            public_error = public_processing_error(exc)
-            trace_logging.log_info(
-                "agent_sync_chat_failed",
-                request_id=payload.request_id,
-                trace_id=exc.trace_id,
-                error_type=exc.error_type,
-                error=safe_exception_summary(exc, limit=300),
-            )
-            terminal = _stream_error_event(
-                payload,
-                code=public_error.code,
-                message=public_error.message,
-                retryable=public_error.retryable,
-            )
-            _persist_stream_failure(
-                gate,
-                trace_store,
-                payload,
-                claim=claim,
-                terminal=terminal,
-                trace_id=trace_id,
-                model_call_observations=model_call_observations,
-            )
-        except Exception as exc:
-            trace_logging.log_info(
-                "agent_sync_chat_failed",
-                request_id=payload.request_id,
-                trace_id=trace_id,
-                error=safe_exception_summary(exc, limit=300),
-            )
-            terminal = _stream_error_event(
-                payload,
-                code="AI_PROCESSING_ERROR",
-                message=(
-                    "An internal AI Server processing error occurred."
-                ),
-                retryable=True,
-            )
-            _persist_stream_failure(
-                gate,
-                trace_store,
-                payload,
-                claim=claim,
-                terminal=terminal,
-                trace_id=trace_id,
-                model_call_observations=model_call_observations,
-            )
-        if client_connected:
-            await queue.put(terminal)
-
-    async def event_stream() -> AsyncIterator[str]:
-        nonlocal client_connected
-        worker = asyncio.create_task(run_chat())
-        sequence = 0
-        try:
-            while True:
-                event = await queue.get()
-                outbound = event.model_copy(
-                    update={"sequence": sequence}
-                )
-                sequence += 1
-                yield _ndjson_line(outbound)
-                if outbound.status in {"completed", "error"}:
-                    await worker
-                    return
-        except asyncio.CancelledError:
-            client_connected = False
-            try:
-                await asyncio.shield(worker)
-            except Exception:
-                pass
-            raise
-        finally:
-            client_connected = False
-            if worker.done() and not worker.cancelled():
-                worker.exception()
-
-    return _ndjson_streaming_response(event_stream())
-
-
-def _persist_stream_failure(
-    gate: SyncRequestGate,
-    trace_store: AgentTraceStore,
-    payload: ChatSyncRequest,
-    *,
-    claim: SyncRequestClaim,
-    terminal: ChatStreamEvent,
-    trace_id: str,
-    model_call_observations: list[dict[str, Any]] | None = None,
+    backend_context: dict[str, Any],
 ) -> None:
-    error = terminal.error
-    if error is None:
-        raise ValueError("stream_failure_requires_error")
-    try:
-        trace_store.record_model_calls(
-            trace_id=trace_id,
-            observations=model_call_observations or [],
-        )
-    except Exception as exc:
-        trace_logging.log_info(
-            "agent_model_observation_persistence_failed",
-            request_id=payload.request_id,
-            trace_id=trace_id,
-            error=safe_exception_summary(exc, limit=300),
-        )
-    try:
-        trace_store.fail_chat(
-            trace_id=trace_id,
-            error_code=error.code,
-            error_message=error.message,
-            retryable=error.retryable,
-        )
-    except Exception as exc:
-        trace_logging.log_info(
-            "agent_trace_persistence_failed",
-            request_id=payload.request_id,
-            trace_id=trace_id,
-            error=safe_exception_summary(exc, limit=300),
-        )
-    try:
-        gate.fail(
-            payload,
-            claim=claim,
-            status_code=200,
-            body=terminal.model_copy(
-                update={"sequence": 0}
-            ).model_dump(mode="json"),
-            trace_id=trace_id,
-            error_code=error.code,
-            retryable=error.retryable,
-        )
-    except Exception as exc:
-        trace_logging.log_info(
-            "agent_sync_request_failure_persistence_failed",
-            request_id=payload.request_id,
-            trace_id=trace_id,
-            error=safe_exception_summary(exc, limit=300),
-        )
-
-
-def _stream_error_event(
-    payload: ChatSyncRequest,
-    *,
-    code: str,
-    message: str,
-    retryable: bool,
-) -> ChatStreamEvent:
-    return ChatStreamEvent(
+    recent_chat = backend_context.get("recent_chat")
+    rows = (
+        [row for row in recent_chat if isinstance(row, dict)]
+        if isinstance(recent_chat, list)
+        else []
+    )
+    role_counts: dict[str, int] = {}
+    for row in rows:
+        role = str(row.get("role") or "unknown")
+        role_counts[role] = role_counts.get(role, 0) + 1
+    trace_logging.log_info(
+        "agent_backend_chat_context_loaded",
         request_id=payload.request_id,
+        trace_id=trace_id,
         message_id=payload.message_id,
-        sequence=0,
-        status="error",
-        message_type=None,
-        delta=None,
-        message=None,
-        error=ChatContractError(
-            code=code,
-            message=message,
-            retryable=retryable,
-            details=None,
+        message_at=payload.message_at.isoformat(),
+        recent_chat_count=len(rows),
+        recent_chat_complete=bool(
+            backend_context.get("recent_chat_complete")
         ),
-        event_at=_event_time(),
+        recent_chat_limit=backend_context.get("recent_chat_limit"),
+        role_counts=role_counts,
+        role_sequence=[str(row.get("role") or "unknown") for row in rows],
+        recent_chat_tail=[
+            {
+                "message_id": str(row.get("message_id") or ""),
+                "role": str(row.get("role") or "unknown"),
+                "conversation_at": str(row.get("conversation_at") or ""),
+            }
+            for row in rows[-10:]
+        ],
     )
 
 
-def _replay_chat_response(
+def _log_sync_chat_completed(
+    *,
     payload: ChatSyncRequest,
-    replay: StoredHttpResponse,
-) -> Response:
-    if replay.status_code != 200:
-        return JSONResponse(
-            status_code=replay.status_code,
-            content=replay.body,
-        )
-    events = _stored_stream_events(payload, replay.body)
-
-    async def replay_stream() -> AsyncIterator[str]:
-        for event in events:
-            yield _ndjson_line(event)
-
-    return _ndjson_streaming_response(replay_stream())
-
-
-def _stored_stream_events(
-    payload: ChatSyncRequest,
-    body: dict[str, Any],
-) -> list[ChatStreamEvent]:
-    raw_events = body.get(STORED_STREAM_EVENTS_KEY)
-    if raw_events is None:
-        return [
-            _stored_terminal_event(payload, body).model_copy(
-                update={"sequence": 0}
-            )
-        ]
-    if not isinstance(raw_events, list) or not raw_events:
-        raise RuntimeError("stored_chat_stream_events_invalid")
-
-    events = [
-        ChatStreamEvent.model_validate(raw_event)
-        for raw_event in raw_events
-    ]
-    for sequence, event in enumerate(events):
-        if (
-            event.request_id != payload.request_id
-            or event.message_id != payload.message_id
-            or event.sequence != sequence
-        ):
-            raise RuntimeError("stored_chat_response_correlation_mismatch")
-        if sequence < len(events) - 1 and event.status in {
-            "completed",
-            "error",
-        }:
-            raise RuntimeError("stored_chat_stream_terminal_not_last")
-    if events[-1].status not in {"completed", "error"}:
-        raise RuntimeError("stored_chat_stream_terminal_missing")
-    return events
-
-
-def _stored_terminal_event(
-    payload: ChatSyncRequest,
-    body: dict[str, Any],
-) -> ChatStreamEvent:
-    terminal = ChatStreamEvent.model_validate(body)
-    if (
-        terminal.request_id != payload.request_id
-        or terminal.message_id != payload.message_id
-    ):
-        raise RuntimeError("stored_chat_response_correlation_mismatch")
-    return terminal
-
-
-def _accepts_ndjson(value: str | None) -> bool:
-    accepted = {
-        item.split(";", 1)[0].strip().lower()
-        for item in str(value or "").split(",")
-        if item.strip()
-    }
-    return NDJSON_MEDIA_TYPE in accepted
-
-
-def _ndjson_streaming_response(
-    content: AsyncIterator[str],
-) -> StreamingResponse:
-    return StreamingResponse(
-        content,
-        status_code=200,
-        headers={
-            "Content-Type": (
-                f"{NDJSON_MEDIA_TYPE}; charset=utf-8"
-            ),
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+    response: AgentResponse,
+    elapsed_ms: int,
+    model_call_observations: list[dict[str, Any]],
+    tool_call_observations: list[dict[str, Any]],
+) -> None:
+    structured = (
+        response.structured_payload
+        if isinstance(response.structured_payload, dict)
+        else {}
     )
-
-
-def _ndjson_line(event: ChatStreamEvent) -> str:
-    return (
-        json.dumps(
-            event.model_dump(mode="json"),
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        + "\n"
+    trace_logging.log_info(
+        "agent_api_call_completed",
+        path=SYNC_CHAT_PATH,
+        mode="sync",
+        status="completed",
+        request_id=payload.request_id,
+        trace_id=response.trace_id,
+        message_id=payload.message_id,
+        agent_name=response.agent_name,
+        decision_type=response.decision_type,
+        routing_mode=str(structured.get("routing_mode") or ""),
+        executed_by=str(structured.get("executed_by") or ""),
+        specialist_agent=str(structured.get("specialist_agent") or ""),
+        final_answer_source=str(
+            structured.get("final_answer_source") or ""
+        ),
+        elapsed_ms=max(0, int(elapsed_ms)),
+        model_call_count=len(model_call_observations),
+        model_elapsed_ms=sum(
+            max(0, int(item.get("latency_ms") or 0))
+            for item in model_call_observations
+        ),
+        model_calls=[
+            {
+                "name": str(item.get("name") or ""),
+                "provider": str(item.get("provider") or ""),
+                "model_id": str(item.get("model_id") or ""),
+                "status": str(item.get("status") or ""),
+                "elapsed_ms": max(
+                    0,
+                    int(item.get("latency_ms") or 0),
+                ),
+                "time_to_first_token_ms": max(
+                    0,
+                    int(item.get("time_to_first_token_ms") or 0),
+                ),
+                "model_parameters": (
+                    item.get("model_parameters")
+                    if isinstance(item.get("model_parameters"), dict)
+                    else {}
+                ),
+            }
+            for item in model_call_observations
+        ],
+        tool_call_count=len(tool_call_observations),
+        tool_elapsed_ms=sum(
+            max(0, int(item.get("latency_ms") or 0))
+            for item in tool_call_observations
+        ),
+        tool_calls=[
+            {
+                "tool": str(
+                    (
+                        item.get("call")
+                        if isinstance(item.get("call"), dict)
+                        else {}
+                    ).get("name")
+                    or ""
+                ),
+                "status": str(
+                    (
+                        item.get("result")
+                        if isinstance(item.get("result"), dict)
+                        else {}
+                    ).get("status")
+                    or ""
+                ),
+                "elapsed_ms": max(
+                    0,
+                    int(item.get("latency_ms") or 0),
+                ),
+                "started_at": str(item.get("started_at") or ""),
+                "completed_at": str(item.get("completed_at") or ""),
+            }
+            for item in tool_call_observations
+        ],
     )
-
-
-def _event_time() -> datetime:
-    return datetime.now(UTC)
 
 
 def _final_chat_error(

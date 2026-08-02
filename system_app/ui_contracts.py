@@ -15,6 +15,7 @@ from shared.chat_contracts import (
     ChatMessageContent,
     ChatMessageType,
     RequestedReturnType,
+    require_structured_response_source,
 )
 from shared.contract_boundary import remove_retired_conversation_fields
 from shared.public_ids import (
@@ -110,14 +111,11 @@ class UiChatRequest(StrictUiContract):
         return normalized
 
     @model_validator(mode="after")
-    def require_structured_response_source(self) -> UiChatRequest:
-        if (
-            self.requested_return_type != "text"
-            and self.source_message_id is None
-        ):
-            raise ValueError(
-                "source_message_id_required_for_structured_response"
-            )
+    def validate_structured_response_source(self) -> UiChatRequest:
+        require_structured_response_source(
+            self.requested_return_type,
+            self.source_message_id,
+        )
         return self
 
 

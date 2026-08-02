@@ -106,6 +106,107 @@ const assistantHistory = {
   ],
   next_before_date: null,
 };
+const defaultPortionInputHistory = {
+  days: [
+    {
+      date: "2026-07-26",
+      messages: [
+        {
+          message_id: "assistant-default-portion-input",
+          sort_sequence: 401,
+          role: "assistant",
+          source_message_id: null,
+          response_message_id: null,
+          message_type: "input_box",
+          message: null,
+          content: {
+            message_title: "섭취량 입력",
+            text: "선택한 음식별 실제 섭취량을 입력해 주세요.",
+            tables: null,
+            selections: null,
+            inputs: [
+              {
+                type: "number",
+                label: "1. 토스트_마늘토스트 섭취량",
+                value: 500,
+                options: {
+                  unit: "g",
+                  lower: 1,
+                  upper: 5000,
+                  selections: null,
+                },
+              },
+              {
+                type: "number",
+                label: "2. 물_생수 섭취량",
+                value: 1000,
+                options: {
+                  unit: "mL",
+                  lower: 1,
+                  upper: 5000,
+                  selections: null,
+                },
+              },
+            ],
+          },
+          created_at: "2026-07-26T09:30:00+09:00",
+          processing_status: "pending",
+          opinion_submitted: false,
+          opinion_submitted_at: null,
+          reaction: null,
+        },
+      ],
+    },
+  ],
+  next_before_date: null,
+};
+const proactiveNotification = {
+  id: "notif-proactive-chat-1",
+  notification_type: "conversation_alert",
+  title: "AI가 대화를 요청합니다.",
+  body: "복약을 놓친 이유를 알려주세요.",
+  visible_at: "2026-07-26T09:00:00+09:00",
+  visible_at_label: "07-26 09:00",
+  acknowledged: false,
+  metadata: { severity: "reminder" },
+  interaction: {
+    kind: "open_chat",
+    state: "ready",
+    message_id: "assistant-proactive-1",
+  },
+  dose_status: "missed",
+  related_dose_event_id: "dose-proactive-1",
+};
+const proactiveChatHistory = {
+  days: [
+    {
+      date: "2026-07-26",
+      messages: [
+        {
+          message_id: "assistant-proactive-1",
+          sort_sequence: 301,
+          role: "assistant",
+          source_message_id: null,
+          response_message_id: null,
+          message_type: "text",
+          message: null,
+          content: {
+            message_title: null,
+            text: "복약을 놓친 이유를 알려주세요.",
+            tables: null,
+            selections: null,
+            inputs: null,
+          },
+          created_at: "2026-07-26T09:00:00+09:00",
+          processing_status: "completed",
+          opinion_submitted: false,
+          reaction: null,
+        },
+      ],
+    },
+  ],
+  next_before_date: null,
+};
 const markdownAssistantHistory = {
   days: [
     {
@@ -119,7 +220,7 @@ const markdownAssistantHistory = {
           content: {
             message_title: null,
             text:
-              "메스꺼움이 현재 복용 중인 약들과 관련이 있을 수 있습니다.\n\n현재 다음 3가지 약에서 메스꺼움이 부작용으로 보고되어 있습니다:\n\n- **메트포르민 500mg** (당뇨약)\n\n- **수니티닙 50mg** (신장암 치료약)\n\n- **레트로졸 2.5mg** (유방암 치료약)\n\n**어느 약을 복용한 후에 메스꺼움이 시작되었나요?** 또는 **언제부터 속이 메스꺼워졌나요?**\n\n1. 아침 복용\n2. 저녁 복용\n\n<script>window.__markdownProbe = true</script>",
+              "메스꺼움이 현재 복용 중인 약들과 관련이 있을 수 있습니다.\n\n현재 다음 3가지 약에서 메스꺼움이 부작용으로 보고되어 있습니다:\n\n- **메트포르민 500mg** (당뇨약)\n\n- **수니티닙 50mg** (신장암 치료약)\n\n- **레트로졸 2.5mg** (유방암 치료약)\n\n**어느 약을 복용한 후에 메스꺼움이 시작되었나요?** 또는 **언제부터 속이 메스꺼워졌나요?**\n\n1. 아침 복용\n2. 저녁 복용\n\n<script>window.__markdownProbe = true</script>\n\n| Time | Medication | Status |\n|---|---|---|\n| 08:00 | Metformin | Taken |\n| 18:00 | Letrozole | Scheduled |",
             tables: null,
             selections: null,
             inputs: null,
@@ -373,15 +474,22 @@ async function readJsonRequest(request) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-function createControlledChatStream() {
+function createControlledChatStream({
+  firstDelta = "서버에서 생성한 ",
+  secondDelta = "실제 답변입니다.",
+  completedText = "서버에서 생성한 실제 답변입니다.",
+} = {}) {
   const started = deferred();
   const allowFirstDelta = deferred();
   const firstDeltaWritten = deferred();
+  const allowSecondDelta = deferred();
+  const secondDeltaWritten = deferred();
   const allowCompletion = deferred();
 
   async function handle(request, response) {
     const payload = await readJsonRequest(request);
     const completed = chatSuccess(payload.request_id).data;
+    completed.message.text = completedText;
 
     response.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
@@ -406,12 +514,12 @@ function createControlledChatStream() {
       sseFrame("text_delta", {
         request_id: payload.request_id,
         sequence: 0,
-        text: "서버에서 생성한 ",
+        text: firstDelta,
       }),
     );
     firstDeltaWritten.resolve();
 
-    await allowCompletion.promise;
+    await allowSecondDelta.promise;
     if (response.destroyed) {
       return;
     }
@@ -419,9 +527,15 @@ function createControlledChatStream() {
       sseFrame("text_delta", {
         request_id: payload.request_id,
         sequence: 1,
-        text: "실제 답변입니다.",
+        text: secondDelta,
       }),
     );
+    secondDeltaWritten.resolve();
+
+    await allowCompletion.promise;
+    if (response.destroyed) {
+      return;
+    }
     response.end(sseFrame("completed", completed));
   }
 
@@ -429,10 +543,17 @@ function createControlledChatStream() {
     handle,
     started: started.promise,
     firstDeltaWritten: firstDeltaWritten.promise,
+    secondDeltaWritten: secondDeltaWritten.promise,
     releaseFirstDelta: () => allowFirstDelta.resolve(),
-    releaseCompletion: () => allowCompletion.resolve(),
+    releaseSecondDelta: () => allowSecondDelta.resolve(),
+    finish: () => allowCompletion.resolve(),
+    releaseCompletion() {
+      allowSecondDelta.resolve();
+      allowCompletion.resolve();
+    },
     releaseAll() {
       allowFirstDelta.resolve();
+      allowSecondDelta.resolve();
       allowCompletion.resolve();
     },
   };
@@ -652,6 +773,120 @@ test(
           },
         );
       });
+
+      await suite.test(
+        "syncs a ready proactive message into Chat without opening its notification",
+        async () => {
+          let proactiveReady = false;
+          let chatHistoryRequestCount = 0;
+
+          await withPage(
+            browser,
+            baseUrl,
+            async (route) => {
+              const pathname = new URL(route.request().url()).pathname;
+              if (pathname.endsWith("/dashboard")) {
+                await fulfillJson(
+                  route,
+                  success(
+                    proactiveReady
+                      ? {
+                          ...dashboard,
+                          notifications: [proactiveNotification],
+                        }
+                      : dashboard,
+                  ),
+                );
+                return;
+              }
+              if (pathname.endsWith("/chat/history")) {
+                chatHistoryRequestCount += 1;
+                await fulfillJson(
+                  route,
+                  success(
+                    proactiveReady ? proactiveChatHistory : chatHistory,
+                  ),
+                );
+                return;
+              }
+              await fulfillJson(route, responseFor(pathname));
+            },
+            async (page) => {
+              await page
+                .getByText("오늘 등록된 복약 일정이 없습니다.")
+                .waitFor();
+              assert.equal(chatHistoryRequestCount, 1);
+
+              proactiveReady = true;
+              await page
+                .getByRole("button", { name: "대화 확인" })
+                .waitFor({ timeout: 8_000 });
+
+              // Deliberately do not click the notification action. The
+              // dashboard reconciliation must already have synchronized Chat.
+              await page.getByRole("tab", { name: "Chat" }).click();
+              await page
+                .getByRole("log", { name: "대화 내용" })
+                .getByText("복약을 놓친 이유를 알려주세요.")
+                .waitFor();
+              assert.ok(chatHistoryRequestCount >= 2);
+            },
+          );
+        },
+      );
+
+      await suite.test(
+        "prefills portion inputs and adjusts by their default magnitude",
+        async () => {
+          await withPage(
+            browser,
+            baseUrl,
+            async (route) => {
+              const pathname = new URL(route.request().url()).pathname;
+              if (pathname.endsWith("/chat/history")) {
+                await fulfillJson(route, success(defaultPortionInputHistory));
+                return;
+              }
+              await fulfillJson(route, responseFor(pathname));
+            },
+            async (page) => {
+              await page
+                .getByText("오늘 등록된 복약 일정이 없습니다.")
+                .waitFor();
+              await page.getByRole("tab", { name: "Chat" }).click();
+
+              const toast = page.getByLabel(
+                "1. 토스트_마늘토스트 섭취량",
+                { exact: true },
+              );
+              const water = page.getByLabel("2. 물_생수 섭취량", {
+                exact: true,
+              });
+              await toast.waitFor();
+
+              assert.equal(await toast.inputValue(), "500");
+              assert.equal(await toast.getAttribute("step"), "10");
+              assert.equal(await water.inputValue(), "1000");
+              assert.equal(await water.getAttribute("step"), "100");
+              await page
+                .getByText("기준 제공량 500g · 10g 단위 조정", {
+                  exact: true,
+                })
+                .waitFor();
+              await page
+                .getByText("기준 제공량 1,000mL · 100mL 단위 조정", {
+                  exact: true,
+                })
+                .waitFor();
+
+              await toast.press("ArrowUp");
+              await water.press("ArrowDown");
+              assert.equal(await toast.inputValue(), "510");
+              assert.equal(await water.inputValue(), "900");
+            },
+          );
+        },
+      );
 
       await suite.test("shows a blocking error and supports retry", async () => {
         let backendAvailable = false;
@@ -1282,6 +1517,14 @@ test(
                 await page
                   .getByText("처리중입니다", { exact: true })
                   .waitFor();
+                const pendingTimer = page.locator(
+                  ".chat-pending .response-latency-pill.is-running",
+                );
+                await pendingTimer.waitFor();
+                assert.match(
+                  await pendingTimer.innerText(),
+                  /첫 응답 대기 00:\d{2}\.\d\s*\+\s*응답 생성 대기/,
+                );
                 assert.equal(
                   await page
                     .locator('[data-message-id^="stream:"]')
@@ -1329,6 +1572,16 @@ test(
                   await partial.locator(".message-actions").count(),
                   0,
                 );
+                const streamingTimer = partial.locator(
+                  ".response-latency-pill.is-running",
+                );
+                assert.equal(await streamingTimer.count(), 1);
+                assert.match(
+                  (await partial
+                    .locator(".response-latency-tooltip")
+                    .textContent()) ?? "",
+                  /첫 응답 \d+\.\d초/,
+                );
                 assert.doesNotMatch(
                   await page.locator("body").innerText(),
                   /PRIVATE_REASONING|reasoning_content|signature/,
@@ -1362,6 +1615,14 @@ test(
                   0,
                 );
                 assert.equal(await completed.count(), 1);
+                const completedTimer = completed.locator(
+                  ".response-latency-pill.is-completed",
+                );
+                assert.equal(await completedTimer.count(), 1);
+                assert.match(
+                  await completedTimer.innerText(),
+                  /첫 응답 \d+\.\d초\s*\+\s*응답 생성 \d+\.\d초\s*=\s*전체 \d+\.\d초/,
+                );
                 assert.equal(
                   await page
                     .locator('[data-message-id="user-public-1"]')
@@ -1373,6 +1634,88 @@ test(
                     .getByRole("button", { name: "메시지 보내기" })
                     .isDisabled(),
                   false,
+                );
+              },
+            );
+          } finally {
+            stream.releaseAll();
+            setChatStreamHandler(null);
+          }
+        },
+      );
+
+      await suite.test(
+        "renders a GFM table before the SSE stream completes",
+        async () => {
+          const intro = "복약 상태를 정리했습니다.\n\n| 시간 | 약 이름 | 상태 |\n";
+          const table =
+            "|---|---|---|\n| 08:00 | Metformin | 복용 |\n| 18:00 | Letrozole | 예정 |";
+          const stream = createControlledChatStream({
+            firstDelta: intro,
+            secondDelta: table,
+            completedText: `${intro}${table}`,
+          });
+          setChatStreamHandler(stream.handle);
+
+          try {
+            await withPage(
+              browser,
+              baseUrl,
+              async (route) => {
+                const pathname = new URL(route.request().url()).pathname;
+                if (pathname.endsWith("/chat/stream")) {
+                  await route.fallback();
+                  return;
+                }
+                await fulfillJson(route, responseFor(pathname));
+              },
+              async (page) => {
+                await page
+                  .getByText("오늘 등록된 복약 일정이 없습니다.")
+                  .waitFor();
+                await page.getByRole("tab", { name: "Chat" }).click();
+                await page.locator("#chat-message-input").fill("표로 보여줘");
+                await page
+                  .getByRole("button", { name: "메시지 보내기" })
+                  .click();
+
+                await stream.started;
+                stream.releaseFirstDelta();
+                await stream.firstDeltaWritten;
+
+                const partial = page.locator(
+                  '.chat-message.assistant[data-message-id^="stream:"]',
+                );
+                await partial.waitFor();
+                assert.equal(
+                  await partial.locator(".markdown-table-scroll").count(),
+                  0,
+                );
+
+                stream.releaseSecondDelta();
+                await stream.secondDeltaWritten;
+                const partialTable = partial.locator(
+                  ".markdown-table-scroll table",
+                );
+                await partialTable.waitFor();
+                assert.equal(await partial.getAttribute("aria-busy"), "true");
+                assert.deepEqual(
+                  await partialTable.locator("thead th").allTextContents(),
+                  ["시간", "약 이름", "상태"],
+                );
+
+                stream.finish();
+                const completed = page.locator(
+                  '[data-message-id="assistant-public-1"]',
+                );
+                await completed.waitFor();
+                assert.equal(
+                  await completed.locator(".markdown-table-scroll table").count(),
+                  1,
+                );
+                assert.deepEqual(
+                  await completed.locator("tbody tr").allTextContents(),
+                  ["08:00Metformin복용", "18:00Letrozole예정"],
                 );
               },
             );
@@ -1438,6 +1781,14 @@ test(
                 { exact: true },
               )
               .waitFor();
+            const failedTimer = page.locator(
+              ".chat-runtime-error .response-latency-pill.is-failed",
+            );
+            assert.equal(await failedTimer.count(), 1);
+            assert.match(
+              await failedTimer.innerText(),
+              /실패 \d+\.\d초/,
+            );
             assert.equal(chatRequestCount, 1);
           },
         );
@@ -1724,6 +2075,22 @@ test(
             assert.equal(
               await page.evaluate(() => window.__markdownProbe ?? null),
               null,
+            );
+            const markdownTable = assistant.locator(
+              ".contract-message-text .markdown-table-scroll table",
+            );
+            assert.equal(await markdownTable.count(), 1);
+            assert.deepEqual(
+              await markdownTable.locator("thead th").allTextContents(),
+              ["Time", "Medication", "Status"],
+            );
+            assert.deepEqual(
+              await markdownTable
+                .locator("tbody tr")
+                .first()
+                .locator("td")
+                .allTextContents(),
+              ["08:00", "Metformin", "Taken"],
             );
           },
         );

@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from shared.openapi_schema import (
     openapi_components,
     referenced_schemas,
+    remove_openapi_response,
     selected_openapi_paths,
 )
 from system_app.services.backend_v13_service import (
@@ -22,6 +23,7 @@ BACKEND_V13_ASYNC_CALLBACK_PATHS = (
     "/api/agent/async/missed-dose-results",
     "/api/agent/async/notification-policy-change-proposals",
 )
+BACKEND_V13_NO_422_PATHS = BACKEND_V13_ASYNC_CALLBACK_PATHS[:1]
 
 
 def build_backend_v13_write_openapi(
@@ -84,7 +86,7 @@ def build_backend_v13_async_callback_openapi(
         source,
         BACKEND_V13_ASYNC_CALLBACK_PATHS,
     )
-    _remove_v13_validation_responses(paths)
+    remove_openapi_response(paths, BACKEND_V13_NO_422_PATHS, "422")
     schemas = referenced_schemas(
         paths,
         source.get("components", {}).get("schemas", {}),
@@ -120,21 +122,11 @@ def install_system_v13_openapi(app: FastAPI) -> None:
         info = schema.setdefault("info", {})
         info["version"] = "1.3"
         info["title"] = "닥터앤서 Backend v1.3 연동 API"
-        _remove_v13_validation_responses(
-            schema.get("paths", {})
+        remove_openapi_response(
+            schema.get("paths", {}),
+            BACKEND_V13_NO_422_PATHS,
+            "422",
         )
         return schema
 
     app.openapi = contract_aware_openapi
-
-
-def _remove_v13_validation_responses(
-    paths: dict[str, Any],
-) -> None:
-    responses = (
-        paths.get("/api/agent/async/missed-dose-results", {})
-        .get("post", {})
-        .get("responses")
-    )
-    if isinstance(responses, dict):
-        responses.pop("422", None)

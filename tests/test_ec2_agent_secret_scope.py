@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_DIR = PROJECT_ROOT / "deploy" / "ec2-agent"
 SYSTEMD_DIR = DEPLOY_DIR / "systemd"
@@ -42,19 +41,19 @@ def configured_common_env() -> dict[str, str]:
         {
             "BEDROCK_AUTH_MODE": "bearer_token",
             "AGENT_DATABASE_URL": (
-                "postgresql+psycopg://agent@agent-db.test/dranswer_agent"
+                "postgresql+psycopg://agent@agent-db.test/"
+                "dranswer_agent?sslmode=require"
             ),
             "AGENT_MIGRATION_DATABASE_URL": (
                 "postgresql+psycopg://migrator@agent-db.test/"
-                "dranswer_agent"
+                "dranswer_agent?sslmode=require"
             ),
             "BACKEND_READ_DATABASE_URL": (
                 "postgresql+psycopg://reader@backend-db.test/"
-                "dranswer_backend"
+                "dranswer_backend?sslmode=require"
             ),
             "SYSTEM_BASE_URL": "https://backend.test",
             "INTERNAL_API_TOKEN": "a" * 32,
-            "BACKEND_API_TOKEN": "b" * 32,
             "AGENT_SYNC_API_TOKEN": "c" * 32,
             "AGENT_FEEDBACK_ENCRYPTION_KEY": (
                 base64.urlsafe_b64encode(b"d" * 32)
@@ -83,6 +82,40 @@ def test_bedrock_bearer_is_valid_only_in_secret_scope() -> None:
         for error in errors
     )
     assert "synthetic-bedrock-token" not in "\n".join(errors)
+
+
+def test_ec2_validator_rejects_plain_http_and_postgresql_without_tls() -> None:
+    common = configured_common_env()
+    common["SYSTEM_BASE_URL"] = "http://backend.test"
+    common["AGENT_DATABASE_URL"] = (
+        "postgresql+psycopg://agent@agent-db.test/dranswer_agent"
+    )
+
+    errors = VALIDATOR.validate(
+        common,
+        {"AWS_BEARER_TOKEN_BEDROCK": "synthetic-bedrock-token"},
+    )
+
+    assert "SYSTEM_BASE_URL: valid HTTPS URL required" in errors
+    assert any(
+        error.startswith("AGENT_DATABASE_URL: sslmode=")
+        for error in errors
+    )
+
+
+def test_ec2_validator_keeps_admin_and_service_tokens_separate() -> None:
+    common = configured_common_env()
+    common["INTERNAL_API_TOKEN"] = common["AGENT_SYNC_API_TOKEN"]
+
+    errors = VALIDATOR.validate(
+        common,
+        {"AWS_BEARER_TOKEN_BEDROCK": "synthetic-bedrock-token"},
+    )
+
+    assert (
+        "INTERNAL_API_TOKEN and AGENT_SYNC_API_TOKEN must be different"
+        in errors
+    )
 
 
 @pytest.mark.parametrize(

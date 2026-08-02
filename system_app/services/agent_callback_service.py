@@ -9,6 +9,8 @@ from system_app.services.backend_v13_service import BackendRequestGate
 from system_app.services.clock_service import ensure_clock
 from system_app.services.notification_service import create_notification
 from system_app.services.timeline_service import add_chat_message
+
+
 def process_agent_notification_callback(session: Session, payload: AgentNotificationRequest) -> dict:
     request_gate = BackendRequestGate()
     if payload.idempotency_key:

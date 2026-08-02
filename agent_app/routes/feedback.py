@@ -8,10 +8,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, sessionmaker
 
 from agent_app import trace_logging
-from shared.chat_contracts import (
-    ChatErrorResponse,
-    chat_error,
-)
 from agent_app.integration.feedback_contracts import (
     ChatFeedbackAccepted,
     ChatFeedbackRequest,
@@ -26,6 +22,10 @@ from agent_app.security import require_agent_sync_bearer_token
 from agent_app.tools.backend_query import (
     BackendChatMessageNotFound,
     BackendQueryTools,
+)
+from shared.chat_contracts import (
+    ChatErrorResponse,
+    chat_error,
 )
 from shared.redaction import safe_exception_summary
 from shared.settings import get_settings

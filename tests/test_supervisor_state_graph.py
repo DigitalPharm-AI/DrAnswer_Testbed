@@ -5,6 +5,7 @@ from datetime import datetime
 
 from agent_app.agents.tool_chat import AGENT_TOOL_LOOP_LIMIT
 from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
+from shared.schemas import MultiturnChatRequest
 from shared.tool_names import (
     DELEGATE_TO_MEDICATION_AGENT,
     DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT,
@@ -14,14 +15,30 @@ from shared.tool_names import (
     REQUEST_RECORD_APPROVAL,
     UPSERT_NUTRITION_PREFERENCE_FACT,
 )
-from shared.schemas import MultiturnChatRequest
-from tests.support.llm import NativeChatProvider
-from tests.test_agent_app_langgraph_native import (
+from tests.support.agent_scenarios import (
     NativeDelegatingMedicationProvider,
     NativeFakeToolExecutor,
     NativeRecentChatProvider,
     build_taken_chat_request,
 )
+from tests.support.llm import NativeChatProvider
+
+
+def test_supervisor_graph_declares_specialist_subgraph_wrapper_nodes():
+    orchestrator = AgentLangGraphNativeOrchestrator(
+        NativeDelegatingMedicationProvider(),
+        NativeFakeToolExecutor(),
+    )
+
+    nodes = set(orchestrator.multiturn_chat_agent.graph.get_graph().nodes)
+
+    assert {
+        "medication_specialist_subgraph",
+        "nutrition_management_specialist_subgraph",
+        "nutrition_recommendation_specialist_subgraph",
+        "complete_supervisor_tool_round",
+    } <= nodes
+    assert "supervisor_tool_node" not in nodes
 
 
 def test_supervisor_state_graph_direct_answer_uses_one_agent_loop_call():
@@ -64,10 +81,7 @@ def test_supervisor_delegated_write_returns_to_tool_free_confirmation_llm():
     assert response.structured_payload["routing_mode"] == "mutation_confirmation_required"
     assert response.structured_payload["agent_graph_mode"] == "langgraph_state_graph"
     assert response.structured_payload["tool_execution_mode"] == "iterative"
-    assert (
-        response.structured_payload["finalization_mode"]
-        == "confirmation_llm_without_tools"
-    )
+    assert response.structured_payload["finalization_mode"] == "confirmation_llm_without_tools"
     assert response.structured_payload["tool_loop_mode"] == "langgraph_state_graph"
     assert response.structured_payload["iterations"] == 1
     assert response.structured_payload["message_flow"] == [

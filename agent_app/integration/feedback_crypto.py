@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import base64
-import binascii
-import hashlib
-import hmac
 import json
-import os
 from dataclasses import asdict, dataclass
 
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
 from agent_app.integration.feedback_contracts import ChatFeedbackRequest
+from agent_app.integration.state_crypto import (
+    AgentStateCipher,
+    AgentStateCipherError,
+)
 from shared.settings import Settings
 
 
@@ -45,8 +41,7 @@ class FeedbackCipher:
         if not key_id.strip():
             raise ValueError("feedback_encryption_key_id_required")
         self.key_id = key_id.strip()
-        self._key = key
-        self._cipher = AESGCM(key)
+        self._state_cipher = AgentStateCipher(key)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> FeedbackCipher:
@@ -78,14 +73,10 @@ class FeedbackCipher:
         *,
         context: FeedbackEncryptionContext,
     ) -> str:
-        nonce = os.urandom(12)
-        ciphertext = self._cipher.encrypt(
-            nonce,
+        return self._state_cipher.encrypt(
             value.encode("utf-8"),
-            context.associated_data(),
+            associated_data=context.associated_data(),
         )
-        token = base64.urlsafe_b64encode(nonce + ciphertext).decode("ascii")
-        return f"v1.{token}"
 
     def decrypt(
         self,
@@ -93,32 +84,22 @@ class FeedbackCipher:
         *,
         context: FeedbackEncryptionContext,
     ) -> str:
-        if not token.startswith("v1."):
-            raise FeedbackEncryptionError(
-                "unsupported_feedback_ciphertext_version"
-            )
         try:
-            encoded = token.removeprefix("v1.")
-            payload = base64.urlsafe_b64decode(
-                encoded + ("=" * (-len(encoded) % 4))
-            )
-            if len(payload) < 29:
-                raise ValueError("ciphertext_too_short")
-            plaintext = self._cipher.decrypt(
-                payload[:12],
-                payload[12:],
-                context.associated_data(),
+            plaintext = self._state_cipher.decrypt(
+                token,
+                associated_data=context.associated_data(),
+                version_error="unsupported_feedback_ciphertext_version",
+                authentication_error=(
+                    "feedback_ciphertext_authentication_failed"
+                ),
             )
             return plaintext.decode("utf-8")
-        except (
-            InvalidTag,
-            UnicodeDecodeError,
-            ValueError,
-            binascii.Error,
-        ) as exc:
+        except AgentStateCipherError as exc:
+            raise FeedbackEncryptionError(str(exc)) from exc
+        except UnicodeDecodeError as exc:
             raise FeedbackEncryptionError(
                 "feedback_ciphertext_authentication_failed"
             ) from exc
 
     def _digest(self, value: bytes) -> str:
-        return hmac.new(self._key, value, hashlib.sha256).hexdigest()
+        return self._state_cipher.digest(value)
