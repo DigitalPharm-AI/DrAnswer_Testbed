@@ -198,6 +198,55 @@ score, sampling, 재시도, 보존·삭제 정책은
 - Backend는 모든 이벤트의 `request_id`·`message_id`·`sequence`를 검증하고
   최종 응답만 Backend DB에 assistant 메시지로 저장한다.
 
+## 테스트베드 DB를 Google Drive로 전달
+
+로컬 9000 테스트베드는 Backend 원장인 `dranswer_system`과 AI Internal
+원장인 `dranswer_agent`를 각각 PostgreSQL로 실행한다. 다른 개발자에게 현재
+테스트 데이터를 전달할 때는 실행 중인 PostgreSQL `data` 디렉터리를 복사하지
+않고 두 DB를 PostgreSQL custom dump로 내보낸다. custom dump는 자체 압축되며
+테이블 단위 확인과 선택 복원이 가능하다.
+
+백업 예시는 다음과 같다. `-n public`은 실제 앱 스키마만 포함하고 테스트 실행
+중 생성된 `pytest_*`, `backend_read_contract_*` 등의 임시 스키마를 제외한다.
+`-O -x`는 받는 컴퓨터의 PostgreSQL 계정명이 달라도 복원할 수 있도록 원래
+소유자와 권한 정보를 제외한다.
+
+```powershell
+$backupDir = "runtime\backups\drive-YYYYMMDD"
+New-Item -ItemType Directory -Force $backupDir
+
+pg_dump -h 127.0.0.1 -p 55432 -U <system-db-user> `
+  -d dranswer_system -Fc -Z 9 -O -x -n public `
+  -f "$backupDir\dranswer_system_YYYYMMDD.dump"
+
+pg_dump -h 127.0.0.1 -p 55433 -U <agent-db-user> `
+  -d dranswer_agent -Fc -Z 9 -O -x -n public `
+  -f "$backupDir\dranswer_agent_YYYYMMDD.dump"
+```
+
+생성된 두 `.dump` 파일을 같은 Google Drive 폴더에 올리고 폴더 링크를
+공유한다. `.dump`는 이미 압축되어 있으므로 ZIP이나 7z로 다시 묶는 것은
+선택 사항이다. `runtime/`과 `*.dump`는 Git에서 제외되므로 dump 파일은
+GitHub push에 포함되지 않는다.
+
+받는 사람은 PostgreSQL 18의 비어 있는 DB 두 개에 복원한다. 기존 데이터가
+있는 DB에 덮어쓰지 말고 새 DB를 만든 뒤 복원하는 방식을 권장한다.
+
+```powershell
+createdb -h 127.0.0.1 -p 55432 -U postgres dranswer_system
+createdb -h 127.0.0.1 -p 55433 -U postgres dranswer_agent
+
+pg_restore -h 127.0.0.1 -p 55432 -U postgres `
+  -d dranswer_system -O -x --exit-on-error dranswer_system_YYYYMMDD.dump
+
+pg_restore -h 127.0.0.1 -p 55433 -U postgres `
+  -d dranswer_agent -O -x --exit-on-error dranswer_agent_YYYYMMDD.dump
+```
+
+복원 후 대상 컴퓨터의 `.env.9000`에서 `SYSTEM_DATABASE_URL`,
+`SYSTEM_MIGRATION_DATABASE_URL`, `AGENT_DATABASE_URL`,
+`AGENT_MIGRATION_DATABASE_URL`을 해당 DB와 계정에 맞춘 뒤 스택을 시작한다.
+
 ## EC2에서 Docker Compose로 실행
 
 EC2 배포는 Docker Compose 방식을 권장합니다. VSCode Remote SSH로 EC2에 접속한 뒤, 저장소 루트에서 아래 순서로 실행합니다.

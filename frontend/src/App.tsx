@@ -1574,8 +1574,8 @@ export default function App() {
       <div className="page-shell">
         <header className="hero">
           <div className="hero-main">
-            <p className="eyebrow">DRANSWER MEDICATION CARE</p>
-            <h1>닥터앤서 AI 복약 케어 테스트</h1>
+            <p className="eyebrow">DRANSWER AI CARE</p>
+            <h1>닥터앤서 AI 케어 테스트</h1>
           </div>
         </header>
 

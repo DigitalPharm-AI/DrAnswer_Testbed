@@ -170,6 +170,16 @@ def test_claude_sonnet_5_models_do_not_support_temperature():
     assert model_supports_temperature("global.anthropic.claude-sonnet-5") is False
 
 
+def test_langchain_aws_recognizes_streaming_for_claude_sonnet_5():
+    assert (
+        langchain_aws.ChatBedrockConverse._get_streaming_support(
+            "anthropic",
+            "global.anthropic.claude-sonnet-5",
+        )
+        is True
+    )
+
+
 def test_other_anthropic_models_keep_temperature():
     assert model_supports_temperature("global.anthropic.claude-haiku-4-5-20251001-v1:0") is True
     assert model_supports_temperature("global.anthropic.claude-sonnet-4-6") is True
