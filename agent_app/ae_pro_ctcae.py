@@ -214,7 +214,7 @@ def _load_sheet_rows(path: Path, sheet_name: str) -> list[ProCtcaeQuestionRow]:
             ProCtcaeQuestionRow(
                 symptom_term=_text(row[offset]),
                 korean_symptom_name=_text(row[offset + 1]),
-                item_code=_text(row[offset + 2]),
+                item_code=_normalize(_text(row[offset])) + "_" + _text(row[offset + 2]),
                 question=_text(row[offset + 3]),
                 response_type=_text(row[offset + 4]),
                 response_options=_split_options(row[offset + 5]),
