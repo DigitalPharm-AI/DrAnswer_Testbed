@@ -1391,10 +1391,10 @@ def test_agent_app_multiturn_delegates_medication_without_losing_mark_taken_perm
     assert {
         "request_record_approval",
         "get_medication_side_effect_assessment",
-        "get_pro_ctcae_questionnaire",
         "get_medication_dose_status",
         "get_side_effect_history",
     } <= specialist_tools
+    assert "get_pro_ctcae_questionnaire" not in specialist_tools
     assert "update_medication_dose_event_status" not in specialist_tools
     assert "get_nutrition_recommendation_candidates" not in specialist_tools
 
@@ -2262,7 +2262,8 @@ def test_agent_app_multiturn_delegates_side_effect_continuation_to_medication_ag
     specialist_tools = set(provider.bound_tool_history[1])
     assert "delegate_to_medication_agent" in supervisor_tools
     assert {"get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"}.isdisjoint(supervisor_tools)
-    assert {"get_medication_side_effect_assessment", "get_pro_ctcae_questionnaire"} <= specialist_tools
+    assert "get_medication_side_effect_assessment" in specialist_tools
+    assert "get_pro_ctcae_questionnaire" not in specialist_tools
 
     continuation = request.model_copy(deep=True)
     continuation.context = {

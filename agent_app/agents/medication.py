@@ -8,8 +8,10 @@ from agent_app.providers.base import BaseLLMProvider
 from agent_app.tools.policy_gate import ToolCallOrigin
 from agent_app.tools.runtime import ToolRuntime
 from shared.schemas import AgentResponse
-from shared.tool_names import SOURCE_MEDICATION_AGENT
-from shared.tool_permissions import MEDICATION_CHAT_TOOLS
+from shared.tool_names import (
+    MEDICATION_AGENT_CALLABLE_TOOLS,
+    SOURCE_MEDICATION_AGENT,
+)
 
 
 class MedicationAgent:
@@ -23,7 +25,7 @@ class MedicationAgent:
             prompt=medication_agent_prompt(),
             response_mode="medication_chat",
             decision_type="tool_call",
-            tool_names=tuple(MEDICATION_CHAT_TOOLS),
+            tool_names=tuple(MEDICATION_AGENT_CALLABLE_TOOLS),
             source_event_type=SOURCE_MEDICATION_AGENT,
             force_ae_after_positive_lookup=True,
         )
