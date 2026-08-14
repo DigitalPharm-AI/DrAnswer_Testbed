@@ -23,6 +23,7 @@ import AssistantMarkdown from "./AssistantMarkdown";
 
 interface ChatPageProps {
   active: boolean;
+  medicationSideEffectEnabled: boolean;
   days: ClientChatHistoryDay[];
   historyLoading: boolean;
   chatSending: boolean;
@@ -153,6 +154,7 @@ interface TestScenarioTurn {
 interface TestScenario {
   category: string;
   title: string;
+  feature?: "medication_side_effect";
   modes: string[];
   description: string;
   example?: string;
@@ -212,6 +214,7 @@ const BASIC_TEST_SCENARIOS: TestScenario[] = [
   {
     category: "SURVEY + WRITE",
     title: "부작용 평가",
+    feature: "medication_side_effect",
     modes: ["SURVEY", "APPROVAL", "WRITE"],
     description:
       "증상 인식 후 PRO-CTCAE 원문 문항을 끝까지 순차 제시하고, 완료된 응답을 포함한 승인 카드 뒤에만 부작용 평가를 저장하는지 확인합니다.",
@@ -249,6 +252,7 @@ const ADVANCED_TEST_SCENARIOS: TestScenario[] = [
   {
     category: "MULTI SURVEY + WRITE",
     title: "부작용 다건 평가",
+    feature: "medication_side_effect",
     modes: ["MULTI", "SURVEY", "APPROVAL", "WRITE"],
     description:
       "여러 약과 여러 증상을 한 번에 말했을 때 위험 신호를 우선 분류하고, 증상별 평가와 저장을 이어가는지 확인합니다.",
@@ -475,9 +479,11 @@ const TEST_SCENARIOS: Record<TestScenarioLevel, TestScenario[]> = {
 
 function TestScenarioGuide({
   disabled,
+  medicationSideEffectEnabled,
   onFillExample,
 }: {
   disabled: boolean;
+  medicationSideEffectEnabled: boolean;
   onFillExample: (example: string) => void;
 }) {
   const [open, setOpen] = useState(true);
@@ -495,8 +501,12 @@ function TestScenarioGuide({
   const [nextConversationTurns, setNextConversationTurns] = useState<
     Record<number, number>
   >({});
-  const scenarios = TEST_SCENARIOS[level];
-  const activeIndex = activeIndexes[level];
+  const scenarios = TEST_SCENARIOS[level].filter(
+    (scenario) =>
+      medicationSideEffectEnabled ||
+      scenario.feature !== "medication_side_effect",
+  );
+  const activeIndex = Math.min(activeIndexes[level], scenarios.length - 1);
   const completed = completedByLevel[level];
   const current = scenarios[activeIndex];
   const currentCompleted = completed.has(activeIndex);
@@ -1527,6 +1537,7 @@ function ChatMessage({
 
 export default function ChatPage({
   active,
+  medicationSideEffectEnabled,
   days,
   historyLoading,
   chatSending,
@@ -1757,6 +1768,7 @@ export default function ChatPage({
 
       <TestScenarioGuide
         disabled={Boolean(pendingStructured) || chatSending}
+        medicationSideEffectEnabled={medicationSideEffectEnabled}
         onFillExample={(example) => {
           onDraftChange(example);
           requestAnimationFrame(() => inputRef.current?.focus());
@@ -1883,16 +1895,18 @@ export default function ChatPage({
             >
               오늘 남은 복약
             </button>
-            <button
-              type="button"
-              disabled={Boolean(pendingStructured) || chatSending}
-              onClick={() => {
-                onDraftChange("메스꺼움과 약의 관련성을 설명해줘");
-                inputRef.current?.focus();
-              }}
-            >
-              부작용 문의
-            </button>
+            {medicationSideEffectEnabled ? (
+              <button
+                type="button"
+                disabled={Boolean(pendingStructured) || chatSending}
+                onClick={() => {
+                  onDraftChange("메스꺼움과 약의 관련성을 설명해줘");
+                  inputRef.current?.focus();
+                }}
+              >
+                부작용 문의
+              </button>
+            ) : null}
             <button
               type="button"
               disabled={Boolean(pendingStructured) || chatSending}

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from agent_app import trace_logging
 from agent_app.errors import AgentExecutionError
+from agent_app.feature_flags import MEDICATION_SIDE_EFFECT_ENABLED
 from agent_app.integration.approval_state import (
     InternalApprovalDecision,
     InternalApprovalEncryptionError,
@@ -274,10 +275,14 @@ async def _invoke_sync_chat_contract(
                     trace_id=trace_id,
                     action_name=approval_decision.action_name,
                 )
-                next_survey_approval = await asyncio.to_thread(
-                    survey_service.resolve_approval,
-                    patient_id=payload.patient_id,
-                    applied=False,
+                next_survey_approval = (
+                    await asyncio.to_thread(
+                        survey_service.resolve_approval,
+                        patient_id=payload.patient_id,
+                        applied=False,
+                    )
+                    if MEDICATION_SIDE_EFFECT_ENABLED
+                    else None
                 )
                 if next_survey_approval is not None:
                     agent_response = await (
@@ -304,10 +309,14 @@ async def _invoke_sync_chat_contract(
                     agent_payload={**agent_payload, "context": context},
                     trace_id=trace_id,
                 )
-                next_survey_approval = await asyncio.to_thread(
-                    survey_service.resolve_approval,
-                    patient_id=payload.patient_id,
-                    applied=True,
+                next_survey_approval = (
+                    await asyncio.to_thread(
+                        survey_service.resolve_approval,
+                        patient_id=payload.patient_id,
+                        applied=True,
+                    )
+                    if MEDICATION_SIDE_EFFECT_ENABLED
+                    else None
                 )
                 if next_survey_approval is not None:
                     agent_response = await (
@@ -497,13 +506,17 @@ async def _invoke_sync_chat_contract(
                             agent_payload=agent_payload,
                             trace_id=trace_id,
                         )
-                started = await asyncio.to_thread(
-                    survey_service.start_from_agent_response,
-                    patient_id=payload.patient_id,
-                    origin_message_id=payload.message_id,
-                    trace_id=trace_id,
-                    user_message=payload.message,
-                    response=agent_response,
+                started = (
+                    await asyncio.to_thread(
+                        survey_service.start_from_agent_response,
+                        patient_id=payload.patient_id,
+                        origin_message_id=payload.message_id,
+                        trace_id=trace_id,
+                        user_message=payload.message,
+                        response=agent_response,
+                    )
+                    if MEDICATION_SIDE_EFFECT_ENABLED
+                    else None
                 )
                 if started is not None:
                     agent_response = (
@@ -764,6 +777,8 @@ async def _submit_pro_ctcae_response_if_present(
     payload: ChatSyncRequest,
     agent_payload: dict[str, Any],
 ) -> ProCtcaeSurveyTransition | None:
+    if not MEDICATION_SIDE_EFFECT_ENABLED:
+        return None
     if payload.requested_return_type != "selection_box":
         return None
     context = agent_payload.get("context")
@@ -797,6 +812,15 @@ async def _agent_response_for_survey_transition(
     trace_id: str,
     transition: ProCtcaeSurveyTransition,
 ) -> AgentResponse:
+    if not MEDICATION_SIDE_EFFECT_ENABLED:
+        raise AgentExecutionError(
+            "medication_side_effect_feature_disabled",
+            error_type="disabled_feature_continuation",
+            trace_id=trace_id,
+            agent_name="pro_ctcae_survey_state",
+            decision_type="pro_ctcae_survey",
+            retryable=False,
+        )
     if transition.kind == "next_question":
         return pro_ctcae_question_response(
             transition,

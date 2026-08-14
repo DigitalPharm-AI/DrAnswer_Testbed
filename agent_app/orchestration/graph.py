@@ -39,16 +39,22 @@ class AgentLangGraphNativeOrchestrator:
         tool_executor: AgentToolExecutorProtocol | None = None,
         *,
         nutrition_recommendation_enabled: bool = True,
+        medication_side_effect_enabled: bool = True,
     ) -> None:
         self.nutrition_recommendation_enabled = nutrition_recommendation_enabled
+        self.medication_side_effect_enabled = medication_side_effect_enabled
         self.provider = provider
-        self.tool_runtime = ToolRuntime(tool_executor)
+        self.tool_runtime = ToolRuntime(
+            tool_executor,
+            medication_side_effect_enabled=medication_side_effect_enabled,
+        )
         self.daily_pattern_agent = DailyPatternAgent(provider, self.tool_runtime)
         self.missed_dose_agent = MissedDoseAgent(provider, self.tool_runtime)
         self.multiturn_chat_agent = MultiturnChatAgent(
             provider,
             self.tool_runtime,
             nutrition_recommendation_enabled=self.nutrition_recommendation_enabled,
+            medication_side_effect_enabled=self.medication_side_effect_enabled,
         )
         self.graph = self._build_graph()
 

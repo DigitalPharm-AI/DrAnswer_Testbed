@@ -256,7 +256,12 @@ class UiNotification(StrictUiContract):
     related_dose_event_id: DoseEventId | None
 
 
+class UiFeatureFlags(StrictUiContract):
+    medication_side_effect_enabled: bool
+
+
 class UiDashboardData(StrictUiContract):
+    features: UiFeatureFlags
     clock: UiSimulationClock
     simulation_ready: bool
     active_scenario: UiActiveScenario | None

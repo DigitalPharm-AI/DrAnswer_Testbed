@@ -118,7 +118,12 @@ export interface UiNotificationListData {
   current_time: string;
 }
 
+export interface UiFeatureFlags {
+  medication_side_effect_enabled: boolean;
+}
+
 export interface DashboardData {
+  features: UiFeatureFlags;
   clock: SimulationClock;
   simulation_ready: boolean;
   active_scenario: ActiveScenario | null;

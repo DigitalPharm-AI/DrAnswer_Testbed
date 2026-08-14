@@ -14,11 +14,17 @@ from shared.tool_names import (
 def delegation_tools_payload(
     *,
     nutrition_recommendation_enabled: bool = True,
+    medication_side_effect_enabled: bool = True,
 ) -> list[dict[str, Any]]:
+    medication_description = (
+        "Delegate medication adherence, dose-taking, and side-effect triage work to the MedicationAgent."
+        if medication_side_effect_enabled
+        else "Delegate medication adherence and dose-taking work to the MedicationAgent."
+    )
     tools = [
         _delegation_tool(
             DELEGATE_TO_MEDICATION_AGENT,
-            "Delegate medication adherence, dose-taking, and side-effect triage work to the MedicationAgent.",
+            medication_description,
         ),
         _delegation_tool(
             DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT,

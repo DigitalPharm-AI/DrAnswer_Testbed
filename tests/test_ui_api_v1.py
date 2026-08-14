@@ -1792,6 +1792,7 @@ def test_ui_openapi_uses_strict_success_and_runtime_error_envelopes() -> None:
     components = document["components"]["schemas"]
     exact_properties = {
         "UiDashboardData": {
+            "features",
             "clock",
             "simulation_ready",
             "active_scenario",
@@ -1799,6 +1800,9 @@ def test_ui_openapi_uses_strict_success_and_runtime_error_envelopes() -> None:
             "nutrition",
             "policies",
             "notifications",
+        },
+        "UiFeatureFlags": {
+            "medication_side_effect_enabled",
         },
         "UiSimulationClock": {
             "current_time",

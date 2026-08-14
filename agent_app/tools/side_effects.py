@@ -3,7 +3,30 @@ from __future__ import annotations
 from typing import Any
 
 from shared.schemas import ToolCallResult
-from shared.tool_names import GET_MEDICATION_SIDE_EFFECT_ASSESSMENT, GET_PRO_CTCAE_QUESTIONNAIRE
+from shared.tool_names import (
+    CREATE_MEDICATION_SIDE_EFFECT_RECORD,
+    GET_MEDICATION_SIDE_EFFECT_ASSESSMENT,
+    GET_PRO_CTCAE_QUESTIONNAIRE,
+    MEDICATION_SIDE_EFFECT_FEATURE_TOOLS,
+    REQUEST_RECORD_APPROVAL,
+)
+
+
+def is_medication_side_effect_feature_call(
+    tool_call: dict[str, Any],
+) -> bool:
+    name = str(tool_call.get("name") or "")
+    if name in MEDICATION_SIDE_EFFECT_FEATURE_TOOLS:
+        return True
+    arguments = (
+        tool_call.get("arguments")
+        if isinstance(tool_call.get("arguments"), dict)
+        else {}
+    )
+    return (
+        name == REQUEST_RECORD_APPROVAL
+        and arguments.get("action_name") == CREATE_MEDICATION_SIDE_EFFECT_RECORD
+    )
 
 
 def positive_side_effect_lookup(result: ToolCallResult) -> bool:

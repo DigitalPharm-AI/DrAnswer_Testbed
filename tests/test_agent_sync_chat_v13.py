@@ -66,6 +66,11 @@ SYNC_HEADERS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _enable_side_effect_route_for_legacy_flow_tests(monkeypatch):
+    monkeypatch.setattr(chat_routes, "MEDICATION_SIDE_EFFECT_ENABLED", True)
+
+
 class StubBackendQueryTools:
     def validate_chat_message(self, payload: ChatSyncRequest) -> dict:
         return {

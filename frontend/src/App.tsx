@@ -1741,6 +1741,9 @@ export default function App() {
               >
                 <ChatPage
                   active={activeTab === "chat"}
+                  medicationSideEffectEnabled={
+                    dashboard.features.medication_side_effect_enabled
+                  }
                   days={chatDays}
                   historyLoading={historyLoading}
                   chatSending={chatSending}

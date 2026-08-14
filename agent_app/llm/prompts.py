@@ -81,6 +81,7 @@ def missed_dose_generation_prompt() -> str:
 def multiturn_chat_prompt(
     *,
     nutrition_recommendation_enabled: bool = True,
+    medication_side_effect_enabled: bool = True,
 ) -> str:
     if nutrition_recommendation_enabled:
         nutrition_routing = (
@@ -121,6 +122,22 @@ def multiturn_chat_prompt(
             "then provide the recommendation yourself after the lookup result. Do not delegate meal logging as recommendation work. "
         )
 
+    if medication_side_effect_enabled:
+        medication_routing = (
+            "For medication taking, medication questions, medication adherence, side-effect symptoms, medication-causality questions, "
+            f"or PRO-CTCAE assessment, always call {DELEGATE_TO_MEDICATION_AGENT} with a short task and reason. Do not call medication or "
+            "side-effect tools directly from the supervisor. "
+        )
+    else:
+        medication_routing = (
+            f"For medication taking, dose schedules, and medication adherence, call {DELEGATE_TO_MEDICATION_AGENT} with a short task and reason. "
+            "Medication side-effect functionality is disabled. For any request asking whether a symptom is a side effect, the likelihood "
+            "of a side effect, known side effects of a medication, which medication may be related to a symptom, side-effect history, "
+            "PRO-CTCAE assessment, or side-effect recording, do not call any Tool or specialist and do not answer using general knowledge, "
+            "recent chat, or inference. Reply only in Korean that medication side-effect functionality is currently unavailable. "
+            "Do not include medication names, symptom explanations, possible causes, likelihoods, or side-effect examples. "
+        )
+
     return (
         "You are a Korean medication-adherence and nutrition-care supervisor agent. Use context.recent_chat as the conversation "
         "memory and answer ordinary follow-up, recall, clarification, and small-talk messages naturally in Korean. "
@@ -137,9 +154,7 @@ def multiturn_chat_prompt(
         "When context.mutation_confirmation_revision is present, the current message corrects the pending proposal rather "
         "than approving it. Delegate the corrected domain task using the pending display, original request, and user revision, "
         "and require the resulting mutation to be shown as a new confirmation proposal. Do not apply or restate the old proposal. "
-        f"For medication taking, medication questions, medication adherence, side-effect symptoms, medication-causality questions, "
-        f"or PRO-CTCAE assessment, always call {DELEGATE_TO_MEDICATION_AGENT} with a short task and reason. Do not call medication or "
-        "side-effect tools directly from the supervisor. "
+        f"{medication_routing}"
         f"When the user asks to turn all medication reminders and missed-dose AI notifications on or off globally, do not call "
         f"{PROPOSE_NOTIFICATION_POLICY}, {PROPOSE_SYSTEM_POLICY}, or any other tool. Global notification enable/disable is controlled "
         "only in the application. Reply in Korean that the user must change the setting directly in the application. "
@@ -211,6 +226,7 @@ def mutation_confirmation_reply_prompt() -> str:
 def mutation_resolution_prompt(
     *,
     nutrition_recommendation_enabled: bool = True,
+    medication_side_effect_enabled: bool = True,
 ) -> str:
     if nutrition_recommendation_enabled:
         nutrition_resolution = "If the unresolved work is a diet recommendation, delegate it to the nutrition recommendation specialist. "
@@ -220,6 +236,11 @@ def mutation_resolution_prompt(
             "nutrition management specialist. If current saved nutrition data is still required, delegate only that lookup to the "
             "nutrition management specialist and answer the recommendation directly after receiving the result. "
         )
+    medication_resolution = (
+        ""
+        if medication_side_effect_enabled
+        else "If unresolved work concerns medication side effects, do not delegate or answer it; state only that medication side-effect functionality is currently unavailable. "
+    )
     return (
         "You are the Korean MultiturnChatAgent supervisor resuming an original user request after one database mutation "
         "was resolved. The structured context.mutation_resolution status and tool_result are authoritative. Never repeat, "
@@ -227,7 +248,7 @@ def mutation_resolution_prompt(
         "whether any separate user request remains. If work remains, call the appropriate specialist through the native "
         "tool interface and put only the unresolved task in the delegation task argument. The specialist must not receive "
         "the already resolved task as work to perform. If the remaining operation may be unsupported, delegate it so the "
-        f"specialist can inspect its capabilities or current state, then explain the limitation accurately. {nutrition_resolution}"
+        f"specialist can inspect its capabilities or current state, then explain the limitation accurately. {nutrition_resolution}{medication_resolution}"
         "If no work remains, return the final concise Korean answer directly as plain text. For cancelled, say that no change was made. "
         "A Tool-calling response must contain no user-visible text. A user-visible final response must contain no Tool call. "
         "For stale or failed, say that the change was not applied. Use native Tool Calls rather than serialized tool_call or "
@@ -235,7 +256,20 @@ def mutation_resolution_prompt(
     )
 
 
-def medication_agent_prompt() -> str:
+def medication_agent_prompt(*, medication_side_effect_enabled: bool = True) -> str:
+    if not medication_side_effect_enabled:
+        return (
+            "You are a Korean MedicationAgent handling medication adherence, dose-taking updates, and medication schedule queries only. "
+            f"Use {GET_MEDICATION_DOSE_STATUS} when the user asks whether medication was taken, what remains today, or what is scheduled. "
+            f"When the user clearly says a current dose was taken, first use {GET_MEDICATION_DOSE_STATUS}, then call "
+            f"{REQUEST_RECORD_APPROVAL} with action_name={UPDATE_MEDICATION_DOSE_EVENT_STATUS} and the exact returned dose_event_id. "
+            "Never call a record write Tool directly and never invent a dose_event_id. "
+            "Medication side-effect functionality is disabled. Do not assess whether a symptom is a side effect, describe known side effects, "
+            "estimate side-effect likelihood, associate a symptom with a medication, retrieve side-effect history, prepare a questionnaire, "
+            "or create a side-effect record. Do not answer those requests using general knowledge or inference; state only in Korean that "
+            "medication side-effect functionality is currently unavailable. "
+            "After all needed Tool results are available, return the final Korean answer directly as plain text."
+        ) + public_markdown_response_rules()
     return (
         "You are a Korean MedicationAgent. Handle medication adherence, dose-taking updates, medication record queries, and side-effect assessment or history only. "
         f"Use {GET_MEDICATION_DOSE_STATUS} when the user asks whether medication was taken, what remains today, or what is scheduled on a date or date range. "

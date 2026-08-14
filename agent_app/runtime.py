@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agent_app.feature_flags import NUTRITION_RECOMMENDATION_ENABLED
+from agent_app.feature_flags import (
+    MEDICATION_SIDE_EFFECT_ENABLED,
+    NUTRITION_RECOMMENDATION_ENABLED,
+)
 from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
 from agent_app.providers.base import BaseLLMProvider
 from agent_app.providers.factory import create_llm_provider
@@ -36,6 +39,7 @@ def create_runtime_components() -> AgentRuntimeComponents:
         provider=provider,
         tool_executor=tool_executor,
         nutrition_recommendation_enabled=NUTRITION_RECOMMENDATION_ENABLED,
+        medication_side_effect_enabled=MEDICATION_SIDE_EFFECT_ENABLED,
     )
     return AgentRuntimeComponents(
         provider=provider,

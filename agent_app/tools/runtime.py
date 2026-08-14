@@ -4,6 +4,7 @@ from time import perf_counter
 from typing import Any
 
 from agent_app import trace_logging
+from agent_app.errors import AgentExecutionError
 from agent_app.integration.backend_client import (
     backend_request_attempt_count,
     reset_backend_request_attempt_count,
@@ -21,6 +22,7 @@ from agent_app.tools.policy_gate import (
 from agent_app.tools.protocol import AgentToolExecutorProtocol
 from agent_app.tools.side_effects import (
     ae_tool_calls_from_lookup,
+    is_medication_side_effect_feature_call,
     positive_side_effect_lookup,
 )
 from shared.redaction import safe_log_arguments
@@ -120,9 +122,11 @@ class ToolRuntime:
         executor: AgentToolExecutorProtocol | None,
         *,
         policy_gate: ToolPolicyGate | None = None,
+        medication_side_effect_enabled: bool = True,
     ) -> None:
         self.executor = executor
         self.policy_gate = policy_gate or ToolPolicyGate()
+        self.medication_side_effect_enabled = medication_side_effect_enabled
 
     async def execute(
         self,
@@ -135,6 +139,25 @@ class ToolRuntime:
         routing_context: dict[str, Any] | None = None,
         call_context: ToolCallContext | None = None,
     ) -> tuple[list[dict[str, Any]], list[Any]]:
+        if not self.medication_side_effect_enabled and any(
+            is_medication_side_effect_feature_call(call)
+            for call in tool_calls
+        ):
+            raise AgentExecutionError(
+                "medication_side_effect_feature_disabled",
+                error_type="disabled_feature_tool_call",
+                trace_id=trace_id,
+                agent_name=str(
+                    (routing_context or {}).get("executed_by")
+                    or source_event_type
+                    or "agent_app"
+                ),
+                decision_type=str(
+                    (routing_context or {}).get("routing_mode")
+                    or "tool_call"
+                ),
+                retryable=False,
+            )
         if self.executor is None or not tool_calls:
             return tool_calls, []
         with tool_execution_budget_scope() as budget:

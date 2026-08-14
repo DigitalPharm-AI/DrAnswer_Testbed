@@ -45,6 +45,10 @@ from agent_app.llm.prompts import (
     mutation_confirmation_reply_prompt,
     mutation_resolution_prompt,
 )
+from agent_app.llm.side_effect_guard import (
+    SIDE_EFFECT_FEATURE_UNAVAILABLE_MESSAGE,
+    is_medication_side_effect_request,
+)
 from agent_app.llm.validation import validate_mutation_confirmation_reply_output
 from agent_app.observability.model_calls import (
     traced_model_ainvoke,
@@ -69,6 +73,7 @@ from agent_app.tools.policy_gate import (
     tool_call_fingerprint,
 )
 from agent_app.tools.runtime import ToolRuntime
+from agent_app.tools.side_effects import is_medication_side_effect_feature_call
 from shared.schemas import AgentResponse, MultiturnChatRequest
 from shared.tool_catalog import ToolCatalog
 from shared.tool_names import (
@@ -103,11 +108,17 @@ class MultiturnChatAgent:
         tool_runtime: ToolRuntime,
         *,
         nutrition_recommendation_enabled: bool = True,
+        medication_side_effect_enabled: bool = True,
     ) -> None:
         self.nutrition_recommendation_enabled = nutrition_recommendation_enabled
+        self.medication_side_effect_enabled = medication_side_effect_enabled
         self.provider = provider
         self.tool_runtime = tool_runtime
-        self.medication_agent = MedicationAgent(provider, tool_runtime)
+        self.medication_agent = MedicationAgent(
+            provider,
+            tool_runtime,
+            medication_side_effect_enabled=medication_side_effect_enabled,
+        )
         self.nutrition_management_agent = NutritionManagementAgent(provider, tool_runtime)
         self.nutrition_recommendation_agent = NutritionRecommendationAgent(provider, tool_runtime)
         self.graph = build_multiturn_graph(self)
@@ -179,6 +190,7 @@ class MultiturnChatAgent:
                     "direct_tool_results": [],
                     "tool_round_result_counts": [],
                     "iterations": 0,
+                    "side_effect_guard_checked": self.medication_side_effect_enabled,
                 }
             )
             response = final_state["response"]
@@ -276,11 +288,13 @@ class MultiturnChatAgent:
             *ToolCatalog.model_tools_for(*SUPERVISOR_DIRECT_TOOLS),
             *delegation_tools_payload(
                 nutrition_recommendation_enabled=recommendation_enabled,
+                medication_side_effect_enabled=self.medication_side_effect_enabled,
             ),
         ]
         messages = build_chat_messages(
             mutation_resolution_prompt(
                 nutrition_recommendation_enabled=recommendation_enabled,
+                medication_side_effect_enabled=self.medication_side_effect_enabled,
             ),
             {
                 **request_payload,
@@ -300,11 +314,13 @@ class MultiturnChatAgent:
             *ToolCatalog.model_tools_for(*SUPERVISOR_DIRECT_TOOLS),
             *delegation_tools_payload(
                 nutrition_recommendation_enabled=recommendation_enabled,
+                medication_side_effect_enabled=self.medication_side_effect_enabled,
             ),
         ]
         messages = build_chat_messages(
             multiturn_chat_prompt(
                 nutrition_recommendation_enabled=recommendation_enabled,
+                medication_side_effect_enabled=self.medication_side_effect_enabled,
             ),
             {
                 **request_payload,
@@ -370,7 +386,7 @@ class MultiturnChatAgent:
                 state["messages"],
                 name="multiturn_chat.supervisor",
                 prompt_version_id=PROMPT_VERSION_ID,
-                publish_public_text=True,
+                publish_public_text=self.medication_side_effect_enabled,
             )
             if state.get("entry_mode") == "mutation_resolution":
                 resolution_elapsed_ms = round((perf_counter() - started) * 1000)
@@ -411,6 +427,7 @@ class MultiturnChatAgent:
                 )
 
         self._validate_enabled_delegation_calls(state["trace_id"], tool_calls)
+        self._validate_enabled_side_effect_calls(state["trace_id"], tool_calls)
 
         current_tool_execution_budget().validate_turn_plan(
             tool_calls,
@@ -451,6 +468,9 @@ class MultiturnChatAgent:
             "round_direct_tool_results": [],
             "round_confirmation_required": False,
             "confirmation_required": False,
+            "side_effect_guard_checked": (
+                self.medication_side_effect_enabled or bool(tool_calls)
+            ),
         }
         if "initial_model_output" not in state:
             updates["initial_model_output"] = dict(validation_output)
@@ -460,6 +480,27 @@ class MultiturnChatAgent:
                 resolution_elapsed_ms,
             ]
         return updates
+
+    async def _side_effect_response_guard(
+        self,
+        state: MultiturnGraphState,
+    ) -> dict[str, Any]:
+        if self.medication_side_effect_enabled:
+            return {"side_effect_guard_checked": True}
+        candidate_response = state.get("current_final_text", "").strip()
+        side_effect_request = await is_medication_side_effect_request(
+            self.provider,
+            user_message=str(state["request_payload"].get("message") or ""),
+            candidate_response=candidate_response,
+        )
+        return {
+            "current_final_text": (
+                SIDE_EFFECT_FEATURE_UNAVAILABLE_MESSAGE
+                if side_effect_request
+                else candidate_response
+            ),
+            "side_effect_guard_checked": True,
+        }
 
     @staticmethod
     def _pending_dispatch_call(
@@ -756,6 +797,25 @@ class MultiturnChatAgent:
                 retryable=False,
             )
 
+    def _validate_enabled_side_effect_calls(
+        self,
+        trace_id: str,
+        tool_calls: list[dict[str, Any]],
+    ) -> None:
+        if self.medication_side_effect_enabled:
+            return
+        if any(
+            is_medication_side_effect_feature_call(tool_call)
+            for tool_call in tool_calls
+        ):
+            raise AgentExecutionError(
+                "medication_side_effect_feature_disabled",
+                error_type="disabled_feature_tool_call",
+                trace_id=trace_id,
+                agent_name=MULTITURN_CHAT_AGENT_NAME,
+                decision_type="tool_call",
+                retryable=False,
+            )
     async def _run_delegation(
         self,
         trace_id: str,

@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.orm import Session
 
+from agent_app.feature_flags import MEDICATION_SIDE_EFFECT_ENABLED
 from shared.chat_contracts import ChatMessageContent
 from shared.json_utils import parse_json_object
 from shared.settings import get_settings
@@ -67,6 +68,9 @@ def dashboard_view(
     actual_date = target_date or clock.current_time.date()
     readiness = simulation_readiness(session)
     return {
+        "features": {
+            "medication_side_effect_enabled": MEDICATION_SIDE_EFFECT_ENABLED,
+        },
         "clock": clock_view(session),
         "simulation_ready": bool(readiness["ready"]),
         "active_scenario": active_test_medication_scenario(

@@ -26,6 +26,11 @@ class MultiturnGraphNodes(Protocol):
         state: MultiturnGraphState,
     ) -> dict[str, Any]: ...
 
+    async def _side_effect_response_guard(
+        self,
+        state: MultiturnGraphState,
+    ) -> dict[str, Any]: ...
+
     async def _supervisor_direct_tool_node(
         self,
         state: MultiturnGraphState,
@@ -77,6 +82,10 @@ def build_multiturn_graph(agent: MultiturnGraphNodes):
     graph.add_node("entry_router", entry_router)
     graph.add_node("prepare_model", agent._prepare_model)
     graph.add_node("supervisor_llm", agent._supervisor_llm)
+    graph.add_node(
+        "side_effect_response_guard",
+        agent._side_effect_response_guard,
+    )
     graph.add_node(
         "supervisor_direct_tool",
         agent._supervisor_direct_tool_node,
@@ -153,8 +162,17 @@ def build_multiturn_graph(agent: MultiturnGraphNodes):
             "nutrition_recommendation_specialist_subgraph": "nutrition_recommendation_specialist_subgraph",
             "final_response": "final_response",
             "mutation_resolution_response": "mutation_resolution_response",
+            "side_effect_response_guard": "side_effect_response_guard",
             "continuation_required_response": "continuation_required_response",
             "max_iterations_response": "max_iterations_response",
+        },
+    )
+    graph.add_conditional_edges(
+        "side_effect_response_guard",
+        route_after_side_effect_guard,
+        {
+            "final_response": "final_response",
+            "mutation_resolution_response": "mutation_resolution_response",
         },
     )
     tool_dispatch_routes = {
@@ -228,12 +246,20 @@ def route_after_llm(state: MultiturnGraphState) -> str:
     if continuation and state.get("context", {}).get("execute_tool_continuation") is not True:
         return "continuation_required_response"
     if not tool_calls:
+        if not state.get("side_effect_guard_checked", True):
+            return "side_effect_response_guard"
         if state.get("entry_mode") == "mutation_resolution":
             return "mutation_resolution_response"
         return "final_response"
     if state.get("iterations", 0) >= AGENT_TOOL_LOOP_LIMIT:
         return "max_iterations_response"
     return route_pending_tool_call(state)
+
+
+def route_after_side_effect_guard(state: MultiturnGraphState) -> str:
+    if state.get("entry_mode") == "mutation_resolution":
+        return "mutation_resolution_response"
+    return "final_response"
 
 
 def route_after_tool_dispatch(state: MultiturnGraphState) -> str:

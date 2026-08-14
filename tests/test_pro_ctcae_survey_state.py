@@ -20,6 +20,7 @@ from agent_app.persistence.models import (
     AgentProCtcaeSurvey,
 )
 from agent_app.persistence.retention import purge_expired_agent_state
+from agent_app.routes import chat as chat_routes
 from agent_app.routes.chat import (
     _agent_response_for_survey_transition,
 )
@@ -37,6 +38,11 @@ from shared.tool_names import (
     GET_PRO_CTCAE_QUESTIONNAIRE,
 )
 from tests.helpers import build_agent_engine
+
+
+@pytest.fixture(autouse=True)
+def _enable_side_effect_route_for_legacy_flow_tests(monkeypatch):
+    monkeypatch.setattr(chat_routes, "MEDICATION_SIDE_EFFECT_ENABLED", True)
 
 
 def _assessment_response() -> AgentResponse:
