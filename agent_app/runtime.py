@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from agent_app.feature_flags import NUTRITION_RECOMMENDATION_ENABLED
 from agent_app.orchestration.graph import AgentLangGraphNativeOrchestrator
 from agent_app.providers.base import BaseLLMProvider
 from agent_app.providers.factory import create_llm_provider
@@ -31,7 +32,11 @@ def create_runtime_components() -> AgentRuntimeComponents:
     provider = create_llm_provider()
     tool_server = create_mcp_tool_server(provider)
     tool_executor = create_tool_executor(tool_server)
-    orchestrator = AgentLangGraphNativeOrchestrator(provider=provider, tool_executor=tool_executor)
+    orchestrator = AgentLangGraphNativeOrchestrator(
+        provider=provider,
+        tool_executor=tool_executor,
+        nutrition_recommendation_enabled=NUTRITION_RECOMMENDATION_ENABLED,
+    )
     return AgentRuntimeComponents(
         provider=provider,
         tool_server=tool_server,

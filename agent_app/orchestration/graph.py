@@ -33,12 +33,23 @@ class AgentLangGraphNativeOrchestrator:
         "multiturn_chat": "multiturn_chat",
     }
 
-    def __init__(self, provider: BaseLLMProvider, tool_executor: AgentToolExecutorProtocol | None = None) -> None:
+    def __init__(
+        self,
+        provider: BaseLLMProvider,
+        tool_executor: AgentToolExecutorProtocol | None = None,
+        *,
+        nutrition_recommendation_enabled: bool = True,
+    ) -> None:
+        self.nutrition_recommendation_enabled = nutrition_recommendation_enabled
         self.provider = provider
         self.tool_runtime = ToolRuntime(tool_executor)
         self.daily_pattern_agent = DailyPatternAgent(provider, self.tool_runtime)
         self.missed_dose_agent = MissedDoseAgent(provider, self.tool_runtime)
-        self.multiturn_chat_agent = MultiturnChatAgent(provider, self.tool_runtime)
+        self.multiturn_chat_agent = MultiturnChatAgent(
+            provider,
+            self.tool_runtime,
+            nutrition_recommendation_enabled=self.nutrition_recommendation_enabled,
+        )
         self.graph = self._build_graph()
 
     def _build_graph(self):

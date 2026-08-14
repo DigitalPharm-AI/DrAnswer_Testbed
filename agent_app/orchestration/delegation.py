@@ -11,8 +11,11 @@ from shared.tool_names import (
 )
 
 
-def delegation_tools_payload() -> list[dict[str, Any]]:
-    return [
+def delegation_tools_payload(
+    *,
+    nutrition_recommendation_enabled: bool = True,
+) -> list[dict[str, Any]]:
+    tools = [
         _delegation_tool(
             DELEGATE_TO_MEDICATION_AGENT,
             "Delegate medication adherence, dose-taking, and side-effect triage work to the MedicationAgent.",
@@ -21,11 +24,15 @@ def delegation_tools_payload() -> list[dict[str, Any]]:
             DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT,
             "Delegate confirmed meal logging, food search, current meal record checks, meal history, nutrition summaries, meal or food updates/deletes, post-delete verification, and nutrition preference management.",
         ),
-        _delegation_tool(
-            DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT,
-            "Delegate diet recommendation requests that need today's intake, saved preferences, and nutrition constraints.",
-        ),
     ]
+    if nutrition_recommendation_enabled:
+        tools.append(
+            _delegation_tool(
+                DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT,
+                "Delegate diet recommendation requests that need today's intake, saved preferences, and nutrition constraints.",
+            )
+        )
+    return tools
 
 
 def is_delegation_tool_call(tool_call: dict[str, Any]) -> bool:

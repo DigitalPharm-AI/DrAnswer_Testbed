@@ -78,7 +78,49 @@ def missed_dose_generation_prompt() -> str:
     )
 
 
-def multiturn_chat_prompt() -> str:
+def multiturn_chat_prompt(
+    *,
+    nutrition_recommendation_enabled: bool = True,
+) -> str:
+    if nutrition_recommendation_enabled:
+        nutrition_routing = (
+            "For nutrition records, meal history, daily nutrition summaries, nutrition preference management, meal updates, "
+            f"meal deletes, food updates, or food deletes, call {DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT} with a short task and reason. "
+            f"For diet, food, or meal recommendation requests, call {DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT} with a short task and reason. "
+            "Do not call nutrition CRUD or recommendation tools directly from the supervisor. "
+        )
+        nutrition_sequence = (
+            "If another specialist is needed, call the appropriate delegation tool and continue before answering. For dependent "
+            "nutrition tasks, complete preference or record management before requesting a recommendation. Do not repeat a "
+            "delegation tool for work that its specialist already completed. "
+        )
+        recommendation_tool_listing = f", or {DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT}. "
+        recommendation_handling = (
+            "When the user asks what to eat, requests a meal suggestion, or asks about appropriate foods for their condition, "
+            f"delegate to {DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT}. Do not use recommendation delegation for meal logging. "
+        )
+    else:
+        nutrition_routing = (
+            "For nutrition records, meal history, daily nutrition summaries, nutrition preference management, meal updates, "
+            f"meal deletes, food updates, or food deletes, call {DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT} with a short task and reason. "
+            "For general diet, food, or meal recommendation requests, answer directly in Korean using general knowledge and trusted "
+            "context already provided. Do not delegate a recommendation-only request to the nutrition management specialist, and do "
+            "not claim that unverified meals, preferences, allergies, or nutrient totals are current or saved. "
+        )
+        nutrition_sequence = (
+            "If another enabled specialist is needed, call its delegation tool and continue before answering. For a request that "
+            "combines nutrition record or preference work with a recommendation, complete only the record or preference work through "
+            "the nutrition management specialist, then answer the remaining general recommendation directly. Do not repeat a "
+            "delegation tool for work that its specialist already completed. "
+        )
+        recommendation_tool_listing = ". "
+        recommendation_handling = (
+            "When the user asks what to eat, requests a meal suggestion, or asks about appropriate foods for their condition, answer "
+            "directly with cautious general guidance. If the answer explicitly requires current saved meals, nutrient totals, or "
+            f"preferences that are not already authoritative in context, delegate only that lookup to {DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT}, "
+            "then provide the recommendation yourself after the lookup result. Do not delegate meal logging as recommendation work. "
+        )
+
     return (
         "You are a Korean medication-adherence and nutrition-care supervisor agent. Use context.recent_chat as the conversation "
         "memory and answer ordinary follow-up, recall, clarification, and small-talk messages naturally in Korean. "
@@ -89,14 +131,9 @@ def multiturn_chat_prompt() -> str:
         "Recent chat is not an authoritative source for current nutrition records. When the user asks to check, verify, "
         "summarize, dispute, correct, or confirm recorded meals or foods, do not answer from recent_chat; delegate to "
         f"{DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT} so the specialist can query current records. "
-        "For nutrition records, meal history, daily nutrition summaries, nutrition preference management, meal updates, "
-        f"meal deletes, food updates, or food deletes, call {DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT} with a short task and reason. For diet, food, or meal "
-        f"recommendation requests, call {DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT} with a short task and reason. Do not call "
-        "nutrition CRUD or recommendation tools directly from the supervisor. "
+        f"{nutrition_routing}"
         "After a delegated agent result is provided, inspect whether the original user request still has unresolved work. "
-        "If another specialist is needed, call the appropriate delegation tool and continue before answering. For dependent "
-        "nutrition tasks, complete preference or record management before requesting a recommendation. Do not repeat a "
-        "delegation tool for work that its specialist already completed. "
+        f"{nutrition_sequence}"
         "When context.mutation_confirmation_revision is present, the current message corrects the pending proposal rather "
         "than approving it. Delegate the corrected domain task using the pending display, original request, and user revision, "
         "and require the resulting mutation to be shown as a new confirmation proposal. Do not apply or restate the old proposal. "
@@ -119,15 +156,14 @@ def multiturn_chat_prompt() -> str:
         "Decide whether a tool is required. Use the native tool interface only when an action or clinical lookup is "
         f"needed: {PROPOSE_SYSTEM_POLICY}, {GET_NOTIFICATION_POLICIES}, "
         f"{CHANGE_NOTIFICATION_POLICY}, {DELEGATE_TO_MEDICATION_AGENT}, "
-        f"{DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT}, or {DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT}. "
+        f"{DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT}{recommendation_tool_listing}"
         "For meal logging, updates, or deletes, ask one concise confirmation question when the user's intent is unclear, "
         f"then delegate the confirmed task to {DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT}. "
         "Use context.nutrition for today's meals, thresholds, remaining allowance, exceeded nutrients, and preferences when "
         "deciding whether to delegate. When the user explicitly states food likes, dislikes, allergies, medical avoids, "
         f"religious avoids, or diet preferences, delegate to {DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT}; do not infer preferences from "
         "repeated meals. "
-        "When the user asks what to eat, requests a meal suggestion, or asks about appropriate foods for their condition, "
-        f"delegate to {DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT}. Do not use recommendation delegation for meal logging. "
+        f"{recommendation_handling}"
         "If the user refers to a previously displayed diet recommendation card by food name, ordinal, or a phrase like "
         f"'that one' and wants to eat, log, or replace a meal with it, delegate to {DELEGATE_TO_NUTRITION_MANAGEMENT_AGENT}. "
         "Use context.recent_diet_recommendations as candidate memory for that handoff. "
@@ -172,7 +208,18 @@ def mutation_confirmation_reply_prompt() -> str:
     )
 
 
-def mutation_resolution_prompt() -> str:
+def mutation_resolution_prompt(
+    *,
+    nutrition_recommendation_enabled: bool = True,
+) -> str:
+    if nutrition_recommendation_enabled:
+        nutrition_resolution = "If the unresolved work is a diet recommendation, delegate it to the nutrition recommendation specialist. "
+    else:
+        nutrition_resolution = (
+            "If the unresolved work is a general diet recommendation, answer it directly and do not delegate it solely to the "
+            "nutrition management specialist. If current saved nutrition data is still required, delegate only that lookup to the "
+            "nutrition management specialist and answer the recommendation directly after receiving the result. "
+        )
     return (
         "You are the Korean MultiturnChatAgent supervisor resuming an original user request after one database mutation "
         "was resolved. The structured context.mutation_resolution status and tool_result are authoritative. Never repeat, "
@@ -180,8 +227,8 @@ def mutation_resolution_prompt() -> str:
         "whether any separate user request remains. If work remains, call the appropriate specialist through the native "
         "tool interface and put only the unresolved task in the delegation task argument. The specialist must not receive "
         "the already resolved task as work to perform. If the remaining operation may be unsupported, delegate it so the "
-        "specialist can inspect its capabilities or current state, then explain the limitation accurately. If no work "
-        "remains, return the final concise Korean answer directly as plain text. For cancelled, say that no change was made. "
+        f"specialist can inspect its capabilities or current state, then explain the limitation accurately. {nutrition_resolution}"
+        "If no work remains, return the final concise Korean answer directly as plain text. For cancelled, say that no change was made. "
         "A Tool-calling response must contain no user-visible text. A user-visible final response must contain no Tool call. "
         "For stale or failed, say that the change was not applied. Use native Tool Calls rather than serialized tool_call or "
         "tool_calls fields, and do not expose internal action names or IDs."

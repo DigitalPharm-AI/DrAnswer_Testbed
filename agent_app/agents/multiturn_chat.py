@@ -75,6 +75,7 @@ from shared.tool_names import (
     CHANGE_NOTIFICATION_POLICY,
     CREATE_MEDICATION_SIDE_EFFECT_RECORD,
     DELEGATE_TO_MEDICATION_AGENT,
+    DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT,
     GET_NOTIFICATION_POLICIES,
     PROPOSE_SYSTEM_POLICY,
     RECORD_APPROVAL_ACTIONS,
@@ -96,7 +97,14 @@ SUPERVISOR_DIRECT_TOOLS = tuple(
 
 
 class MultiturnChatAgent:
-    def __init__(self, provider: BaseLLMProvider, tool_runtime: ToolRuntime) -> None:
+    def __init__(
+        self,
+        provider: BaseLLMProvider,
+        tool_runtime: ToolRuntime,
+        *,
+        nutrition_recommendation_enabled: bool = True,
+    ) -> None:
+        self.nutrition_recommendation_enabled = nutrition_recommendation_enabled
         self.provider = provider
         self.tool_runtime = tool_runtime
         self.medication_agent = MedicationAgent(provider, tool_runtime)
@@ -263,9 +271,17 @@ class MultiturnChatAgent:
     def _prepare_mutation_resolution_model(self, state: MultiturnGraphState) -> dict[str, Any]:
         resolution = state.get("context", {}).get("mutation_resolution")
         request_payload = state["request_payload"]
-        catalog_tools = [*ToolCatalog.model_tools_for(*SUPERVISOR_DIRECT_TOOLS), *delegation_tools_payload()]
+        recommendation_enabled = self.nutrition_recommendation_enabled
+        catalog_tools = [
+            *ToolCatalog.model_tools_for(*SUPERVISOR_DIRECT_TOOLS),
+            *delegation_tools_payload(
+                nutrition_recommendation_enabled=recommendation_enabled,
+            ),
+        ]
         messages = build_chat_messages(
-            mutation_resolution_prompt(),
+            mutation_resolution_prompt(
+                nutrition_recommendation_enabled=recommendation_enabled,
+            ),
             {
                 **request_payload,
                 "response_mode": "mutation_resolution_continuation",
@@ -279,9 +295,17 @@ class MultiturnChatAgent:
 
     def _prepare_model(self, state: MultiturnGraphState) -> dict[str, Any]:
         request_payload = state["request_payload"]
-        catalog_tools = [*ToolCatalog.model_tools_for(*SUPERVISOR_DIRECT_TOOLS), *delegation_tools_payload()]
+        recommendation_enabled = self.nutrition_recommendation_enabled
+        catalog_tools = [
+            *ToolCatalog.model_tools_for(*SUPERVISOR_DIRECT_TOOLS),
+            *delegation_tools_payload(
+                nutrition_recommendation_enabled=recommendation_enabled,
+            ),
+        ]
         messages = build_chat_messages(
-            multiturn_chat_prompt(),
+            multiturn_chat_prompt(
+                nutrition_recommendation_enabled=recommendation_enabled,
+            ),
             {
                 **request_payload,
                 "response_mode": "multiturn_chat",
@@ -385,6 +409,8 @@ class MultiturnChatAgent:
                     agent_name=MULTITURN_CHAT_AGENT_NAME,
                     decision_type="system_guidance",
                 )
+
+        self._validate_enabled_delegation_calls(state["trace_id"], tool_calls)
 
         current_tool_execution_budget().validate_turn_plan(
             tool_calls,
@@ -713,6 +739,23 @@ class MultiturnChatAgent:
             "confirmation_model_output": output,
         }
 
+    def _validate_enabled_delegation_calls(
+        self,
+        trace_id: str,
+        tool_calls: list[dict[str, Any]],
+    ) -> None:
+        if self.nutrition_recommendation_enabled:
+            return
+        if any(str(tool_call.get("name") or "") == DELEGATE_TO_NUTRITION_RECOMMENDATION_AGENT for tool_call in tool_calls):
+            raise AgentExecutionError(
+                "nutrition_recommendation_agent_disabled",
+                error_type="disabled_agent_delegation",
+                trace_id=trace_id,
+                agent_name=MULTITURN_CHAT_AGENT_NAME,
+                decision_type="delegation",
+                retryable=False,
+            )
+
     async def _run_delegation(
         self,
         trace_id: str,
@@ -736,5 +779,6 @@ class MultiturnChatAgent:
         if target == "nutrition_management_agent":
             return await self.nutrition_management_agent.run(trace_id, request_payload)
         if target == "nutrition_recommendation_agent":
+            self._validate_enabled_delegation_calls(trace_id, [delegated_call])
             return await self.nutrition_recommendation_agent.run(trace_id, request_payload)
         raise ValueError(f"unsupported_delegation_target:{target or 'unknown'}")
