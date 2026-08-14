@@ -10,7 +10,14 @@ from sqlalchemy.orm import Session
 from shared.json_utils import parse_json_object as parse_metadata_json
 from shared.nutrition_domain import MEAL_TYPE_LABELS
 from shared.settings import resolve_patient_id
-from system_app.models import DailyNutritionCheck, Notification, NutritionFood, NutritionMeal, NutritionProfile
+from system_app.models import (
+    DailyNutritionCheck,
+    Notification,
+    NutritionFood,
+    NutritionFoodRef,
+    NutritionMeal,
+    NutritionProfile,
+)
 from system_app.services.clock_service import ensure_clock
 from system_app.services.notification_service import create_notification
 from system_app.services.timeline_service import add_chat_message
@@ -951,7 +958,24 @@ def foods_for_meal(session: Session, meal_id: int) -> list[NutritionFood]:
 
 
 def meal_view(session: Session, meal: NutritionMeal) -> dict[str, Any]:
-    foods = [food_view(food) for food in foods_for_meal(session, meal.id)]
+    food_rows = foods_for_meal(session, meal.id)
+    food_ref_ids = {
+        food.food_ref_id
+        for food in food_rows
+        if food.food_ref_id
+    }
+    references = {
+        reference.food_ref_id: reference
+        for reference in session.scalars(
+            select(NutritionFoodRef).where(
+                NutritionFoodRef.food_ref_id.in_(food_ref_ids)
+            )
+        ).all()
+    } if food_ref_ids else {}
+    foods = [
+        food_view(food, reference=references.get(food.food_ref_id))
+        for food in food_rows
+    ]
     return {
         "id": meal.id,
         "patient_id": meal.patient_id,
@@ -966,19 +990,44 @@ def meal_view(session: Session, meal: NutritionMeal) -> dict[str, Any]:
     }
 
 
-def food_view(food: NutritionFood) -> dict[str, Any]:
+def food_view(
+    food: NutritionFood,
+    *,
+    reference: NutritionFoodRef | None = None,
+) -> dict[str, Any]:
+    reference_portion = None
+    if reference is not None and reference.serving_size is not None:
+        reference_portion = f"{reference.serving_size:g}g"
+
+    reference_columns = {
+        "칼로리": "energy",
+        "단백질": "protein",
+        "나트륨": "sodium",
+        "지방": "fat",
+        "탄수화물": "carbohydrate",
+    }
+
+    def nutrient_value(name: str, value: float, unit: str) -> dict[str, Any]:
+        reference_column = reference_columns[name]
+        available = (
+            reference is None
+            or getattr(reference, reference_column) is not None
+        )
+        return {"value": value, "unit": unit, "available": available}
+
     return {
         "id": food.id,
         "food_ref_id": food.food_ref_id,
         "food_name": food.food_name,
         "portion": food.portion,
+        "reference_portion": reference_portion,
         "version": food.version,
         "nutrients": {
-            "칼로리": {"value": food.calories, "unit": "kcal"},
-            "단백질": {"value": food.protein, "unit": "g"},
-            "나트륨": {"value": food.sodium, "unit": "mg"},
-            "지방": {"value": food.fat, "unit": "g"},
-            "탄수화물": {"value": food.carbohydrates, "unit": "g"},
+            "칼로리": nutrient_value("칼로리", food.calories, "kcal"),
+            "단백질": nutrient_value("단백질", food.protein, "g"),
+            "나트륨": nutrient_value("나트륨", food.sodium, "mg"),
+            "지방": nutrient_value("지방", food.fat, "g"),
+            "탄수화물": nutrient_value("탄수화물", food.carbohydrates, "g"),
         },
     }
 

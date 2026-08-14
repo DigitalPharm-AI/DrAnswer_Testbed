@@ -268,6 +268,7 @@ class ToolCatalog:
                             "items": {
                                 "type": "object",
                                 "properties": {
+                                    "food_ref_id": {"type": "string"},
                                     "food_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
                                     "portion": {"type": "string"},
                                     "nutrients": _nutrient_schema(),

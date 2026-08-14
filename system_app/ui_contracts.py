@@ -165,12 +165,14 @@ class UiNutritionMetric(StrictUiContract):
 class UiNutritionNutrientValue(StrictUiContract):
     value: float
     unit: str
+    available: bool = True
 
 
 class UiNutritionMealFood(StrictUiContract):
     food_ref_id: str
     food_name: str
     portion: str
+    reference_portion: str | None = None
     nutrients: dict[str, UiNutritionNutrientValue]
 
 

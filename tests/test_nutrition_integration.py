@@ -30,6 +30,7 @@ from system_app.services.nutrition_service import (
     daily_nutrition_view,
     delete_food,
     delete_meal,
+    nutrition_dashboard_view,
     record_meal,
     run_nutrition_scenario,
     search_foods,
@@ -205,6 +206,60 @@ def test_food_search_serving_size_nutrients_scale_before_meal_recording():
         assert summary["nutrients"]["나트륨"]["intake"] == 20
 
 
+def test_nutrition_dashboard_exposes_portions_and_missing_reference_nutrients():
+    with build_session() as session:
+        session.add(
+            NutritionFoodRef(
+                food_ref_id="missing-nutrients-food",
+                food_name="영양정보 누락 음식",
+                category="테스트",
+                serving_size=1008,
+                energy=306,
+                protein=12.7,
+                sodium=413,
+                fat=None,
+                carbohydrate=None,
+            )
+        )
+        session.commit()
+
+        candidate = search_foods(
+            "영양정보 누락",
+            session=session,
+            patient_id="patient-missing-nutrients",
+        )["candidates"][0]
+        record_meal(
+            session,
+            patient_id="patient-missing-nutrients",
+            meal_type="dinner",
+            foods=[
+                {
+                    "food_ref_id": candidate["food_ref_id"],
+                    "food_name": candidate["food_name"],
+                    "portion": "252g",
+                    "nutrients": english_to_korean_nutrients(
+                        scale_nutrients(candidate["nutrients"], 0.25)
+                    ),
+                }
+            ],
+            create_alert=False,
+        )
+
+        dashboard = nutrition_dashboard_view(
+            session,
+            patient_id="patient-missing-nutrients",
+        )
+        food = dashboard["meals"][0]["foods"][0]
+
+        assert food["reference_portion"] == "1008g"
+        assert food["portion"] == "252g"
+        assert food["nutrients"]["칼로리"]["available"] is True
+        assert food["nutrients"]["탄수화물"] == {
+            "value": 0.0,
+            "unit": "g",
+            "available": False,
+        }
+        assert food["nutrients"]["지방"]["available"] is False
 def test_preference_csv_parser_accepts_comma_lists_without_brackets():
     assert parse_preference_csv("현미밥, 연어, 두부") == ["현미밥", "연어", "두부"]
     assert parse_preference_csv("현미밥,, 연어, 현미밥") == ["현미밥", "연어"]

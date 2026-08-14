@@ -57,7 +57,11 @@ export interface NutritionMealFood {
   food_ref_id: string;
   food_name: string;
   portion: string;
-  nutrients: Record<string, { value: number; unit: string }>;
+  reference_portion?: string | null;
+  nutrients: Record<
+    string,
+    { value: number; unit: string; available?: boolean }
+  >;
 }
 
 export interface NutritionMeal {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   DashboardData,
   MedicationScenario,
+  NutritionMeal,
   PolicyKey,
 } from "../api/contracts";
 import {
@@ -49,6 +50,52 @@ function isWarningNutritionMetric(
   metric: DashboardData["nutrition"]["metrics"][number],
 ): boolean {
   return metric.is_warning || metric.daily_exceeded || metric.meal_exceeded;
+}
+
+const MEAL_TYPE_ORDER: Record<string, number> = {
+  breakfast: 0,
+  lunch: 1,
+  dinner: 2,
+  snack: 3,
+};
+
+function mealTypeRank(meal: NutritionMeal): number {
+  return MEAL_TYPE_ORDER[meal.meal_type] ?? Number.MAX_SAFE_INTEGER;
+}
+
+const MEAL_NUTRIENTS = [
+  { key: "칼로리", label: "칼로리", fallbackUnit: "kcal" },
+  { key: "탄수화물", label: "탄수화물", fallbackUnit: "g" },
+  { key: "단백질", label: "단백질", fallbackUnit: "g" },
+  { key: "지방", label: "지방", fallbackUnit: "g" },
+  { key: "나트륨", label: "나트륨", fallbackUnit: "mg" },
+] as const;
+
+function mealNutrientTotals(meal: NutritionMeal) {
+  return MEAL_NUTRIENTS.map(({ key, label, fallbackUnit }) => {
+    const source = meal.foods.find(
+      (food) => food.nutrients[key] !== undefined,
+    )?.nutrients[key];
+    return {
+      label,
+      unit: source?.unit ?? fallbackUnit,
+      value: meal.foods.reduce(
+        (total, food) =>
+          total + (food.nutrients[key]?.value ?? 0),
+        0,
+      ),
+      available: meal.foods.every((food) => {
+        const nutrient = food.nutrients[key];
+        return nutrient !== undefined && nutrient.available !== false;
+      }),
+    };
+  });
+}
+
+function formatNutrientValue(value: number): string {
+  return value.toLocaleString("ko-KR", {
+    maximumFractionDigits: 1,
+  });
 }
 
 export default function HomePage({
@@ -121,18 +168,27 @@ export default function HomePage({
       ),
     ].slice(0, 4);
   }, [dashboard.nutrition.metrics]);
-  const meal = dashboard.nutrition.meals[0];
-  const mealFoodNames =
-    meal?.foods
-      .map((food) => food.food_name.trim())
-      .filter((foodName) => foodName.length > 0)
-      .join(", ") ?? "";
-  const mealDisplayName =
-    mealFoodNames || meal?.description.trim() || "식사 기록";
-  const mealCalories = meal?.foods.reduce(
-    (total, food) =>
-      total + (food.nutrients["칼로리"]?.value ?? 0),
-    0,
+  const orderedMeals = useMemo(
+    () =>
+      dashboard.nutrition.meals
+        .map((meal, originalIndex) => ({ meal, originalIndex }))
+        .sort((left, right) => {
+          const typeDifference =
+            mealTypeRank(left.meal) - mealTypeRank(right.meal);
+          if (typeDifference !== 0) {
+            return typeDifference;
+          }
+
+          const timeDifference = left.meal.meal_time.localeCompare(
+            right.meal.meal_time,
+          );
+          if (timeDifference !== 0) {
+            return timeDifference;
+          }
+
+          return left.originalIndex - right.originalIndex;
+        }),
+    [dashboard.nutrition.meals],
   );
   const activeScenario = scenarios.find(
     (scenario) =>
@@ -458,21 +514,56 @@ export default function HomePage({
                   오늘 집계된 영양 정보가 없습니다.
                 </p>
               ) : null}
-              {meal ? (
-                <div className="meal-summary">
-                  <span className="meal-icon" aria-hidden="true">
-                    {meal.meal_label}
-                  </span>
-                  <div>
-                    <strong>{mealDisplayName}</strong>
-                    <p>
-                      {meal.meal_time} 기록
-                      {mealCalories
-                        ? ` · ${mealCalories.toLocaleString("ko-KR")} kcal`
-                        : ""}
-                    </p>
-                  </div>
-                </div>
+              {orderedMeals.length ? (
+                <ol className="meal-summary-list" aria-label="오늘 식사 기록">
+                  {orderedMeals.map(({ meal, originalIndex }) => {
+                    const foodNames = meal.foods
+                      .map((food) => food.food_name.trim())
+                      .filter((foodName) => foodName.length > 0)
+                      .join(", ");
+                    const displayName =
+                      foodNames || meal.description.trim() || "식사 기록";
+                    const nutrientTotals = mealNutrientTotals(meal);
+
+                    return (
+                      <li
+                        className="meal-summary"
+                        key={`${meal.meal_type}-${meal.meal_time}-${originalIndex}`}
+                      >
+                        <span className="meal-icon" aria-hidden="true">
+                          {meal.meal_label}
+                        </span>
+                        <div>
+                          <strong>{displayName}</strong>
+                          <p>{meal.meal_time} 기록</p>
+                          <div className="meal-portions">
+                            {meal.foods.map((food, foodIndex) => (
+                              <span key={`${food.food_ref_id}-${foodIndex}`}>
+                                <b>{food.food_name}</b>{" "}
+                                기준 제공량 {food.reference_portion ?? "확인 불가"}
+                                {" · "}실제 섭취량 {food.portion}
+                              </span>
+                            ))}
+                          </div>
+                          <div className="meal-nutrients">
+                            {nutrientTotals.map(
+                              ({ label, unit, value, available }) => (
+                                <span key={label}>
+                                  <b>{label}</b>{" "}
+                                  {available ? (
+                                    <>{formatNutrientValue(value)} {unit}</>
+                                  ) : (
+                                    "정보 없음"
+                                  )}
+                                </span>
+                              ),
+                            )}
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ol>
               ) : null}
             </section>
           </div>

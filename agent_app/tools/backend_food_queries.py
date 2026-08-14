@@ -34,13 +34,12 @@ def expanded_food_candidate_rows(
     clauses: list[str] = []
     for index, anchor in enumerate(anchors):
         parameter = f"anchor_{index}"
-        clauses.append(
-            f"LOWER(REPLACE(food_name, ' ', '')) LIKE :{parameter}"
-        )
+        clauses.append(f"LOWER(REPLACE(food_name, ' ', '')) LIKE :{parameter}")
         params[parameter] = f"%{anchor}%"
-    candidate_rows = connection.execute(
-        text(
-            f"""
+    candidate_rows = (
+        connection.execute(
+            text(
+                f"""
             SELECT food_ref_id, food_name, category, serving_size, energy,
                    carbohydrate, protein, fat, sodium, source, manufacturer
             FROM ai_v13_nutrition_food_ref
@@ -48,9 +47,12 @@ def expanded_food_candidate_rows(
             ORDER BY LENGTH(food_name), LOWER(food_name), food_ref_id
             LIMIT :candidate_pool_limit
             """
-        ),
-        params,
-    ).mappings().all()
+            ),
+            params,
+        )
+        .mappings()
+        .all()
+    )
 
     query_bigrams = _food_search_bigrams(normalized_query)
     ranked: list[tuple[float, int, str, Any]] = []
@@ -60,26 +62,15 @@ def expanded_food_candidate_rows(
             continue
         name_bigrams = _food_search_bigrams(normalized_name)
         union = query_bigrams | name_bigrams
-        overlap = (
-            len(query_bigrams & name_bigrams) / len(union)
-            if union
-            else 0.0
-        )
+        overlap = len(query_bigrams & name_bigrams) / len(union) if union else 0.0
         sequence = SequenceMatcher(
             None,
             normalized_query,
             normalized_name,
             autojunk=False,
         ).ratio()
-        containment = float(
-            normalized_query in normalized_name
-            or normalized_name in normalized_query
-        )
-        score = (
-            (sequence * 0.65)
-            + (overlap * 0.25)
-            + (containment * 0.10)
-        )
+        containment = float(normalized_query in normalized_name or normalized_name in normalized_query)
+        score = (sequence * 0.65) + (overlap * 0.25) + (containment * 0.10)
         if score < 0.32:
             continue
         ranked.append(
@@ -115,29 +106,43 @@ def food_record_view(row: Any) -> dict[str, Any]:
 
 
 def food_reference_view(row: Any) -> dict[str, Any]:
+    serving_size = _positive_float(row["serving_size"], fallback=100.0)
+    serving_multiplier = serving_size / 100.0
     return {
         "food_ref_id": row["food_ref_id"],
         "food_name": row["food_name"],
         "category": row["category"] or "",
-        "portion": (
-            f"{row['serving_size']}g" if row["serving_size"] else "1인분"
-        ),
+        "portion": f"{serving_size:g}g",
         "nutrients": {
-            "calories": row["energy"] or 0,
-            "carbohydrates": row["carbohydrate"] or 0,
-            "protein": row["protein"] or 0,
-            "fat": row["fat"] or 0,
-            "sodium": row["sodium"] or 0,
+            "calories": _scale_reference_nutrient(row["energy"], serving_multiplier),
+            "carbohydrates": _scale_reference_nutrient(row["carbohydrate"], serving_multiplier),
+            "protein": _scale_reference_nutrient(row["protein"], serving_multiplier),
+            "fat": _scale_reference_nutrient(row["fat"], serving_multiplier),
+            "sodium": _scale_reference_nutrient(row["sodium"], serving_multiplier),
         },
         "source": row["source"] or "",
         "manufacturer": row["manufacturer"] or "",
     }
 
 
+def _positive_float(value: Any, *, fallback: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
+def _scale_reference_nutrient(
+    value: Any,
+    multiplier: float,
+) -> float | None:
+    if value is None:
+        return None
+    return round(float(value) * multiplier, 6)
+
+
 def _food_search_bigrams(value: str) -> set[str]:
     if len(value) < 2:
         return {value} if value else set()
-    return {
-        value[index : index + 2]
-        for index in range(len(value) - 1)
-    }
+    return {value[index : index + 2] for index in range(len(value) - 1)}
