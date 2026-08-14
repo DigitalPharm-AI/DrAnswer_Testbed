@@ -36,6 +36,7 @@ from shared.backend_v13_contracts import (
     NutritionMealMutationPayload,
 )
 from shared.json_utils import canonical_json
+from shared.nutrition_chat_tables import food_candidate_tables
 from shared.nutrition_domain import MEAL_TYPES
 from shared.schemas import AgentResponse
 from shared.settings import Settings
@@ -291,7 +292,7 @@ def food_selection_question_response(
                 "message": {
                     "message_title": title,
                     "text": text,
-                    "tables": None,
+                    "tables": food_candidate_tables(candidates),
                     "selections": selections,
                     "inputs": None,
                 },

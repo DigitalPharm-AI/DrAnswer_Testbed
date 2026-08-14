@@ -21,6 +21,36 @@ def test_food_portion_input_uses_each_reference_quantity_as_default() -> None:
         ]
     )
 
+    assert input_request["tables"] == [
+        {
+            "table_title": "토스트_마늘토스트",
+            "rows": [
+                {"column": "기준 제공량", "value": "500g"},
+                {"column": "열량", "value": "확인 불가"},
+                {
+                    "column": "영양성분",
+                    "value": (
+                        "단백질 확인 불가 · 나트륨 확인 불가 · "
+                        "지방 확인 불가 · 탄수화물 확인 불가"
+                    ),
+                },
+            ],
+        },
+        {
+            "table_title": "물_생수",
+            "rows": [
+                {"column": "기준 제공량", "value": "1000mL"},
+                {"column": "열량", "value": "확인 불가"},
+                {
+                    "column": "영양성분",
+                    "value": (
+                        "단백질 확인 불가 · 나트륨 확인 불가 · "
+                        "지방 확인 불가 · 탄수화물 확인 불가"
+                    ),
+                },
+            ],
+        },
+    ]
     assert input_request["inputs"] == [
         {
             "type": "number",

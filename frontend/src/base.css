@@ -2139,6 +2139,22 @@ h4 {
   text-align: left;
 }
 
+.nutrition-input-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.nutrition-input-preview > strong {
+  color: var(--accent-dark);
+  font-size: 0.76rem;
+}
+
+.nutrition-input-preview .contract-message-tables {
+  margin-top: 0;
+}
+
 .result-submit-row {
   display: flex;
   align-items: center;

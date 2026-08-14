@@ -19,6 +19,7 @@ import {
   formatKoreanCalendarDate,
   formatKoreanMessageTime,
 } from "../utils/koreaTime";
+import { nutritionPreviewTables } from "../utils/nutritionPreview";
 import AssistantMarkdown from "./AssistantMarkdown";
 
 interface ChatPageProps {
@@ -1246,6 +1247,15 @@ function StructuredInputs({
       ? formatInputResponse(submittedValue, inputs)
       : "",
   );
+  const previewTables = useMemo(
+    () =>
+      nutritionPreviewTables(
+        message.content?.tables ?? [],
+        inputs,
+        values,
+      ),
+    [inputs, message.content?.tables, values],
+  );
 
   useEffect(() => {
     if (!answered || !submittedValue) {
@@ -1348,6 +1358,12 @@ function StructuredInputs({
           );
         })}
       </div>
+      {previewTables.length ? (
+        <div className="nutrition-input-preview" aria-live="polite">
+          <strong>입력량 기준 예상 영양성분</strong>
+          <MessageTables tables={previewTables} />
+        </div>
+      ) : null}
       <div className="result-submit-row">
         <button
           className="compact-button"
@@ -1500,7 +1516,8 @@ function ChatMessage({
                 <AssistantMarkdown text={message.message} />
               </div>
             ) : null}
-            {content?.tables?.length ? (
+            {content?.tables?.length &&
+            message.message_type !== "input_box" ? (
               <MessageTables tables={content.tables} />
             ) : null}
             {message.message_type === "selection_box" ? (

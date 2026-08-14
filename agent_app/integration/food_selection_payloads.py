@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from agent_app.integration.selection_errors import SelectionStateError
+from shared.nutrition_chat_tables import food_candidate_tables
 from shared.nutrition_domain import MEAL_TYPES
 from shared.schemas import AgentResponse
 
@@ -158,7 +159,7 @@ def food_portion_input_request(
     return {
         "message_title": "섭취량 입력",
         "text": ("선택한 음식별 실제 섭취량을 입력해 주세요. 입력한 양을 기준으로 영양소를 계산한 뒤 기록 내용을 확인합니다."),
-        "tables": None,
+        "tables": food_candidate_tables(selected_candidates),
         "selections": None,
         "inputs": [
             {

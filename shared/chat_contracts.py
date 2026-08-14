@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.contract_boundary import remove_retired_conversation_fields
+from shared.nutrition_chat_tables import food_candidate_tables
 from shared.public_ids import PatientId, RequestId, UserMessageId
 from shared.schemas import AgentResponse
 from shared.time_utils import require_aware_datetime
@@ -451,6 +452,12 @@ def _external_message(response: AgentResponse) -> tuple[ChatMessageType, ChatMes
 
     selections = _candidate_selections(structured)
     if selections:
+        raw_candidates = structured.get("food_candidates")
+        candidate_tables = (
+            food_candidate_tables(raw_candidates)
+            if isinstance(raw_candidates, list)
+            else None
+        )
         progress = structured.get(
             "food_selection_progress"
         )
@@ -473,7 +480,7 @@ def _external_message(response: AgentResponse) -> tuple[ChatMessageType, ChatMes
             ChatMessageContent(
                 message_title=title,
                 text=response.human_summary,
-                tables=None,
+                tables=candidate_tables,
                 selections=selections,
                 inputs=None,
             ),
