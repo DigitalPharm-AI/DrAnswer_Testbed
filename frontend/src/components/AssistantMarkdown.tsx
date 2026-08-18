@@ -8,7 +8,7 @@ export default function AssistantMarkdown({
 }) {
   return (
     <Markdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
       skipHtml
       components={{
         table({ node: _node, ...props }) {
