@@ -532,6 +532,7 @@ def test_nutrition_record_verification_prompts_do_not_trust_recent_chat():
     assert "context.recent_diet_recommendations" in supervisor_prompt
     assert "call get_nutrition_meal_record_list first" in management_prompt
     assert "Do not infer current records from recent chat" in management_prompt
+    assert "for a date range pass start_date and end_date in one Tool call" in management_prompt
     assert "Use context.recent_diet_recommendations before search_nutrition_food_candidates" in management_prompt
     assert "Call search_nutrition_food_candidates exactly once" in management_prompt
     assert "food_queries in the same order" in management_prompt

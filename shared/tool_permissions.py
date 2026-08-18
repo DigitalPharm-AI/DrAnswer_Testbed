@@ -179,6 +179,15 @@ def validate_tool_permission(tool_call: dict[str, Any], *, source_event_type: st
         date_error = _validate_date_range_arguments(arguments, tool_name=GET_MEDICATION_DOSE_STATUS, max_days=31)
         if date_error:
             return date_error
+    if tool_name == GET_NUTRITION_MEAL_RECORD_LIST:
+        date_error = _validate_date_range_arguments(
+            arguments,
+            tool_name=GET_NUTRITION_MEAL_RECORD_LIST,
+            max_days=31,
+            single_date_key="meal_date",
+        )
+        if date_error:
+            return date_error
     return None
 
 
@@ -186,18 +195,24 @@ def _valid_external_id(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _validate_date_range_arguments(arguments: dict[str, Any], *, tool_name: str, max_days: int) -> str | None:
-    target_date = str(arguments.get("target_date") or "").strip()
+def _validate_date_range_arguments(
+    arguments: dict[str, Any],
+    *,
+    tool_name: str,
+    max_days: int,
+    single_date_key: str = "target_date",
+) -> str | None:
+    target_date = str(arguments.get(single_date_key) or "").strip()
     start_date = str(arguments.get("start_date") or "").strip()
     end_date = str(arguments.get("end_date") or "").strip()
-    if "target_date" in arguments and not target_date:
-        return f"{tool_name} requires non-empty target_date when target_date is provided"
+    if single_date_key in arguments and not target_date:
+        return f"{tool_name} requires non-empty {single_date_key} when {single_date_key} is provided"
     if target_date and (start_date or end_date):
-        return f"{tool_name} requires either target_date or start_date/end_date, not both"
+        return f"{tool_name} requires either {single_date_key} or start_date/end_date, not both"
     if bool(start_date) != bool(end_date):
         return f"{tool_name} requires start_date and end_date together"
     if target_date:
-        return None if _parse_iso_date(target_date) is not None else f"{tool_name} requires YYYY-MM-DD target_date"
+        return None if _parse_iso_date(target_date) is not None else f"{tool_name} requires YYYY-MM-DD {single_date_key}"
     if start_date and end_date:
         parsed_start = _parse_iso_date(start_date)
         parsed_end = _parse_iso_date(end_date)

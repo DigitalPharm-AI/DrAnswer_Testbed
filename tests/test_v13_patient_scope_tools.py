@@ -293,7 +293,10 @@ def test_v13_rejects_model_supplied_patient_id_for_every_executable_tool() -> No
         (
             GET_NUTRITION_MEAL_RECORD_LIST,
             "nutrition_management_agent",
-            {"meal_date": "2026-07-25"},
+            {
+                "start_date": "2026-07-19",
+                "end_date": "2026-07-25",
+            },
             "nutrition_meals",
         ),
         (
@@ -356,6 +359,9 @@ async def test_v13_cross_patient_argument_is_denied_and_trusted_patient_reaches_
     assert len(queries.calls) == 1
     assert queries.calls[0][0] == query_method
     assert queries.calls[0][1]["patient_id"] == PATIENT_A
+    if tool_name == GET_NUTRITION_MEAL_RECORD_LIST:
+        assert queries.calls[0][1]["start_date"] == "2026-07-19"
+        assert queries.calls[0][1]["end_date"] == "2026-07-25"
     assert PATIENT_B not in str(queries.calls[0])
 
 

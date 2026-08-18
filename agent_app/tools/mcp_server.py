@@ -1414,8 +1414,16 @@ class AgentMcpToolServer:
         patient_id = self._patient_id_for_tool(arguments, payload)
         if patient_id:
             params["patient_id"] = patient_id
-        if arguments.get("meal_date"):
-            params["meal_date"] = arguments["meal_date"]
+        for key in ("meal_date", "start_date", "end_date"):
+            if arguments.get(key):
+                params[key] = arguments[key]
+        if not any(
+            params.get(key)
+            for key in ("meal_date", "start_date", "end_date")
+        ):
+            current_date = _payload_current_date(payload)
+            if current_date is not None:
+                params["meal_date"] = current_date
         if self.backend_queries is None:
             return backend_read_unavailable_result(
                 GET_NUTRITION_MEAL_RECORD_LIST,

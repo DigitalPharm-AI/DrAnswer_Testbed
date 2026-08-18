@@ -487,6 +487,11 @@ def test_ai_read_boundary_requires_public_inputs_and_never_returns_entity_pks(
         patient_id=PATIENT_ID,
         meal_date=NOW.date().isoformat(),
     )
+    meals_in_range = queries.nutrition_meals(
+        patient_id=PATIENT_ID,
+        start_date=NOW.date().isoformat(),
+        end_date=NOW.date().isoformat(),
+    )
 
     assert chat["recent_chat"][0]["message_id"] == CONFIRMATION_MESSAGE_ID
     assert feedback == {
@@ -497,6 +502,9 @@ def test_ai_read_boundary_requires_public_inputs_and_never_returns_entity_pks(
     assert dose_status["dose_events"][0]["dose_event_id"] == DOSE_EVENT_ID
     assert meals["meals"][0]["id"] == MEAL_ID
     assert meals["meals"][0]["foods"][0]["id"] == FOOD_ID
+    assert meals_in_range["start_date"] == NOW.date().isoformat()
+    assert meals_in_range["end_date"] == NOW.date().isoformat()
+    assert meals_in_range["meals"][0]["id"] == MEAL_ID
     assert queries.record_version(
         patient_id=PATIENT_ID,
         resource_type="medication_dose_event",

@@ -2,8 +2,10 @@ from shared.tool_argument_validation import tool_argument_validation_error
 from shared.tool_names import (
     CREATE_NUTRITION_MEAL_RECORD,
     GET_MEDICATION_DOSE_STATUS,
+    GET_NUTRITION_MEAL_RECORD_LIST,
     SEARCH_NUTRITION_FOOD_CANDIDATES,
     SOURCE_MEDICATION_AGENT,
+    SOURCE_NUTRITION_MANAGEMENT_AGENT,
 )
 from shared.tool_permissions import validate_tool_permission
 
@@ -68,3 +70,37 @@ def test_contextual_date_range_rule_remains_at_permission_boundary() -> None:
     )
 
     assert denial == f"{GET_MEDICATION_DOSE_STATUS} date range is too large"
+
+
+def test_nutrition_meal_list_accepts_one_bounded_date_range() -> None:
+    arguments = {
+        "start_date": "2026-07-19",
+        "end_date": "2026-07-25",
+    }
+
+    assert tool_argument_validation_error(
+        GET_NUTRITION_MEAL_RECORD_LIST,
+        arguments,
+    ) is None
+    assert _denial(
+        GET_NUTRITION_MEAL_RECORD_LIST,
+        arguments,
+        source_event_type=SOURCE_NUTRITION_MANAGEMENT_AGENT,
+    ) is None
+
+
+def test_nutrition_meal_list_rejects_mixed_single_day_and_range() -> None:
+    denial = _denial(
+        GET_NUTRITION_MEAL_RECORD_LIST,
+        {
+            "meal_date": "2026-07-25",
+            "start_date": "2026-07-19",
+            "end_date": "2026-07-25",
+        },
+        source_event_type=SOURCE_NUTRITION_MANAGEMENT_AGENT,
+    )
+
+    assert denial == (
+        f"{GET_NUTRITION_MEAL_RECORD_LIST} requires either meal_date or "
+        "start_date/end_date, not both"
+    )

@@ -471,12 +471,14 @@ class ToolCatalog:
             {
                 "name": "get_nutrition_meal_record_list",
                 "title": "List Nutrition Meals",
-                "description": "특정 날짜 또는 오늘 기록된 식사 목록을 조회합니다.",
+                "description": "기록된 식사 목록을 조회합니다. 하루는 meal_date를, 기간은 start_date와 end_date를 사용합니다.",
                 "required_arguments": [],
-                "optional_arguments": ["meal_date"],
+                "optional_arguments": ["meal_date", "start_date", "end_date"],
                 "inputSchema": _object_schema(
                     {
-                        "meal_date": {"type": "string", "format": "date", "description": "YYYY-MM-DD, 생략하면 시뮬레이션 현재 날짜"},
+                        "meal_date": {"type": "string", "format": "date", "description": "YYYY-MM-DD 단일 날짜 필터. 생략하면 시뮬레이션 현재 날짜."},
+                        "start_date": {"type": "string", "format": "date", "description": "YYYY-MM-DD 기간 시작일. end_date와 함께 사용."},
+                        "end_date": {"type": "string", "format": "date", "description": "YYYY-MM-DD 기간 종료일. start_date와 함께 사용."},
                     },
                     [],
                     additional_properties=False,

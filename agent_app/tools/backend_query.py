@@ -914,18 +914,37 @@ class BackendQueryTools:
         *,
         patient_id: str,
         meal_date: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
         _connection: Connection | None = None,
     ) -> dict[str, Any]:
         clauses = ["m.patient_id = :patient_id"]
         params: dict[str, Any] = {"patient_id": patient_id, "limit": self.max_rows}
-        if meal_date:
-            clauses.append("m.meal_date = :meal_date")
-            params["meal_date"] = date.fromisoformat(meal_date)
+        target: date | None = None
+        start: date | None = None
+        end: date | None = None
+        if meal_date or start_date or end_date:
+            start, end, target = _date_range(
+                meal_date,
+                start_date,
+                end_date,
+                max_days=31,
+            )
+            clauses.extend(
+                [
+                    "m.meal_date >= :start_date",
+                    "m.meal_date <= :end_date",
+                ]
+            )
+            params["start_date"] = start
+            params["end_date"] = end
         if _connection is None:
             with self.engine.connect() as connection:
                 return self.nutrition_meals(
                     patient_id=patient_id,
                     meal_date=meal_date,
+                    start_date=start_date,
+                    end_date=end_date,
                     _connection=connection,
                 )
         meals = _connection.execute(
@@ -980,7 +999,15 @@ class BackendQueryTools:
             }
             for row in meals
         ]
-        return {"success": True, "meals": payload, "total": len(payload)}
+        return {
+            "success": True,
+            "patient_id": patient_id,
+            "meal_date": target.isoformat() if target else None,
+            "start_date": start.isoformat() if start else None,
+            "end_date": end.isoformat() if end else None,
+            "meals": payload,
+            "total": len(payload),
+        }
 
     def search_food_candidates(self, *, query: str, limit: int = 6) -> dict[str, Any]:
         normalized = normalize_food_search_text(query)

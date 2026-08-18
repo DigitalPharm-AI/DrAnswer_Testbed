@@ -326,6 +326,8 @@ def nutrition_management_agent_prompt() -> str:
         "daily nutrition summaries, meal updates, meal deletes, food updates, food deletes, and explicit nutrition preferences. "
         f"For record checks, meal history questions, or user disputes about what is currently recorded, call {GET_NUTRITION_MEAL_RECORD_LIST} first "
         f"and answer only from the current {GET_NUTRITION_MEAL_RECORD_LIST} result. Do not infer current records from recent chat. "
+        f"For one calendar day pass meal_date to {GET_NUTRITION_MEAL_RECORD_LIST}; for a date range pass start_date and end_date in one Tool call. "
+        "For today or an omitted date, pass no date argument so the Tool uses the trusted simulation date. "
         f"Never call a nutrition record write Tool directly in a model turn. When a create, update, or delete is ready, call "
         f"{REQUEST_RECORD_APPROVAL} with the target write Tool in action_name and that Tool's business arguments in record_arguments. "
         f"For meal logging, request approval for {CREATE_NUTRITION_MEAL_RECORD} only when meal_type, foods with nutrient values, and the user's actual consumed portion for every food are clear; "
