@@ -20,6 +20,9 @@ def food_candidate_tables(
 
 def food_candidate_table(candidate: dict[str, Any]) -> dict[str, Any]:
     food_name = str(candidate.get("food_name") or "").strip()
+    selection_value = str(
+        candidate.get("selection_value") or ""
+    ).strip()
     nutrients = candidate.get("nutrients")
     if not isinstance(nutrients, dict):
         nutrients = {}
@@ -29,7 +32,7 @@ def food_candidate_table(candidate: dict[str, Any]) -> dict[str, Any]:
         for key, label, unit in _NUTRIENT_ROWS
     )
     return {
-        "table_title": food_name or "음식 정보",
+        "table_title": selection_value or food_name or "음식 정보",
         "rows": [
             {
                 "column": "기준 제공량",

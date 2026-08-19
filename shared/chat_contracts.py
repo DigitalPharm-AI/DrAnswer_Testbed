@@ -8,6 +8,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.contract_boundary import remove_retired_conversation_fields
+from shared.food_selection_candidates import (
+    normalize_food_selection_candidates,
+)
 from shared.nutrition_chat_tables import food_candidate_tables
 from shared.public_ids import PatientId, RequestId, UserMessageId
 from shared.schemas import AgentResponse
@@ -450,12 +453,19 @@ def _external_message(response: AgentResponse) -> tuple[ChatMessageType, ChatMes
             ),
         )
 
-    selections = _candidate_selections(structured)
+    food_candidates = _food_selection_candidates(structured)
+    selections = (
+        [
+            str(candidate["selection_value"])
+            for candidate in food_candidates
+        ]
+        if food_candidates
+        else _candidate_selections(structured)
+    )
     if selections:
-        raw_candidates = structured.get("food_candidates")
         candidate_tables = (
-            food_candidate_tables(raw_candidates)
-            if isinstance(raw_candidates, list)
+            food_candidate_tables(food_candidates)
+            if food_candidates
             else None
         )
         progress = structured.get(
@@ -661,9 +671,13 @@ def _first_question(questionnaire: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _candidate_selections(structured: dict[str, Any]) -> list[str]:
-    raw_candidates = structured.get("food_candidates")
-    if not isinstance(raw_candidates, list) or not raw_candidates:
-        raw_candidates = structured.get("diet_recommendations")
+    food_candidates = _food_selection_candidates(structured)
+    if food_candidates:
+        return [
+            str(candidate["selection_value"])
+            for candidate in food_candidates
+        ]
+    raw_candidates = structured.get("diet_recommendations")
     if not isinstance(raw_candidates, list):
         return []
     values: list[str] = []
@@ -674,6 +688,14 @@ def _candidate_selections(structured: dict[str, Any]) -> list[str]:
         if label and label not in values:
             values.append(label)
     return values
+
+
+def _food_selection_candidates(
+    structured: dict[str, Any],
+) -> list[dict[str, Any]]:
+    return normalize_food_selection_candidates(
+        structured.get("food_candidates")
+    )
 
 
 def _optional_text(value: Any) -> str | None:

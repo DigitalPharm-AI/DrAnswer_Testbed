@@ -60,3 +60,16 @@ def test_food_candidate_tables_preserve_candidate_order_and_missing_values() -> 
     assert tables[0]["rows"][2]["value"].startswith("단백질 0 g")
     assert tables[1]["rows"][0]["value"] == "확인 불가"
     assert tables[1]["rows"][1]["value"] == "확인 불가"
+
+
+def test_food_candidate_table_prefers_selection_value_for_title() -> None:
+    table = food_candidate_table(
+        {
+            "food_name": "막국수",
+            "selection_value": "2. 막국수 (550g)",
+            "portion": "550g",
+            "nutrients": {},
+        }
+    )
+
+    assert table["table_title"] == "2. 막국수 (550g)"

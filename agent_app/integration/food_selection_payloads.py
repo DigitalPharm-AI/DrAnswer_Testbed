@@ -5,6 +5,9 @@ from datetime import datetime
 from typing import Any
 
 from agent_app.integration.selection_errors import SelectionStateError
+from shared.food_selection_candidates import (
+    normalize_food_selection_candidates,
+)
 from shared.nutrition_chat_tables import food_candidate_tables
 from shared.nutrition_domain import MEAL_TYPES
 from shared.schemas import AgentResponse
@@ -106,22 +109,7 @@ def food_group_candidates(
 def _normalized_candidates(
     raw_candidates: Any,
 ) -> list[dict[str, Any]]:
-    if not isinstance(raw_candidates, list):
-        return []
-    candidates: list[dict[str, Any]] = []
-    seen_labels: set[str] = set()
-    for raw in raw_candidates:
-        if not isinstance(raw, dict):
-            continue
-        label = str(raw.get("food_name") or "").strip()
-        if not label or label in seen_labels:
-            continue
-        candidate = dict(raw)
-        candidate["food_name"] = label
-        candidate["selection_value"] = label
-        candidates.append(candidate)
-        seen_labels.add(label)
-    return candidates
+    return normalize_food_selection_candidates(raw_candidates)
 
 
 def selected_food_candidates(

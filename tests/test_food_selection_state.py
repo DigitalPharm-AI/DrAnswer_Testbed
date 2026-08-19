@@ -191,6 +191,66 @@ def test_food_selection_rejects_value_outside_original_card() -> None:
         )
 
 
+def test_food_selection_resolves_distinct_candidate_with_same_name() -> None:
+    store = FoodSelectionStateStore(
+        SessionLocal,
+        settings=get_settings(),
+    )
+    candidates = [
+        {
+            "food_ref_id": "makguksu-732",
+            "food_name": "막국수",
+            "portion": "732.6g",
+            "nutrients": {"calories": 540.0},
+        },
+        {
+            "food_ref_id": "makguksu-550",
+            "food_name": "막국수",
+            "portion": "550g",
+            "nutrients": {"calories": 410.0},
+        },
+    ]
+    response = AgentResponse(
+        trace_id="trace-same-name-food-selection",
+        agent_name="nutrition_agent",
+        prompt_version_id="test",
+        decision_type="tool_call",
+        structured_payload={
+            "food_candidates": candidates,
+            "food_searches": [
+                {
+                    "query": "막국수",
+                    "meal_type": "lunch",
+                    "candidates": candidates,
+                }
+            ],
+        },
+        human_summary="막국수 후보를 선택해 주세요.",
+    )
+    prepared = store.prepare_from_agent_response(
+        patient_id=PATIENT_ID,
+        origin_message_id=ORIGIN_MESSAGE_ID,
+        source_chat_request_id=SOURCE_REQUEST_ID,
+        trace_id="trace-same-name-food-selection",
+        message_at=MESSAGE_AT,
+        response=response,
+    )
+
+    assert prepared is not None
+    assert prepared.candidate_count == 2
+
+    resolved = store.resolve(
+        patient_id=PATIENT_ID,
+        current_user_message_id=RESPONSE_MESSAGE_ID,
+        originating_user_message_id=ORIGIN_MESSAGE_ID,
+        submitted_value="2. 막국수 (550g)",
+    )
+
+    assert resolved is not None
+    assert resolved.candidate["food_ref_id"] == "makguksu-550"
+    assert resolved.candidate["food_name"] == "막국수"
+
+
 def test_food_selection_batch_advances_and_combines_foods() -> None:
     store = FoodSelectionStateStore(
         SessionLocal,
