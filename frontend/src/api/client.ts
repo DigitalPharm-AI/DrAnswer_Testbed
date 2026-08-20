@@ -712,7 +712,9 @@ export const uiApi = {
     if (beforeDate) {
       query.set("before_date", beforeDate);
     }
-    return request<ChatHistoryData>(`/chat/history?${query.toString()}`);
+    return request<ChatHistoryData>(`/chat/history?${query.toString()}`, {
+      cache: "no-store",
+    });
   },
 
   chatStream(

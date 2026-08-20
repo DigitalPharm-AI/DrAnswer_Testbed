@@ -13,6 +13,9 @@ const buildRoot = path.resolve(
 );
 
 const dashboard = {
+  features: {
+    medication_side_effect_enabled: true,
+  },
   clock: {
     current_time: "2026-07-26T09:00:00+09:00",
     is_running: false,
@@ -773,6 +776,120 @@ test(
           },
         );
       });
+
+      await suite.test(
+        "keeps Chat empty when a pre-reset history request finishes late",
+        async () => {
+          const staleHistoryStarted = deferred();
+          const releaseStaleHistory = deferred();
+          const staleHistoryFinished = deferred();
+          let resetApplied = false;
+
+          const currentHistory = {
+            ...assistantHistory,
+            next_before_date: "2026-07-25",
+          };
+          const stalePreviousHistory = {
+            days: [
+              {
+                date: "2026-07-25",
+                messages: [
+                  {
+                    ...assistantHistory.days[0].messages[0],
+                    message_id: "assistant-stale-before-reset",
+                    content: {
+                      ...assistantHistory.days[0].messages[0].content,
+                      text: "초기화 전에 요청한 이전 대화입니다.",
+                    },
+                    created_at: "2026-07-25T09:00:00+09:00",
+                  },
+                ],
+              },
+            ],
+            next_before_date: null,
+          };
+
+          await withPage(
+            browser,
+            baseUrl,
+            async (route) => {
+              const requestUrl = new URL(route.request().url());
+              const pathname = requestUrl.pathname;
+              if (pathname.endsWith("/testbed/reset")) {
+                resetApplied = true;
+                await fulfillJson(
+                  route,
+                  success({
+                    request_id: JSON.parse(route.request().postData()).request_id,
+                    reset_applied: true,
+                    reset_at: "2026-07-26T00:01:00Z",
+                  }),
+                );
+                return;
+              }
+              if (pathname.endsWith("/chat/history")) {
+                if (requestUrl.searchParams.has("before_date")) {
+                  staleHistoryStarted.resolve();
+                  await releaseStaleHistory.promise;
+                  await fulfillJson(route, success(stalePreviousHistory));
+                  staleHistoryFinished.resolve();
+                  return;
+                }
+                await fulfillJson(
+                  route,
+                  success(resetApplied ? chatHistory : currentHistory),
+                );
+                return;
+              }
+              await fulfillJson(route, responseFor(pathname));
+            },
+            async (page) => {
+              await page
+                .getByText("오늘 등록된 복약 일정이 없습니다.")
+                .waitFor();
+              await page.getByRole("tab", { name: "Chat" }).click();
+              await page
+                .locator('[data-message-id="assistant-history-1"]')
+                .waitFor();
+
+              await page.locator("#chat-log").dispatchEvent("wheel", {
+                deltaY: -120,
+              });
+              await staleHistoryStarted.promise;
+
+              await page.getByRole("tab", { name: "Home" }).click();
+              page.once("dialog", (dialog) => dialog.accept());
+              await page.getByRole("button", { name: "전체 리셋" }).click();
+              await page
+                .getByText("테스트 환경을 초기화했습니다.", { exact: true })
+                .waitFor();
+
+              releaseStaleHistory.resolve();
+              await staleHistoryFinished.promise;
+              await page.getByRole("tab", { name: "Chat" }).click();
+              await page
+                .getByText("아직 대화가 없습니다.", { exact: true })
+                .waitFor();
+              await page.waitForTimeout(100);
+
+              assert.equal(
+                await page
+                  .locator('[data-message-id="assistant-history-1"]')
+                  .count(),
+                0,
+              );
+              assert.equal(
+                await page
+                  .locator(
+                    '[data-message-id="assistant-stale-before-reset"]',
+                  )
+                  .count(),
+                0,
+              );
+            },
+          );
+        },
+      );
 
       await suite.test(
         "syncs a ready proactive message into Chat without opening its notification",

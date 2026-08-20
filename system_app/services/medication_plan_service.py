@@ -17,6 +17,7 @@ from system_app.models import (
     MedicationPlan,
     MissedDoseFlag,
     Notification,
+    NotificationPolicyChangeProposal,
     NutritionFood,
     NutritionMeal,
     NutritionPatientPreferenceTriple,
@@ -82,6 +83,7 @@ def reset_simulation_state(
     initial_time = parse_clock_value(settings.simulation_initial_time)
     clock = ensure_clock(session)
 
+    session.execute(delete(NotificationPolicyChangeProposal))
     session.execute(delete(Notification))
     session.execute(delete(ChatMessage))
     session.execute(delete(AgentJob))

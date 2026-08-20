@@ -20,6 +20,7 @@ from system_app.models import (
     DoseSchedule,
     MedicationPlan,
     Notification,
+    NotificationPolicyChangeProposal,
     NutritionProfile,
 )
 from system_app.routes.ui_api import create_ui_api_router
@@ -238,6 +239,47 @@ def test_testbed_reset_is_confirmed_idempotent_and_preserves_catalog(
     assert dashboard["medications"] == []
     assert dashboard["simulation_ready"] is False
     assert history["days"][0]["messages"] == []
+
+
+def test_testbed_reset_clears_notification_policy_change_proposals(
+    tmp_path,
+) -> None:
+    client, sessions = _ui_app(tmp_path)
+    _seed_baseline(sessions)
+    with sessions() as session:
+        notification = Notification(
+            patient_id=get_settings().patient_id,
+            notification_type="policy_change_proposal",
+            title="알림 정책 변경 제안",
+            body="테스트 제안",
+            visible_at=datetime(2026, 7, 28, 9, 0, tzinfo=UTC),
+        )
+        session.add(notification)
+        session.flush()
+        session.add(
+            NotificationPolicyChangeProposal(
+                request_id="req_0000000000000199",
+                callback_hash="a" * 64,
+                patient_id=get_settings().patient_id,
+                proposed_policy_json="{}",
+                reason="리셋 외래키 회귀 테스트",
+                notification_id=notification.id,
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/ui/v1/testbed/reset",
+        json={
+            "request_id": "req_0000000000000109",
+            "confirm": True,
+        },
+    )
+
+    assert response.status_code == 200
+    with sessions() as session:
+        assert session.query(NotificationPolicyChangeProposal).count() == 0
+        assert session.query(Notification).count() == 0
 
 
 def test_testbed_reset_rejects_in_flight_chat_without_deleting_state(

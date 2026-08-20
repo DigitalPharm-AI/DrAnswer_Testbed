@@ -555,6 +555,7 @@ export default function App() {
   const statusRequestRef = useRef<Promise<SystemStatusData> | null>(null);
   const notificationChatRefreshRef = useRef<Promise<void> | null>(null);
   const chatMessageIdsRef = useRef<Set<string>>(new Set());
+  const chatHistoryRevisionRef = useRef(0);
   const resetRequestRef = useRef<string | null>(null);
   const resettingRef = useRef(false);
 
@@ -615,11 +616,15 @@ export default function App() {
         }
       }
 
+      const chatHistoryRevision = chatHistoryRevisionRef.current;
       let request: Promise<void>;
       request = uiApi
         .chatHistory(undefined, 1)
         .then((result) => {
-          if (!mountedRef.current) {
+          if (
+            !mountedRef.current ||
+            chatHistoryRevision !== chatHistoryRevisionRef.current
+          ) {
             return;
           }
           const fetchedMessageIds = result.days.flatMap((day) =>
@@ -740,6 +745,7 @@ export default function App() {
   }
 
   const loadApplicationData = useCallback(async (): Promise<boolean> => {
+    const chatHistoryRevision = chatHistoryRevisionRef.current;
     chatRequestsRef.current.clear();
     chatMessageIdsRef.current = new Set();
     chatSendingRef.current = false;
@@ -751,6 +757,7 @@ export default function App() {
     setDashboard(null);
     setScenarios([]);
     setChatDays([]);
+    setHistoryLoading(false);
     setChatSending(false);
     setNextBeforeDate(null);
     setDashboardSyncError(null);
@@ -770,7 +777,10 @@ export default function App() {
         uiApi.chatHistory(undefined, 1),
         refreshSystemStatus(),
       ]);
-    if (!mountedRef.current) {
+    if (
+      !mountedRef.current ||
+      chatHistoryRevision !== chatHistoryRevisionRef.current
+    ) {
       return false;
     }
 
@@ -1066,6 +1076,7 @@ export default function App() {
       }
 
       await uiApi.resetTestbed(resetRequestRef.current);
+      chatHistoryRevisionRef.current += 1;
       resetRequestRef.current = null;
       scenarioRequestRef.current = null;
       clockAdvanceRequestRef.current = null;
@@ -1106,9 +1117,13 @@ export default function App() {
     if (historyLoading || !nextBeforeDate) {
       return;
     }
+    const chatHistoryRevision = chatHistoryRevisionRef.current;
     setHistoryLoading(true);
     try {
       const result = await uiApi.chatHistory(nextBeforeDate, 1);
+      if (chatHistoryRevision !== chatHistoryRevisionRef.current) {
+        return;
+      }
       if (result.days.length) {
         setChatDays((current) =>
           mergeChatHistoryDays(current, result.days),
@@ -1116,26 +1131,40 @@ export default function App() {
       }
       setNextBeforeDate(result.next_before_date);
     } catch (error) {
+      if (chatHistoryRevision !== chatHistoryRevisionRef.current) {
+        return;
+      }
       showToast(errorMessage(error), "warning");
       throw error;
     } finally {
-      setHistoryLoading(false);
+      if (chatHistoryRevision === chatHistoryRevisionRef.current) {
+        setHistoryLoading(false);
+      }
     }
   }
 
   async function openNotificationChat(messageId: string) {
+    const chatHistoryRevision = chatHistoryRevisionRef.current;
     setHistoryLoading(true);
     try {
       const result = await uiApi.chatHistory(undefined, 7);
+      if (chatHistoryRevision !== chatHistoryRevisionRef.current) {
+        return;
+      }
       setChatDays(mergeChatHistoryDays([], result.days));
       setNextBeforeDate(result.next_before_date);
       setMissedDoseSourceMessageId(messageId);
       setActiveTab("chat");
     } catch (error) {
+      if (chatHistoryRevision !== chatHistoryRevisionRef.current) {
+        return;
+      }
       showToast(errorMessage(error), "warning");
       throw error;
     } finally {
-      setHistoryLoading(false);
+      if (chatHistoryRevision === chatHistoryRevisionRef.current) {
+        setHistoryLoading(false);
+      }
     }
   }
 
