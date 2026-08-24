@@ -206,6 +206,25 @@ class MultiturnChatAgent:
         except Exception as exc:
             raise agent_error(trace_id, MULTITURN_CHAT_AGENT_NAME, "system_guidance", exc) from exc
 
+    async def _classify_side_effect_request(
+        self,
+        state: MultiturnGraphState,
+    ) -> dict[str, Any]:
+        if self.medication_side_effect_enabled:
+            return {
+                "side_effect_request": False,
+                "side_effect_guard_checked": True,
+            }
+        side_effect_request = await is_medication_side_effect_request(
+            self.provider,
+            user_message=str(state["request_payload"].get("message") or ""),
+            candidate_response="",
+        )
+        return {
+            "side_effect_request": side_effect_request,
+            "side_effect_guard_checked": not side_effect_request,
+        }
+
     @staticmethod
     def _prepare_confirmation_reply_model(state: MultiturnGraphState) -> dict[str, Any]:
         pending_confirmation = state.get("context", {}).get("pending_mutation_confirmation")
@@ -386,7 +405,7 @@ class MultiturnChatAgent:
                 state["messages"],
                 name="multiturn_chat.supervisor",
                 prompt_version_id=PROMPT_VERSION_ID,
-                publish_public_text=self.medication_side_effect_enabled,
+                publish_public_text=(self.medication_side_effect_enabled or state.get("side_effect_request") is False),
             )
             if state.get("entry_mode") == "mutation_resolution":
                 resolution_elapsed_ms = round((perf_counter() - started) * 1000)
@@ -468,9 +487,7 @@ class MultiturnChatAgent:
             "round_direct_tool_results": [],
             "round_confirmation_required": False,
             "confirmation_required": False,
-            "side_effect_guard_checked": (
-                self.medication_side_effect_enabled or bool(tool_calls)
-            ),
+            "side_effect_guard_checked": (self.medication_side_effect_enabled or state.get("side_effect_request") is False),
         }
         if "initial_model_output" not in state:
             updates["initial_model_output"] = dict(validation_output)
@@ -487,18 +504,10 @@ class MultiturnChatAgent:
     ) -> dict[str, Any]:
         if self.medication_side_effect_enabled:
             return {"side_effect_guard_checked": True}
-        candidate_response = state.get("current_final_text", "").strip()
-        side_effect_request = await is_medication_side_effect_request(
-            self.provider,
-            user_message=str(state["request_payload"].get("message") or ""),
-            candidate_response=candidate_response,
-        )
+        if state.get("side_effect_request") is not True:
+            raise RuntimeError("side_effect_response_guard_requires_positive_classification")
         return {
-            "current_final_text": (
-                SIDE_EFFECT_FEATURE_UNAVAILABLE_MESSAGE
-                if side_effect_request
-                else candidate_response
-            ),
+            "current_final_text": SIDE_EFFECT_FEATURE_UNAVAILABLE_MESSAGE,
             "side_effect_guard_checked": True,
         }
 
@@ -804,10 +813,7 @@ class MultiturnChatAgent:
     ) -> None:
         if self.medication_side_effect_enabled:
             return
-        if any(
-            is_medication_side_effect_feature_call(tool_call)
-            for tool_call in tool_calls
-        ):
+        if any(is_medication_side_effect_feature_call(tool_call) for tool_call in tool_calls):
             raise AgentExecutionError(
                 "medication_side_effect_feature_disabled",
                 error_type="disabled_feature_tool_call",
@@ -816,6 +822,7 @@ class MultiturnChatAgent:
                 decision_type="tool_call",
                 retryable=False,
             )
+
     async def _run_delegation(
         self,
         trace_id: str,

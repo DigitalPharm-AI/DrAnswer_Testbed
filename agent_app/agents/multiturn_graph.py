@@ -19,6 +19,11 @@ from shared.chat_contracts import has_structured_ui_response
 
 
 class MultiturnGraphNodes(Protocol):
+    async def _classify_side_effect_request(
+        self,
+        state: MultiturnGraphState,
+    ) -> dict[str, Any]: ...
+
     def _prepare_model(self, state: MultiturnGraphState) -> dict[str, Any]: ...
 
     async def _supervisor_llm(
@@ -80,6 +85,10 @@ class MultiturnGraphNodes(Protocol):
 def build_multiturn_graph(agent: MultiturnGraphNodes):
     graph = StateGraph(MultiturnGraphState)
     graph.add_node("entry_router", entry_router)
+    graph.add_node(
+        "classify_side_effect_request",
+        agent._classify_side_effect_request,
+    )
     graph.add_node("prepare_model", agent._prepare_model)
     graph.add_node("supervisor_llm", agent._supervisor_llm)
     graph.add_node(
@@ -137,9 +146,16 @@ def build_multiturn_graph(agent: MultiturnGraphNodes):
         "entry_router",
         route_after_entry,
         {
+            "classify_side_effect_request": "classify_side_effect_request",
+            "prepare_confirmation_reply_model": "prepare_confirmation_reply_model",
+        },
+    )
+    graph.add_conditional_edges(
+        "classify_side_effect_request",
+        route_after_side_effect_classification,
+        {
             "prepare_model": "prepare_model",
             "prepare_mutation_resolution_model": "prepare_mutation_resolution_model",
-            "prepare_confirmation_reply_model": "prepare_confirmation_reply_model",
         },
     )
     graph.add_edge("prepare_confirmation_reply_model", "confirmation_reply_llm")
@@ -147,7 +163,7 @@ def build_multiturn_graph(agent: MultiturnGraphNodes):
         "confirmation_reply_llm",
         route_after_confirmation_reply,
         {
-            "prepare_model": "prepare_model",
+            "classify_side_effect_request": "classify_side_effect_request",
             "confirmation_reply_response": "confirmation_reply_response",
         },
     )
@@ -227,16 +243,22 @@ def entry_router(state: MultiturnGraphState) -> dict[str, str]:
 
 
 def route_after_entry(state: MultiturnGraphState) -> str:
-    if state.get("entry_mode") == "mutation_resolution":
-        return "prepare_mutation_resolution_model"
     if state.get("entry_mode") == "mutation_confirmation_reply":
         return "prepare_confirmation_reply_model"
+    return "classify_side_effect_request"
+
+
+def route_after_side_effect_classification(
+    state: MultiturnGraphState,
+) -> str:
+    if state.get("entry_mode") == "mutation_resolution":
+        return "prepare_mutation_resolution_model"
     return "prepare_model"
 
 
 def route_after_confirmation_reply(state: MultiturnGraphState) -> str:
     if state.get("confirmation_reply_intent") in {"new_request", "revise"}:
-        return "prepare_model"
+        return "classify_side_effect_request"
     return "confirmation_reply_response"
 
 

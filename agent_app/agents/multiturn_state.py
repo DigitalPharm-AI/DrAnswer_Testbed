@@ -15,6 +15,7 @@ class MultiturnGraphState(TypedDict, total=False):
     current_ai_message: Any
     current_model_output: dict[str, Any]
     current_final_text: str
+    side_effect_request: bool
     side_effect_guard_checked: bool
     initial_model_output: dict[str, Any]
     pending_tool_calls: list[dict[str, Any]]
